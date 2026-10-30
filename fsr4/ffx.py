@@ -9,6 +9,7 @@ import ctypes
 from ctypes import POINTER, byref, c_bool, c_char_p, c_float, c_int32, c_uint32, c_uint64, c_void_p, c_wchar_p
 from pathlib import Path
 
+from . import log
 from . import vk
 from . import vk_types as T
 from .gpu import Gpu, Image
@@ -265,14 +266,14 @@ class Upscaler:
         self._create_context(flags | (FFX_UPSCALE_ENABLE_DEBUG_CHECKING if debug_checking else 0))
         self.version_name = self._provider_version()
         if verbose:
-            print(f"[fsr] available upscaler versions: {', '.join(name for _, name in self.versions)}")
-            print(f"[fsr] context created with {self.version_name}, render {render_size[0]}x{render_size[1]} "
+            log.emit(f"[fsr] available upscaler versions: {', '.join(name for _, name in self.versions)}")
+            log.emit(f"[fsr] context created with {self.version_name}, render {render_size[0]}x{render_size[1]} "
                   f"-> {upscale_size[0]}x{upscale_size[1]}, GPU memory {self.gpu_memory_bytes() / 1048576:.0f} MB")
 
     def _on_message(self, message_type: int, message: str) -> None:
         kind = "error" if message_type == 0 else "warning"
         self.messages.append(f"{kind}: {message}")
-        print(f"[fsr {kind}] {message}")
+        log.emit(f"[fsr {kind}] {message}")
 
     def _query_versions(self) -> list[tuple[int, str]]:
         count = c_uint64(0)

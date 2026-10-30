@@ -2,6 +2,11 @@
 title FSR4 upscaler
 cd /d "%~dp0"
 
+if exist "dist\fsr4\fsr4.exe" (
+    start "" "dist\fsr4\fsr4.exe" ui %1
+    exit /b 0
+)
+
 where python >nul 2>nul
 if errorlevel 1 (
     echo Python 3.12 is not installed or not on PATH.
@@ -19,24 +24,9 @@ if not exist "bin\amd_fidelityfx_upscaler_vk.dll" (
     )
 )
 
-if "%~1"=="" goto prompt
-set "INPUT=%~1"
-goto run
-
-:prompt
-echo FSR4 upscaler: drop a file on upscale.bat, or type a path below.
-set /p "INPUT=Image or video to upscale: "
-if "%INPUT%"=="" exit /b 0
-set "INPUT=%INPUT:"=%"
-
-:run
-if exist "dist\fsr4\fsr4.exe" (
-    "dist\fsr4\fsr4.exe" upscale "%INPUT%" %2 %3 %4 %5 %6 %7 %8 %9
-) else (
-    python -m fsr4 upscale "%INPUT%" %2 %3 %4 %5 %6 %7 %8 %9
-)
+python -m fsr4 ui %1
 if errorlevel 1 (
     echo.
-    echo Upscaling failed, see the messages above.
+    echo The window closed with an error, see the messages above.
+    pause
 )
-pause

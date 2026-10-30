@@ -13,6 +13,7 @@ from pathlib import Path
 import numpy as np
 
 from . import ffx
+from . import log
 from . import vk_types as T
 from .gpu import Gpu
 
@@ -85,7 +86,7 @@ class Pipeline:
                                      debug_checking=debug_checking)
         self.frame_index = 0
         if verbose:
-            print(f"[pipeline] flow {flow.name}, sharpness {sharpness if sharpness is not None else 'off'}")
+            log.emit(f"[pipeline] flow {flow.name}, sharpness {sharpness if sharpness is not None else 'off'}")
 
     def reset(self) -> None:
         """Start a new sequence: the next frame does not blend with history."""

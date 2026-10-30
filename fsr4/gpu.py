@@ -11,6 +11,7 @@ import ctypes
 from ctypes import byref, c_uint32, c_uint64, c_void_p
 from dataclasses import dataclass
 
+from . import log
 from . import vk
 from . import vk_types as T
 
@@ -96,9 +97,9 @@ class Gpu:
         self._images: list[Image] = []
         self._buffers: list[Buffer] = []
         if verbose:
-            print(f"[gpu] {self.device_name}, Vulkan {self.api_version_text}, driver {self.driver_version_text}")
-            print(f"[gpu] device extensions enabled: {', '.join(self.enabled_extensions) or 'none'}")
-            print(f"[gpu] cooperative matrix: {self.supports_cooperative_matrix}, shader float8: {self.supports_float8}")
+            log.emit(f"[gpu] {self.device_name}, Vulkan {self.api_version_text}, driver {self.driver_version_text}")
+            log.emit(f"[gpu] device extensions enabled: {', '.join(self.enabled_extensions) or 'none'}")
+            log.emit(f"[gpu] cooperative matrix: {self.supports_cooperative_matrix}, shader float8: {self.supports_float8}")
 
     # ---- creation -------------------------------------------------------------------------------
 

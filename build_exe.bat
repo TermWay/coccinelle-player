@@ -4,7 +4,7 @@ cd /d "%~dp0"
 echo Building dist\fsr4\fsr4.exe with PyInstaller ...
 python -m PyInstaller --noconfirm --clean --onedir --name fsr4 --console ^
     --collect-binaries cv2 --exclude-module torch --exclude-module torchvision ^
-    --exclude-module matplotlib --exclude-module PIL --exclude-module tkinter ^
+    --exclude-module matplotlib --exclude-module PIL ^
     run_fsr4.py
 if errorlevel 1 (
     echo Build failed.

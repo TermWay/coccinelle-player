@@ -20,6 +20,8 @@ Radeon RX 9000 card, through Vulkan. The shared rules in `..\CLAUDE.md` apply; t
 - Quality is measured, not eyeballed: `tools/lab_quality.py` downscales a reference, upscales it back and
   reports PSNR against the reference for each flow/jitter setting. Run it before changing a default.
 - Performance figures go in the README table with the command that produced them.
+- The window is checked with `python tools/ui_smoke.py <file> --out out/ui`: it runs a job through the real
+  widgets and saves screenshots to look at. The window pops up on the desktop while it runs.
 
 ## Design notes
 - FSR wants jittered, motion-vectored, depth-tested renders. For video the tool substitutes: depth is a
@@ -28,7 +30,10 @@ Radeon RX 9000 card, through Vulkan. The shared rules in `..\CLAUDE.md` apply; t
   feeding a still image several times were both measured and rejected (README). Keep the substitutions in
   `fsr4/pipeline.py` and `fsr4/flow.py`.
 - Motion vectors are uploaded as 32-bit floats: converting to half floats on the CPU cost more than the flow.
-- The CLI computes the next frame's flow on a worker thread while the current frame is on the GPU; the frame
-  reader double-buffers for that. Keep `Pipeline.process` synchronous and thread-free.
+- `fsr4/job.py` owns the run loop (flow on a worker thread while the current frame is on the GPU; the frame
+  reader double-buffers for that) and is the only thing the CLI and the window call. Keep `Pipeline.process`
+  synchronous and thread-free, and keep the window free of pipeline logic.
+- The window is plain tkinter (stdlib, DPI aware); all package output goes through `fsr4/log.py` so the
+  window can show it. Previews are PNGs rendered by ffmpeg into a temp folder.
 - Resource states told to FSR must match the Vulkan layouts the images are really in (inputs
   `SHADER_READ_ONLY_OPTIMAL`, output `GENERAL`); `Gpu` tracks layouts, use its `cmd_*` helpers.

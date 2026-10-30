@@ -1,40 +1,15 @@
-"""Command line: `fsr4 upscale <image or video>`, `fsr4 info`, `fsr4 selftest`."""
+"""Command line: `fsr4 upscale <image or video>`, `fsr4 ui`, `fsr4 info`, `fsr4 selftest`."""
 from __future__ import annotations
 
 import argparse
 import sys
-import time
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from . import __version__
+from . import __version__, log
 from .ffx import QUALITY_MODE_SCALES, find_sdk_dir
-from .flow import FLOW_METHODS, create_flow
-from .media import ENCODERS, FrameReader, FrameWriter, is_image, probe, read_image, write_image
-from .pipeline import Pipeline
-
-VIDEO_SUFFIX = ".mp4"
-
-
-def even(value: float) -> int:
-    """Round to the nearest even integer (video encoders need even dimensions)."""
-    return max(2, int(round(value / 2)) * 2)
-
-
-def output_size(width: int, height: int, args) -> tuple[int, int]:
-    if args.width or args.height:
-        if args.width and args.height:
-            return even(args.width), even(args.height)
-        if args.width:
-            return even(args.width), even(args.width * height / width)
-        return even(args.height * width / height), even(args.height)
-    scale = args.scale if args.scale else QUALITY_MODE_SCALES[args.mode]
-    return even(width * scale), even(height * scale)
-
-
-def default_output(path: Path) -> Path:
-    suffix = path.suffix if is_image(path) else VIDEO_SUFFIX
-    return path.with_name(f"{path.stem}.fsr4{suffix}")
+from .flow import FLOW_METHODS
+from .job import JobOptions, run_job
+from .media import ENCODERS
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -67,6 +42,9 @@ def build_parser() -> argparse.ArgumentParser:
     upscale.add_argument("--sdk", help="folder holding the FSR DLLs (default: bin/)")
     upscale.add_argument("-q", "--quiet", action="store_true", help="no progress output")
 
+    ui = commands.add_parser("ui", help="open the window")
+    ui.add_argument("input", type=Path, nargs="?", help="file to preselect")
+
     info = commands.add_parser("info", help="list Vulkan devices and the FSR versions available")
     info.add_argument("--sdk", help="folder holding the FSR DLLs (default: bin/)")
     info.add_argument("--gpu", type=int)
@@ -95,86 +73,42 @@ def run_info(args) -> int:
 
 
 def run_upscale(args) -> int:
-    from .gpu import Gpu
-    input_path: Path = args.input
-    if not input_path.is_file():
-        print(f"input not found: {input_path}", file=sys.stderr)
-        return 2
-    sdk_dir = find_sdk_dir(args.sdk)
-    output_path = args.output or default_output(input_path)
-    verbose = not args.quiet
-    image_mode = is_image(input_path)
-    info = probe(input_path)
-    width, height = info.width, info.height
-    out_width, out_height = output_size(width, height, args)
-    scale = out_width / width
-    if not 1.0 <= scale <= 3.0 + 1e-6 or not 1.0 <= out_height / height <= 3.0 + 1e-6:
-        print(f"FSR supports scales from 1x to 3x; {width}x{height} -> {out_width}x{out_height} is {scale:.2f}x",
-              file=sys.stderr)
-        return 2
-    if verbose:
-        print(f"[fsr4] {input_path.name}: {width}x{height} -> {out_width}x{out_height} ({scale:.2f}x), "
-              f"{'image' if image_mode else f'{info.codec} video, {float(info.frame_rate):.3f} fps'}")
+    options = JobOptions(
+        input=args.input, output=args.output, mode=args.mode, scale=args.scale, width=args.width,
+        height=args.height, flow=args.flow, flow_preset=args.flow_preset, flow_scale=args.flow_scale,
+        sharpness=args.sharpness, codec=args.codec, frames=args.frames, debug_view=args.debug_view,
+        debug_checking=args.debug_checking, validate=args.validate, gpu=args.gpu, sdk=args.sdk,
+        verbose=not args.quiet)
 
-    gpu = Gpu(gpu_index=args.gpu, validate=args.validate, verbose=verbose)
-    pipeline = None
+    line_open = False
+
+    def progress(frames_done: int, total: int | None, fps: float) -> None:
+        nonlocal line_open
+        if args.quiet:
+            return
+        remaining = f", {((total - frames_done) / fps):.0f} s left" if total and fps else ""
+        print(f"\r[fsr4] frame {frames_done}{f'/{total}' if total else ''}, {fps:.1f} fps{remaining}   ",
+              end="", file=sys.stderr, flush=True)
+        line_open = True
+
+    def emit(line: str) -> None:
+        nonlocal line_open
+        if line_open:
+            print("", file=sys.stderr, flush=True)
+            line_open = False
+        print(line, flush=True)
+
+    log.set_sink(emit)
     try:
-        flow = create_flow(args.flow if not image_mode else "zero", width, height, args.flow_preset, args.flow_scale)
-        pipeline = Pipeline(gpu, (width, height), (out_width, out_height), sdk_dir, flow,
-                            sharpness=args.sharpness, frame_time_ms=info.frame_time_ms, debug_view=args.debug_view,
-                            debug_checking=args.debug_checking, verbose=verbose)
-        started = time.perf_counter()
-        if image_mode:
-            write_image(output_path, pipeline.process(read_image(input_path)))
-            frames_done = 1
-        else:
-            reader = FrameReader(input_path, info, max_frames=args.frames)
-            writer = FrameWriter(output_path, out_width, out_height, info.frame_rate, args.codec,
-                                 audio_source=input_path if info.has_audio else None)
-            frames_done = 0
-            total = info.frame_count if args.frames is None else min(args.frames, info.frame_count or args.frames)
-            last_report = started
-            try:
-                # Optical flow for the next frame runs on a worker thread while this one is on the GPU and in
-                # the encoder pipe (OpenCV and the Vulkan waits release the GIL). The reader double-buffers,
-                # so `frame` stays valid while `following` is read.
-                def compute_flow(rgba):
-                    flow_started = time.perf_counter()
-                    motion = flow.compute(rgba)
-                    pipeline.timings.add("flow (worker thread)", time.perf_counter() - flow_started)
-                    return motion
-
-                with ThreadPoolExecutor(max_workers=1) as executor:
-                    frames = iter(reader)
-                    frame = next(frames, None)
-                    pending = executor.submit(compute_flow, frame) if frame is not None else None
-                    while frame is not None:
-                        motion = pending.result()
-                        following = next(frames, None)
-                        pending = executor.submit(compute_flow, following) if following is not None else None
-                        writer.write(pipeline.process(frame, motion))
-                        frame = following
-                        frames_done += 1
-                        now = time.perf_counter()
-                        if verbose and now - last_report >= 1.0:
-                            fps = frames_done / (now - started)
-                            remaining = f", {((total - frames_done) / fps):.0f} s left" if total and fps else ""
-                            print(f"\r[fsr4] frame {frames_done}{f'/{total}' if total else ''}, {fps:.1f} fps{remaining}   ",
-                                  end="", file=sys.stderr, flush=True)
-                            last_report = now
-            finally:
-                writer.close()
-            if verbose:
-                print("", file=sys.stderr)
-        elapsed = time.perf_counter() - started
-        if verbose:
-            print(f"[fsr4] wrote {output_path} ({frames_done} frames in {elapsed:.1f} s, {frames_done / elapsed:.1f} fps)")
-            print(f"[fsr4] {pipeline.timings.summary()}")
-        return 0
+        result = run_job(options, progress=progress)
+    except ValueError as error:
+        print(str(error), file=sys.stderr)
+        return 2
     finally:
-        if pipeline is not None:
-            pipeline.destroy()
-        gpu.destroy()
+        log.set_sink(None)
+        if line_open:
+            print("", file=sys.stderr)
+    return 0 if result.frames else 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -184,6 +118,9 @@ def main(argv: list[str] | None = None) -> int:
         return run(validate=args.validate)
     if args.command == "info":
         return run_info(args)
+    if args.command == "ui":
+        from .ui import run_ui
+        return run_ui(args.input)
     return run_upscale(args)
 
 
