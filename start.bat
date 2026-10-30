@@ -30,7 +30,11 @@ if "%INPUT%"=="" exit /b 0
 set "INPUT=%INPUT:"=%"
 
 :run
-python -m fsr4 upscale "%INPUT%" %2 %3 %4 %5 %6 %7 %8 %9
+if exist "dist\fsr4\fsr4.exe" (
+    "dist\fsr4\fsr4.exe" upscale "%INPUT%" %2 %3 %4 %5 %6 %7 %8 %9
+) else (
+    python -m fsr4 upscale "%INPUT%" %2 %3 %4 %5 %6 %7 %8 %9
+)
 if errorlevel 1 (
     echo.
     echo Upscaling failed, see the messages above.

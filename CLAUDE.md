@@ -22,9 +22,13 @@ Radeon RX 9000 card, through Vulkan. The shared rules in `..\CLAUDE.md` apply; t
 - Performance figures go in the README table with the command that produced them.
 
 ## Design notes
-- FSR wants jittered, motion-vectored, depth-tested renders. For video the tool fakes them: depth is a constant
-  plane, motion vectors come from DIS optical flow (current to previous, in pixels, which is FSR's convention),
-  and "fake jitter" resamples the input on FSR's Halton offsets. Keep these three substitutions isolated in
+- FSR wants jittered, motion-vectored, depth-tested renders. For video the tool substitutes: depth is a
+  constant plane, motion vectors come from DIS optical flow (current to previous, in pixels, which is FSR's
+  convention, verified by the lab's negated run), jitter is zero. Faking jitter by resampling the input and
+  feeding a still image several times were both measured and rejected (README). Keep the substitutions in
   `fsr4/pipeline.py` and `fsr4/flow.py`.
+- Motion vectors are uploaded as 32-bit floats: converting to half floats on the CPU cost more than the flow.
+- The CLI computes the next frame's flow on a worker thread while the current frame is on the GPU; the frame
+  reader double-buffers for that. Keep `Pipeline.process` synchronous and thread-free.
 - Resource states told to FSR must match the Vulkan layouts the images are really in (inputs
   `SHADER_READ_ONLY_OPTIMAL`, output `GENERAL`); `Gpu` tracks layouts, use its `cmd_*` helpers.

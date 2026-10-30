@@ -21,7 +21,9 @@ FILES = {
     "license.md": "Kits/FidelityFX/docs/license.md",
 }
 SHA256 = {
-    # filled in after the first download; see README
+    "amd_fidelityfx_loader_vk.dll": "38a56a01fb3565c0757d9f5c1e4e69de4b65e5f2e5769b323b200dc1f142bab9",
+    "amd_fidelityfx_upscaler_vk.dll": "4a7e895af6e0b615d40a84d59eb8c2b1054ad91cdd0c739567940270d51bdab7",
+    "license.md": "32357259b965d6a8001e9e508ba60eda6034027c5923a7d226ffbaff813c2bfb",
 }
 DESTINATION = Path(__file__).resolve().parent.parent / "bin"
 

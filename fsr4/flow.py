@@ -2,8 +2,8 @@
 
 FSR wants, per render-resolution pixel, the 2D offset from that pixel to where the same content was in the
 previous frame, in pixels. `DisFlow` computes exactly that with OpenCV's DIS optical flow (current -> previous).
-`ZeroFlow` is the no-motion baseline. Results are float16 arrays of shape (height, width, 2), ready to
-upload as an R16G16_SFLOAT image.
+`ZeroFlow` is the no-motion baseline. Results are float32 arrays of shape (height, width, 2), uploaded as an
+R32G32_SFLOAT image (converting to half floats on the CPU costs more than the flow itself).
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ class ZeroFlow:
     name = "zero"
 
     def __init__(self, width: int, height: int):
-        self._zeros = np.zeros((height, width, 2), dtype=np.float16)
+        self._zeros = np.zeros((height, width, 2), dtype=np.float32)
 
     def reset(self) -> None:
         """Forget the previous frame (the next frame starts a new sequence)."""
@@ -51,7 +51,7 @@ class DisFlow:
         self.flow = cv2.DISOpticalFlow_create(presets[preset])
         self.flow.setUseSpatialPropagation(True)
         self._previous_gray: np.ndarray | None = None
-        self._result = np.zeros((height, width, 2), dtype=np.float16)
+        self._zeros = np.zeros((height, width, 2), dtype=np.float32)
 
     def _gray(self, rgba: np.ndarray) -> np.ndarray:
         gray = self.cv2.cvtColor(rgba, self.cv2.COLOR_RGBA2GRAY)
@@ -69,14 +69,13 @@ class DisFlow:
         current_gray = self._gray(current_rgba)
         if self._previous_gray is None:
             self._previous_gray = current_gray
-            self._result[...] = 0
-            return self._result
+            return self._zeros
         flow = self.flow.calc(current_gray, self._previous_gray, None)
         self._previous_gray = current_gray
         if self.scale > 1:
-            flow = self.cv2.resize(flow, (self.width, self.height), interpolation=self.cv2.INTER_LINEAR) * self.scale
-        np.copyto(self._result, flow, casting="same_kind")
-        return self._result
+            flow = self.cv2.resize(flow, (self.width, self.height), interpolation=self.cv2.INTER_LINEAR)
+            flow *= self.scale
+        return flow
 
 
 def create_flow(method: str, width: int, height: int, preset: str = "fast", scale: int = 1):

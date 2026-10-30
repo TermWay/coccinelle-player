@@ -89,7 +89,11 @@ def _popen(command: list[str], **kwargs) -> subprocess.Popen:
 
 
 class FrameReader:
-    """Yields RGBA uint8 frames of shape (height, width, 4) decoded by ffmpeg."""
+    """Yields RGBA uint8 frames of shape (height, width, 4) decoded by ffmpeg.
+
+    Frames alternate between two buffers, so the frame from the previous iteration stays valid while the
+    next one is being read (the flow worker needs that); anything older is overwritten.
+    """
 
     def __init__(self, path: Path, info: MediaInfo, max_frames: int | None = None):
         self.info = info
@@ -100,7 +104,8 @@ class FrameReader:
             command += ["-frames:v", str(max_frames)]
         command.append("-")
         self.process = _popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        self._buffer = bytearray(self.frame_bytes)
+        self._buffers = [bytearray(self.frame_bytes), bytearray(self.frame_bytes)]
+        self._next_buffer = 0
 
     def __iter__(self):
         while True:
@@ -111,7 +116,9 @@ class FrameReader:
         self.close()
 
     def _read_frame(self):
-        view = memoryview(self._buffer)
+        buffer = self._buffers[self._next_buffer]
+        self._next_buffer ^= 1
+        view = memoryview(buffer)
         filled = 0
         while filled < self.frame_bytes:
             count = self.process.stdout.readinto(view[filled:])
@@ -122,7 +129,7 @@ class FrameReader:
             return None
         if filled != self.frame_bytes:
             raise RuntimeError(f"ffmpeg stopped mid-frame ({filled} of {self.frame_bytes} bytes)")
-        return np.frombuffer(self._buffer, dtype=np.uint8).reshape(self.info.height, self.info.width, 4)
+        return np.frombuffer(buffer, dtype=np.uint8).reshape(self.info.height, self.info.width, 4)
 
     def close(self) -> None:
         self.process.stdout.close()
@@ -151,7 +158,7 @@ class FrameWriter:
         command += ENCODERS[encoder]
         if encoder != "png":
             command += ["-pix_fmt", "yuv420p"]
-        command += ["-shortest", str(path)]
+        command.append(str(path))
         self.process = _popen(command, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
 
     def write(self, frame: np.ndarray) -> None:

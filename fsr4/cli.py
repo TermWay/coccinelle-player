@@ -4,13 +4,14 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from . import __version__
 from .ffx import QUALITY_MODE_SCALES, find_sdk_dir
 from .flow import FLOW_METHODS, create_flow
 from .media import ENCODERS, FrameReader, FrameWriter, is_image, probe, read_image, write_image
-from .pipeline import JITTER_MODES, Pipeline
+from .pipeline import Pipeline
 
 VIDEO_SUFFIX = ".mp4"
 
@@ -55,10 +56,6 @@ def build_parser() -> argparse.ArgumentParser:
                          help="DIS optical flow preset (default: fast)")
     upscale.add_argument("--flow-scale", type=int, default=1,
                          help="compute optical flow at 1/N resolution (default: 1)")
-    upscale.add_argument("--jitter", choices=JITTER_MODES, default="fake",
-                         help="fake: resample the input on FSR's jitter sequence (needs opencv); none: no jitter")
-    upscale.add_argument("--passes", type=int, default=8,
-                         help="for images: feed the frame this many times so FSR accumulates (default: 8)")
     upscale.add_argument("--sharpness", type=float, help="RCAS sharpening 0..1 (default: off)")
     upscale.add_argument("--codec", choices=sorted(ENCODERS), default="amf",
                          help="video encoder: amf (HEVC on the GPU), h264_amf, x264, x265 (default: amf)")
@@ -68,7 +65,6 @@ def build_parser() -> argparse.ArgumentParser:
     upscale.add_argument("--validate", action="store_true", help="enable the Vulkan validation layer")
     upscale.add_argument("--gpu", type=int, help="Vulkan device index (default: the discrete AMD GPU)")
     upscale.add_argument("--sdk", help="folder holding the FSR DLLs (default: bin/)")
-    upscale.add_argument("--jitter-sign", type=float, default=-1.0, help=argparse.SUPPRESS)
     upscale.add_argument("-q", "--quiet", action="store_true", help="no progress output")
 
     info = commands.add_parser("info", help="list Vulkan devices and the FSR versions available")
@@ -124,17 +120,13 @@ def run_upscale(args) -> int:
     pipeline = None
     try:
         flow = create_flow(args.flow if not image_mode else "zero", width, height, args.flow_preset, args.flow_scale)
-        pipeline = Pipeline(gpu, (width, height), (out_width, out_height), sdk_dir, flow, jitter_mode=args.jitter,
+        pipeline = Pipeline(gpu, (width, height), (out_width, out_height), sdk_dir, flow,
                             sharpness=args.sharpness, frame_time_ms=info.frame_time_ms, debug_view=args.debug_view,
-                            debug_checking=args.debug_checking, verbose=verbose, jitter_sign=args.jitter_sign)
+                            debug_checking=args.debug_checking, verbose=verbose)
         started = time.perf_counter()
         if image_mode:
-            frame = read_image(input_path)
-            passes = max(1, args.passes)
-            for _ in range(passes):
-                result = pipeline.process(frame)
-            write_image(output_path, result)
-            frames_done = passes
+            write_image(output_path, pipeline.process(read_image(input_path)))
+            frames_done = 1
         else:
             reader = FrameReader(input_path, info, max_frames=args.frames)
             writer = FrameWriter(output_path, out_width, out_height, info.frame_rate, args.codec,
@@ -143,16 +135,33 @@ def run_upscale(args) -> int:
             total = info.frame_count if args.frames is None else min(args.frames, info.frame_count or args.frames)
             last_report = started
             try:
-                for frame in reader:
-                    writer.write(pipeline.process(frame))
-                    frames_done += 1
-                    now = time.perf_counter()
-                    if verbose and now - last_report >= 1.0:
-                        fps = frames_done / (now - started)
-                        remaining = f", {((total - frames_done) / fps):.0f} s left" if total and fps else ""
-                        print(f"\r[fsr4] frame {frames_done}{f'/{total}' if total else ''}, {fps:.1f} fps{remaining}   ",
-                              end="", file=sys.stderr, flush=True)
-                        last_report = now
+                # Optical flow for the next frame runs on a worker thread while this one is on the GPU and in
+                # the encoder pipe (OpenCV and the Vulkan waits release the GIL). The reader double-buffers,
+                # so `frame` stays valid while `following` is read.
+                def compute_flow(rgba):
+                    flow_started = time.perf_counter()
+                    motion = flow.compute(rgba)
+                    pipeline.timings.add("flow (worker thread)", time.perf_counter() - flow_started)
+                    return motion
+
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    frames = iter(reader)
+                    frame = next(frames, None)
+                    pending = executor.submit(compute_flow, frame) if frame is not None else None
+                    while frame is not None:
+                        motion = pending.result()
+                        following = next(frames, None)
+                        pending = executor.submit(compute_flow, following) if following is not None else None
+                        writer.write(pipeline.process(frame, motion))
+                        frame = following
+                        frames_done += 1
+                        now = time.perf_counter()
+                        if verbose and now - last_report >= 1.0:
+                            fps = frames_done / (now - started)
+                            remaining = f", {((total - frames_done) / fps):.0f} s left" if total and fps else ""
+                            print(f"\r[fsr4] frame {frames_done}{f'/{total}' if total else ''}, {fps:.1f} fps{remaining}   ",
+                                  end="", file=sys.stderr, flush=True)
+                            last_report = now
             finally:
                 writer.close()
             if verbose:

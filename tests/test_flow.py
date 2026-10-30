@@ -19,7 +19,7 @@ class FlowTest(unittest.TestCase):
         provider = flow.create_flow("zero", 32, 16)
         vectors = provider.compute(np.zeros((16, 32, 4), dtype=np.uint8))
         self.assertEqual(vectors.shape, (16, 32, 2))
-        self.assertEqual(vectors.dtype, np.float16)
+        self.assertEqual(vectors.dtype, np.float32)
         self.assertEqual(float(np.abs(vectors).max()), 0.0)
 
     def test_dis_flow_sign_and_magnitude(self):
@@ -28,7 +28,7 @@ class FlowTest(unittest.TestCase):
         except ImportError:
             self.skipTest("opencv-python not installed")
         width, height, shift = 256, 128, 5
-        previous = textured_image(width + 2 * shift, height)
+        previous = textured_image(width + 4 * shift, height)
         current = np.ascontiguousarray(previous[:, 2 * shift:2 * shift + width])
         previous = np.ascontiguousarray(previous[:, shift:shift + width])
         # The content in `current` sits `shift` pixels further left than in `previous`:

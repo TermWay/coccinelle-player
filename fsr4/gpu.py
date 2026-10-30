@@ -27,6 +27,7 @@ BYTES_PER_PIXEL = {
     T.VK_FORMAT_R8G8B8A8_UNORM: 4,
     T.VK_FORMAT_R8G8B8A8_SRGB: 4,
     T.VK_FORMAT_R16G16_SFLOAT: 4,
+    T.VK_FORMAT_R32G32_SFLOAT: 8,
     T.VK_FORMAT_R32_SFLOAT: 4,
     T.VK_FORMAT_R16G16B16A16_SFLOAT: 8,
 }
@@ -295,8 +296,12 @@ class Gpu:
         self._images.append(image)
         return image
 
-    def create_staging_buffer(self, size: int) -> Buffer:
-        """Create a host-visible, host-coherent buffer usable as a copy source and destination."""
+    def create_staging_buffer(self, size: int, readback: bool = False) -> Buffer:
+        """Create a host-visible, host-coherent buffer usable as a copy source and destination.
+
+        A readback buffer asks for host-cached memory: reading uncached (write-combined) memory from the
+        CPU is an order of magnitude slower than reading cached system memory.
+        """
         info = T.VkBufferCreateInfo(
             sType=T.VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, size=size,
             usage=T.VK_BUFFER_USAGE_TRANSFER_SRC_BIT | T.VK_BUFFER_USAGE_TRANSFER_DST_BIT,
@@ -305,8 +310,14 @@ class Gpu:
         vk.check(vk.vkCreateBuffer(self.device, byref(info), None, byref(handle)), "vkCreateBuffer")
         requirements = T.VkMemoryRequirements()
         vk.vkGetBufferMemoryRequirements(self.device, handle.value, byref(requirements))
-        memory = self._allocate(
-            requirements, T.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | T.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+        properties = T.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | T.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+        if readback:
+            try:
+                memory = self._allocate(requirements, properties | T.VK_MEMORY_PROPERTY_HOST_CACHED_BIT)
+            except RuntimeError:
+                memory = self._allocate(requirements, properties)
+        else:
+            memory = self._allocate(requirements, properties)
         vk.check(vk.vkBindBufferMemory(self.device, handle.value, memory, 0), "vkBindBufferMemory")
         mapped = c_void_p()
         vk.check(vk.vkMapMemory(self.device, memory, 0, T.VK_WHOLE_SIZE, 0, byref(mapped)), "vkMapMemory")
