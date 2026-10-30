@@ -20,8 +20,11 @@ Radeon RX 9000 card, through Vulkan. The shared rules in `..\CLAUDE.md` apply; t
 - Quality is measured, not eyeballed: `tools/lab_quality.py` downscales a reference, upscales it back and
   reports PSNR against the reference for each flow/jitter setting. Run it before changing a default.
 - Performance figures go in the README table with the command that produced them.
-- The window is checked with `python tools/ui_smoke.py <file> --out out/ui`: it runs a job through the real
-  widgets and saves screenshots to look at. The window pops up on the desktop while it runs.
+- The window is checked with `python tools/ui_smoke.py --video <clip> --image <png> --out out/ui`: it drives
+  every state through the real widgets (including a real WM_DROPFILES drop, the dropdown and the file dialog)
+  and saves PrintWindow screenshots to look at. The window pops up on the desktop while it runs.
+- `tests/test_formats.py` builds one small file per container/codec family with ffmpeg and round-trips it;
+  add a case there when a new kind of file misbehaves.
 
 ## Design notes
 - FSR wants jittered, motion-vectored, depth-tested renders. For video the tool substitutes: depth is a
@@ -33,7 +36,15 @@ Radeon RX 9000 card, through Vulkan. The shared rules in `..\CLAUDE.md` apply; t
 - `fsr4/job.py` owns the run loop (flow on a worker thread while the current frame is on the GPU; the frame
   reader double-buffers for that) and is the only thing the CLI and the window call. Keep `Pipeline.process`
   synchronous and thread-free, and keep the window free of pipeline logic.
-- The window is plain tkinter (stdlib, DPI aware); all package output goes through `fsr4/log.py` so the
-  window can show it. Previews are PNGs rendered by ffmpeg into a temp folder.
+- The window is plain tkinter (stdlib, DPI aware) with a custom dark ttk theme in `fsr4/ui_theme.py`: controls
+  are 9-slice image elements drawn by `fsr4/ui_art.py`. Image elements composite over the style's background,
+  so every style sets `background` (and maps it for disabled/active/pressed) to its container's colour, and
+  sets the element `padding=0` so the style padding alone sizes it. Sizes go through `Theme.px` (DPI).
+- All package output goes through `fsr4/log.py` so the window can show it. Previews come from the job's
+  `preview` callback (copies of the input and output frames, twice a second), never from re-reading files.
+- Media rules (`fsr4/media.py`): pick the first video stream that is not an attached picture; decode untagged
+  HD as BT.709; read video at a constant rate; encode with BT.709 tags via `setparams` (ffmpeg takes encoder
+  tags from the frames); copy only MP4-safe audio (`MP4_AUDIO_COPY`), re-encode the rest to AAC; drain
+  ffmpeg's stderr on a thread.
 - Resource states told to FSR must match the Vulkan layouts the images are really in (inputs
   `SHADER_READ_ONLY_OPTIMAL`, output `GENERAL`); `Gpu` tracks layouts, use its `cmd_*` helpers.

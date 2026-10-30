@@ -1,8 +1,8 @@
 # FSR4 upscaler
 
 Upscales an image or a video with **AMD FSR Upscaling 4** (the RDNA 4 machine-learning upscaler, FSR SDK 2.4,
-upscaler 4.1.2) on a Radeon RX 9000 series card, from the command line, the packaged `fsr4.exe`, or by
-dropping a file on `upscale.bat`.
+upscaler 4.1.2) on a Radeon RX 9000 series card: in a dark desktop window that compares the result with a
+plain upscale as it runs, from the command line, or by dropping a file on `upscale.bat`.
 
 FSR 4 is a game upscaler: it expects a low-resolution render plus depth, per-pixel motion vectors and a
 sub-pixel camera jitter every frame. A video file has none of those, so this tool substitutes:
@@ -23,12 +23,19 @@ sub-pixel camera jitter every frame. A video file has none of those, so this too
   downloads them from AMD's GitHub, tag v2.4.0, hashes pinned).
 
 ## Use
-**Window:** double-click `fsr4.exe` (or `start.bat`, the Play button). Pick a file, choose the scale, the
-motion vectors and the encoder, press Upscale. The window shows the input, the progress with fps and time
-left, the log, and when the job is done a 100% crop of the result next to the same crop enlarged without
-FSR. Cancel keeps what was written so far. `fsr4.exe ui photo.png` opens it with a file preselected.
+**Window:** double-click `FSR4 Upscaler.exe` (or `start.bat`, the Play button), or drop a file on its icon.
+- Drop a video or an image anywhere on the window, click the empty preview, or use Choose file (Ctrl+O).
+- Size: 1.5×, 2×, 3×, 1440p or 4K (the short side; chips that would leave FSR's 1×–3× range are disabled), or
+  Custom with a slider. The sidebar shows the output size, what happens to each audio track and the encoder.
+- Upscale (Ctrl+Enter) starts the job; the progress bar, fps and time left are in the footer and the title
+  bar. Cancel (Esc) keeps what was written so far.
+- The preview turns into a live comparison twice a second while it runs: a bicubic upscale of the same frame
+  on the left of the divider, FSR 4 on the right, at 100% (or 200/400/800%, mouse wheel). Drag to move the
+  divider; right-drag or the minimap moves the visible area; double-click returns to 100%.
+- When it is done, Open plays the file and Show in folder selects it. Show log (Ctrl+L) has the details;
+  errors appear in a red banner and open the log.
 
-**Drag and drop:** drop a file on `upscale.bat` for a 2x upscale with no questions asked.
+**Drag and drop on a script:** drop a file on `upscale.bat` for a 2x upscale with no questions asked.
 
 **Command line:**
 ```
@@ -41,12 +48,29 @@ fsr4 info                                   # GPU, extensions, FSR versions offe
 fsr4 selftest --validate                    # Vulkan round trip under the validation layer
 ```
 From the source tree, `python -m fsr4 ...` is the same (`python -m fsr4 ui` for the window). `start.bat` and
-`upscale.bat` use `dist\fsr4\fsr4.exe` when it exists, else Python. `build_exe.bat` builds the exe into
-`dist\fsr4\` with PyInstaller (about 205 MB, mostly OpenCV and numpy; the FSR DLLs are copied into `bin\`).
+`upscale.bat` use the executables in `dist\fsr4\` when they exist, else Python. `build_exe.bat` builds them
+with PyInstaller from `fsr4.spec`: `FSR4 Upscaler.exe` (window, no console) and `fsr4.exe` (command line)
+share one folder of about 210 MB, mostly OpenCV and numpy; the FSR DLLs are copied into `bin\`.
 
 Scale is 1x to 3x (FSR's limit); the modes are native 1x, quality 1.5x, balanced 1.7x, performance 2x,
 ultra 3x. `--sharpness 0..1` enables FSR's RCAS pass. Video encoders: `amf` (HEVC on the GPU, default),
 `h264_amf`, `x264`, `x265`.
+
+## Files
+Anything ffmpeg decodes: MP4, MKV, MOV, AVI, WMV/ASF, WebM, MPEG-1/2 (MPG, VOB, TS, M2TS), FLV, 3GP, OGV, MXF,
+DV, RealMedia, Y4M; images PNG, JPEG, BMP, TIFF, WebP, EXR, GIF (first frame). `tests/test_formats.py`
+round-trips a sample of each family. What the tool does to make them come out right:
+- **The real video stream** is upscaled, never a cover picture (WMV files from Windows Movie Maker and many
+  MP4/MKV files carry a JPEG thumbnail as a video stream).
+- **Audio**: every track is kept. AAC, MP3, AC-3, E-AC-3 and ALAC are copied into the MP4; WMA, PCM, Vorbis,
+  Opus, FLAC, MP2 and the rest are converted to AAC (96 kb/s per channel), because MP4 cannot hold them or
+  common players cannot play them there. Save as `.mkv` to copy every track as is. Subtitles are dropped.
+- **Colour**: YUV is decoded with the file's own matrix, or BT.709 for untagged HD as players assume, and the
+  output is encoded with BT.709 and tagged. Earlier outputs were BT.601 and untagged, which players showed
+  with saturated colours off by up to 35 levels; the round trip is now within 2 levels.
+- **Frame rate**: variable-rate sources (phones, screen recorders) are read at a constant rate, ffmpeg's own
+  choice for the file, so the video stays in sync with the audio.
+- **Rotation**: portrait phone videos are turned upright, with the output size swapped accordingly.
 
 ## Measured on an RX 9070 XT
 End to end (decode, flow, upscale, encode), `--flow dis` with the default `fast` preset, HEVC AMF output:
@@ -80,16 +104,21 @@ recordings the FSR output is a touch crisper than Lanczos on text, with no visib
 - `fsr4/vk.py`, `fsr4/vk_types.py`, `fsr4/gpu.py`: ctypes Vulkan binding, generated structs, device and copies.
 - `fsr4/ffx.py`: the FSR API (`amd_fidelityfx_loader_vk.dll`) and the upscaling context.
 - `fsr4/media.py`: ffmpeg frame reader and writer. `fsr4/flow.py`: motion vectors. `fsr4/pipeline.py`: a frame.
-- `fsr4/job.py`: one job with progress and cancel, shared by `fsr4/cli.py` (command line) and `fsr4/ui.py`
-  (tkinter window); `run_fsr4.py`: the exe entry point (no arguments opens the window).
+- `fsr4/job.py`: one job with progress, live preview and cancel, shared by `fsr4/cli.py` (command line) and
+  `fsr4/ui.py` (the window); `run_fsr4.py`: the entry point of both executables.
+- The window: `fsr4/ui_theme.py` (palette, fonts, ttk styles made of anti-aliased images, dark title bar and
+  dialogs), `fsr4/ui_art.py` (numpy drawing, PNG/PPM/ICO encoding, the app icon), `fsr4/ui_compare.py` (the
+  comparison view), `fsr4/ui_dnd.py` (files dropped from Explorer). Plain tkinter, no extra package.
 - `tools/gen_vk_types.py`: regenerates the Vulkan structs from `third_party/vulkan_core.h`.
 - `tools/fetch_sdk.py`: downloads the FSR DLLs. `tools/lab_quality.py`: the PSNR lab.
-- `tools/ui_smoke.py`: drives the window on a file and screenshots it before, during and after the job.
+- `tools/ui_smoke.py`: drives the window through every state (drop, load, dropdown, file dialog, live
+  preview, result, zoom and log, image, error, minimum size) and screenshots each with
+  `tools/window_capture.py`.
 - `tests/`: `python -m unittest discover -s tests`.
 
 ## Limits
 - No jitter and no real depth means FSR 4 works mostly as a very good spatial upscaler with temporal
   stabilisation; it cannot reconstruct the sub-pixel detail it recovers in games.
-- Input is processed as 8-bit sRGB; HDR video is not handled.
+- Input is processed as 8-bit sRGB; HDR video is not handled, and interlaced video is not deinterlaced.
 - The FSR DLLs are AMD's signed binaries under the FSR SDK license (`bin/license.md`), redistributable in
   binary form with that notice.

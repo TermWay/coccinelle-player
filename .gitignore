@@ -3,6 +3,5 @@ __pycache__/
 bin/*.dll
 build/
 dist/
-*.spec
 out/
 *.fsr4.*

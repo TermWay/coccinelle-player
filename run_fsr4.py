@@ -1,11 +1,14 @@
-"""Entry point for the packaged exe (PyInstaller cannot start a package's `__main__` directly).
+"""Entry point of both packaged executables (PyInstaller cannot start a package's `__main__` directly).
 
-With no arguments (a double click) it opens the window and hides the console it was given; with arguments
-it is the command line (`fsr4.exe upscale clip.mp4`, `fsr4.exe ui photo.png`, ...).
+"FSR4 Upscaler.exe" has no console; fsr4.exe has one. Either opens the window when started with no arguments
+(a double click) or with a single existing file (a file dropped on the exe icon, or "Open with"); fsr4.exe
+hides the console it was given in that case. Any other arguments are the command line
+(`fsr4.exe upscale clip.mp4`, `fsr4.exe info`, ...).
 """
 import ctypes
 import os
 import sys
+from pathlib import Path
 
 from fsr4.cli import main
 
@@ -24,7 +27,8 @@ def hide_own_console() -> None:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) == 1:
+    arguments = sys.argv[1:]
+    if not arguments or (len(arguments) == 1 and Path(arguments[0]).is_file()):
         hide_own_console()
-        sys.exit(main(["ui"]))
+        sys.exit(main(["ui", *arguments]))
     sys.exit(main())

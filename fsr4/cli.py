@@ -102,8 +102,11 @@ def run_upscale(args) -> int:
     try:
         result = run_job(options, progress=progress)
     except ValueError as error:
-        print(str(error), file=sys.stderr)
+        print(f"fsr4: {error}", file=sys.stderr)
         return 2
+    except (RuntimeError, FileNotFoundError) as error:
+        print(f"fsr4: {error}", file=sys.stderr)
+        return 1
     finally:
         log.set_sink(None)
         if line_open:

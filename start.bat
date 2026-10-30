@@ -2,8 +2,8 @@
 title FSR4 upscaler
 cd /d "%~dp0"
 
-if exist "dist\fsr4\fsr4.exe" (
-    start "" "dist\fsr4\fsr4.exe" ui %1
+if exist "dist\fsr4\FSR4 Upscaler.exe" (
+    start "" "dist\fsr4\FSR4 Upscaler.exe" %1
     exit /b 0
 )
 
