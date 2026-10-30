@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+bin/*.dll
+build/
+dist/
+*.spec
+out/
+*.fsr4.*
