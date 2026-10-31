@@ -23,6 +23,14 @@ sub-pixel camera jitter every frame. A video file has none of those, so this too
   (without it, `--flow zero` still works), and the FSR SDK DLLs in `bin/` (`python tools/fetch_sdk.py`
   downloads them from AMD's GitHub, tag v2.4.0, hashes pinned).
 
+## Platforms
+- **Windows:** supported. Tested on Windows 11 with an RX 9070 XT; the RX 7000 and RX 6000 series run FSR 4's
+  INT8 model according to AMD, not tested here.
+- **Linux:** not supported yet. AMD ships FSR 4 only as signed Windows DLLs, and the window draws, plays sound,
+  takes dropped files and goes full screen through Win32. The Windows build may run under Wine or Proton;
+  untested.
+- **macOS:** not supported. AMD ships FSR 4 for Windows only, and Apple silicon Macs have no Radeon.
+
 ## Use
 **Window:** double-click `FSR4 Upscaler.exe` (or `start.bat`, the Play button), or drop a file on its icon.
 - Drop a video or an image anywhere on the window, click the empty preview, or use Choose file (Ctrl+O).
@@ -271,5 +279,16 @@ recordings the FSR output is a touch crisper than Lanczos on text, with no visib
 - Input is processed as 8-bit sRGB; HDR video is not handled, and interlaced video is not deinterlaced.
 - The player plays the first audio track; the saved file keeps every track. Pieces live in a temporary folder
   (about 10 MB per second of 4K) until the file is closed; folders left by a crash are removed a day later.
-- The FSR DLLs are AMD's signed binaries under the FSR SDK license (`bin/license.md`), redistributable in
-  binary form with that notice.
+
+## License
+MIT (`LICENSE`) for this project. What it builds on keeps its own license:
+- `third_party/ffx/`: AMD's FSR API headers, MIT. `third_party/vulkan_core.h`: Khronos, Apache-2.0 or MIT.
+- The FSR DLLs (downloaded into `bin/`, not in the repository): AMD's signed binaries under the FSR SDK license
+  (`bin/license.md`), redistributable in binary form with that notice, which the exe ships next to them.
+- ffmpeg is not included: it runs as a separate program under its own license.
+
+Not affiliated with AMD. AMD, Radeon and FidelityFX are trademarks of Advanced Micro Devices, Inc.
+
+## Credits
+Written by Claude (Anthropic's AI model) in Claude Code: the code, the tests and this README. Directed and tested
+by TermWay.

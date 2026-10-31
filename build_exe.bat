@@ -14,6 +14,7 @@ copy /y "bin\amd_fidelityfx_loader_vk.dll" "dist\fsr4\bin\" >nul
 copy /y "bin\amd_fidelityfx_upscaler_vk.dll" "dist\fsr4\bin\" >nul
 copy /y "bin\license.md" "dist\fsr4\bin\" >nul
 copy /y "README.md" "dist\fsr4\" >nul
+copy /y "LICENSE" "dist\fsr4\LICENSE.txt" >nul
 echo.
 echo Done: dist\fsr4\FSR4 Upscaler.exe  (ffmpeg.exe and ffprobe.exe must be on PATH or copied next to it)
 pause
