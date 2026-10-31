@@ -2,7 +2,8 @@
 
 waveOut (winmm, part of every Windows) is driven with ctypes: a feeder thread keeps a few short buffers queued,
 `position()` reads how many samples the device has played, which is the clock the video follows. Pause and
-resume act on the device at once; a seek resets it and restarts the decoder at the new time.
+resume act on the device at once; a seek resets it and restarts the decoder at the new time. Played faster or
+slower, ffmpeg's atempo filter changes the tempo and keeps the pitch.
 """
 from __future__ import annotations
 
@@ -160,13 +161,28 @@ class WaveOut:
         self._check(result, "close the audio output")
 
 
-def audio_command(path: Path, track: int, seconds: float) -> list[str]:
-    """ffmpeg decoding audio track `track` of `path` from `seconds` to raw 48 kHz stereo 16-bit PCM."""
+def tempo_filter(speed: float) -> str:
+    """ffmpeg's atempo chain playing at `speed` with the pitch kept (each atempo takes 0.5 to 2)."""
+    steps = []
+    while speed < 0.5:
+        steps.append(0.5)
+        speed /= 0.5
+    while speed > 2.0:
+        steps.append(2.0)
+        speed /= 2.0
+    return ",".join(f"atempo={step:.6g}" for step in steps + [speed])
+
+
+def audio_command(path: Path, track: int, seconds: float, speed: float = 1.0) -> list[str]:
+    """ffmpeg decoding audio track `track` of `path` from `seconds`, at `speed`, to raw 48 kHz stereo 16-bit
+    PCM."""
     command = [tool_path("ffmpeg"), "-v", "error", "-nostdin"]
     if seconds > 0:
         command += ["-ss", f"{seconds:.6f}"]
-    return command + ["-i", str(path), "-map", f"0:a:{track}", "-vn", "-sn", "-dn", "-ac", str(CHANNELS),
-                      "-ar", str(SAMPLE_RATE), "-f", "s16le", "-"]
+    command += ["-i", str(path), "-map", f"0:a:{track}", "-vn", "-sn", "-dn"]
+    if speed != 1.0:
+        command += ["-af", tempo_filter(speed)]
+    return command + ["-ac", str(CHANNELS), "-ar", str(SAMPLE_RATE), "-f", "s16le", "-"]
 
 
 def leading_silence(info: MediaInfo, track: int, seconds: float) -> int:
@@ -185,14 +201,16 @@ class AudioPlayer:
         self.track = track
         self.device = WaveOut()
         self.origin = 0.0
+        self.speed = 1.0
         self.error: Exception | None = None
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._process: subprocess.Popen | None = None
 
-    def start(self, seconds: float, paused: bool = False) -> None:
-        """Play from `seconds` (from the file start); `paused` queues the sound without starting it."""
+    def start(self, seconds: float, speed: float = 1.0, paused: bool = False) -> None:
+        """Play from `seconds` (from the file start) at `speed` (0.25 to 4: tempo changed, pitch kept); `paused`
+        queues the sound without starting it."""
         self._halt()
         with self._lock:
             self.device.reset()
@@ -202,11 +220,12 @@ class AudioPlayer:
             else:
                 self.device.resume()
             self.origin = seconds
+            self.speed = speed
             self.error = None
             self._stop = threading.Event()
-            silence = leading_silence(self.info, self.track, seconds)
+            silence = int(round(leading_silence(self.info, self.track, seconds) / speed))
             decode_from = max(0.0, seconds)
-            self._process = _popen(audio_command(self.path, self.track, decode_from), stdout=subprocess.PIPE,
+            self._process = _popen(audio_command(self.path, self.track, decode_from, speed), stdout=subprocess.PIPE,
                                    stderr=subprocess.PIPE)
             self._thread = threading.Thread(target=self._feed, args=(self._process, self._stop, silence),
                                             name="audio-feeder", daemon=True)
@@ -255,7 +274,7 @@ class AudioPlayer:
     def position(self) -> float:
         """Seconds from the file start of the sound playing now."""
         with self._lock:
-            return self.origin + self.device.played_samples() / SAMPLE_RATE
+            return self.origin + self.device.played_samples() / SAMPLE_RATE * self.speed
 
     def pause(self) -> None:
         with self._lock:

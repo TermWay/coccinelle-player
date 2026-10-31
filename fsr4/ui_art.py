@@ -153,12 +153,14 @@ def app_icon(size: int) -> np.ndarray:
     return sketch.rgba()
 
 
-ICON_NAMES = ("play", "pause", "volume", "mute", "fullscreen", "windowed", "sidebar", "add", "delete")
+ICON_NAMES = ("play", "pause", "volume", "mute", "fullscreen", "windowed", "sidebar", "add", "delete", "frame_back",
+              "frame_forward")
 
 
 def icon(name: str, size: int, color: str) -> np.ndarray:
     """A small control icon (straight RGBA) drawn on a 24-unit grid: play, pause, volume, mute, fullscreen,
-    windowed (leave full screen), sidebar, add (a plus) or delete (a bin)."""
+    windowed (leave full screen), sidebar, add (a plus), delete (a bin), frame_back or frame_forward (a step
+    of one frame: a triangle against a bar)."""
     sketch = Sketch(size, size)
     unit = size / 24
     stroke = max(1.2, 1.9 * unit)
@@ -198,6 +200,13 @@ def icon(name: str, size: int, color: str) -> np.ndarray:
                                     max(0.0, 2.5 * unit - stroke))
         sketch.fill(np.clip(outer - inner, 0, 1), color)
         sketch.fill(sketch.rounded_rect(3 * unit, 4.5 * unit, 9.5 * unit, 19.5 * unit, 2.5 * unit), color, opacity=0.9)
+    elif name in ("frame_back", "frame_forward"):
+        forward = name == "frame_forward"
+        bar_left = 15.5 if forward else 6
+        sketch.fill(sketch.rounded_rect(bar_left * unit, 6 * unit, (bar_left + 2.5) * unit, 18 * unit, 0.8 * unit),
+                    color)
+        points = [(7, 6), (14.5, 12), (7, 18)] if forward else [(17, 6), (9.5, 12), (17, 18)]
+        sketch.fill(sketch.polygon([(x * unit, y * unit) for x, y in points]), color)
     elif name == "add":
         sketch.fill(np.maximum(sketch.segment(12 * unit, 5.5 * unit, 12 * unit, 18.5 * unit, stroke),
                                sketch.segment(5.5 * unit, 12 * unit, 18.5 * unit, 12 * unit, stroke)), color)

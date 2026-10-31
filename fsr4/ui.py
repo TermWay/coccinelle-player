@@ -30,7 +30,7 @@ from tkinter import filedialog, ttk
 import cv2
 import numpy as np
 
-from . import log, usage
+from . import log, system, usage
 from .ffx import find_sdk_dir
 from .image_preview import ImagePreviewer
 from .job import JobOptions, JobPlan, JobResult, default_output, plan_from_info, run_job
@@ -44,7 +44,8 @@ from .ui_art import icon, png_base64
 from .ui_theme import Theme, enable_dark_dialogs, style_title_bar
 from .ui_tooltip import Tooltip
 from .ui_transport import Transport, format_time
-from .ui_video import REFERENCE_FILTERS, ZOOM_LEVELS, VideoView
+from .ui_video import OFF, REFERENCE_FILTERS, ZOOM_LEVELS, VideoView
+from .ui_window import Fullscreen, repaint
 
 APP_NAME = "FSR4 Upscaler"
 POLL_MS = 30
@@ -52,6 +53,11 @@ DRAG_SEEK_SECONDS = 0.12
 SIDEBAR_WIDTH = 340
 SETTINGS_DELAY_MS = 450
 HIDE_CONTROLS_MS = 2500
+MACHINE_REFRESH_MS = 2000
+# Playing backwards, the renderer fills the frames just behind the playhead a chunk at a time, nearest first,
+# until this much is ready behind it: more than the player ever waits for (BUFFER_MAX_SECONDS).
+REVERSE_CHUNK_SECONDS = 1.0
+REVERSE_AHEAD_SECONDS = 12.0
 HIDE_LEAVE_MS = 600
 CONTROLS_ZONE_MARGIN = 80
 ZOOM_SNAP_OCTAVES = 0.04
@@ -105,6 +111,7 @@ UPSCALER_CHOICES = [
 FILTER_HELP = {"nearest": "every source pixel as a block, exactly what the file holds",
                "linear": "smooth, what most players do", "cubic": "a little sharper, the usual photo editor filter",
                "lanczos": "the sharpest classic filter (mpv, madVR)"}
+DEFAULT_SIDES = {"left": "cubic", "right": "current"}
 SOURCE_LABELS = {"nearest": "Source · original pixels", "linear": "Source · bilinear", "cubic": "Source · bicubic",
                  "lanczos": "Source · Lanczos"}
 OPEN_TYPES = [("Videos and images", " ".join(f"*{suffix}" for suffix in VIDEO_SUFFIXES + IMAGE_SUFFIXES)),
@@ -210,8 +217,12 @@ class App:
         self._hide_job: str | None = None
         self._comparing_shown = False
         self._last_drag_seek = 0.0
+        self.processor = system.processor_name()
+        self.video_memory: system.VideoMemory | None = None
+        self.gpu_text = ""
+        self.screen = Fullscreen(root)
         self.presets = PresetStore()
-        self.side_choices = {"left": "cubic", "right": "current"}
+        self.side_choices = dict(DEFAULT_SIDES)
         self._shown_layers: dict[str, RenderSettings] = {}
         self.image_source: np.ndarray | None = None
         self.image_previewer: ImagePreviewer | None = None
@@ -235,6 +246,7 @@ class App:
         root.protocol("WM_DELETE_WINDOW", self.close)
         root.report_callback_exception = self._callback_failed
         root.after(POLL_MS, self._poll)
+        self._show_machine()
         threading.Thread(target=self._probe_gpu, daemon=True).start()
         threading.Thread(target=self._clean_temp, daemon=True).start()
         self._refresh()
@@ -288,10 +300,15 @@ class App:
         ttk.Label(header, text=APP_NAME, style="Title.TLabel").grid(row=0, column=2, sticky="w")
         status = ttk.Frame(header)
         status.grid(row=0, column=4, sticky="e")
+        self.cpu_label = ttk.Label(status, text="", style="Small.TLabel")
+        self.cpu_label.grid(row=0, column=0, padx=(0, px(20)))
+        self._tip(self.cpu_label, "The processor, and the main memory (RAM) this program uses now / installed.")
         self.gpu_dot = ttk.Label(status, text="●", style="Faint.TLabel")
-        self.gpu_dot.grid(row=0, column=0, padx=(0, px(6)))
+        self.gpu_dot.grid(row=0, column=1, padx=(0, px(6)))
         self.gpu_label = ttk.Label(status, text="Checking the GPU…", style="Small.TLabel")
-        self.gpu_label.grid(row=0, column=1)
+        self.gpu_label.grid(row=0, column=2)
+        self._tip(self.gpu_label, "The graphics card, the memory on it (VRAM) this program uses now (FSR and its "
+                                  "frames) / its size, and the version of FSR in AMD's DLL.")
         return header
 
     def _section(self, parent: ttk.Frame, row: int, title: str) -> int:
@@ -314,7 +331,10 @@ class App:
         canvas.grid(row=0, column=0, sticky="nsew")
         scrollbar = ttk.Scrollbar(holder, orient="vertical", command=canvas.yview)
         canvas.configure(yscrollcommand=scrollbar.set)
-        sidebar = ttk.Frame(canvas, padding=(px(20), px(2), px(18), px(8)))
+        # The scrollbar's column stays reserved, so the settings keep one width whether it shows or not (a canvas
+        # window does not always follow its canvas back to a narrower width, e.g. after full screen).
+        holder.columnconfigure(1, minsize=scrollbar.winfo_reqwidth() + px(2))
+        sidebar = ttk.Frame(canvas, padding=(px(20), px(2), px(6), px(8)))
         sidebar.columnconfigure(0, weight=1)
         item = canvas.create_window(0, 0, window=sidebar, anchor="nw")
         self.sidebar_canvas, self.sidebar_scrollbar, self.sidebar_content = canvas, scrollbar, sidebar
@@ -324,9 +344,6 @@ class App:
             height = sidebar.winfo_reqheight()
             canvas.configure(scrollregion=(0, 0, canvas.winfo_width(), height))
             scrolling = height > canvas.winfo_height() + 1
-            if scrolling != bool(scrollbar.winfo_ismapped()):
-                # The scrollbar takes the place of the right margin, so nothing reflows or gets cut.
-                sidebar.configure(padding=(px(20), px(2), px(6) if scrolling else px(18), px(8)))
             if scrolling:
                 scrollbar.grid(row=0, column=1, sticky="ns", padx=(0, px(2)))
             else:
@@ -558,8 +575,9 @@ class App:
                            "preset (upscaled as well, to compare two settings, or FSR 4 with FSR 3.1), or the "
                            "source enlarged by a classic filter:\nOriginal pixels: " + FILTER_HELP["nearest"]
                            + ".\nBilinear: " + FILTER_HELP["linear"] + ".\nBicubic: " + FILTER_HELP["cubic"]
-                           + ".\nLanczos: " + FILTER_HELP["lanczos"] + ".\nThe label on the picture opens this "
-                           "list too. Drag the divider to move it.")
+                           + ".\nLanczos: " + FILTER_HELP["lanczos"] + ".\nOff hides this side: the other one "
+                           "fills the picture. The label on the picture opens this list too. Drag the divider to "
+                           "move it.")
             self.side_boxes[side] = box
         zoom_chips = ttk.Frame(self.toolbar)
         zoom_chips.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(px(8), 0))
@@ -593,10 +611,19 @@ class App:
         self.view.grid(row=2, column=0, sticky="nsew")
         self.view.bind("<Configure>", lambda _: self._update_zoom_controls(), add="+")
         self.transport = Transport(main, self.theme, on_toggle=self.toggle_play, on_seek=self.seek_to,
-                                   on_volume=self._volume_changed, on_fullscreen=self.toggle_fullscreen)
+                                   on_step=self.step, on_volume=self._volume_changed, on_speed=self._speed_changed,
+                                   on_fullscreen=self.toggle_fullscreen)
         self.transport.grid(row=3, column=0, sticky="ew", pady=(px(4), 0))
         self.transport.grid_remove()
-        self._tip(self.transport.play_button, "Play or pause (Space). ← and → jump 5 seconds, , and . step one frame.")
+        self._tip(self.transport.play_button, "Play or pause (Space). ← and → jump 5 seconds.")
+        self._tip(self.transport.frame_back_button, "One frame back (,). Hold to keep stepping.")
+        self._tip(self.transport.frame_forward_button, "One frame forward (.). Hold to keep stepping.")
+        self._tip(self.transport.speed_scale, "Playing speed, from 1× backwards to 4× forwards ([ and ] step it). "
+                                              "The sound plays from 0.25× to 2×, at its own pitch; otherwise it is "
+                                              "silent. Faster than 2× and backwards every frame is shown, so "
+                                              "playback slows down when decoding cannot keep up; upscaling makes "
+                                              "about 40 frames a second at 4K, so fast speeds wait more.")
+        self._tip(self.transport.speed_label, "Click to play at normal speed again (Backspace).")
         self._tip(self.transport.volume_button, "Mute (M). ↑ and ↓ change the volume.")
         self._tip(self.transport.fullscreen_button, "Full screen (F11 or F). Esc leaves it.")
         self._tip(self.transport.bar, "Click or drag to jump. The lighter bar is what is upscaled; the small tick is "
@@ -685,7 +712,10 @@ class App:
                                  ("<End>", lambda: self.seek_to(self._total() - 1, True)),
                                  ("<m>", self.transport.toggle_mute),
                                  ("<Up>", lambda: self.transport.change_volume(0.1)),
-                                 ("<Down>", lambda: self.transport.change_volume(-0.1))):
+                                 ("<Down>", lambda: self.transport.change_volume(-0.1)),
+                                 ("<bracketleft>", lambda: self.transport.change_speed(-1)),
+                                 ("<bracketright>", lambda: self.transport.change_speed(1)),
+                                 ("<BackSpace>", lambda: self.transport.set_speed(1.0, notify=True))):
             root.bind(sequence, self._shortcut(action))
         root.bind_all("<Motion>", self._pointer_moved, add="+")
         root.bind_all("<ButtonPress>", lambda _: self._set_pointer_pressed(True), add="+")
@@ -925,10 +955,11 @@ class App:
                               options.upscaler)
 
     def _side_entries(self) -> list[tuple[str, str]]:
-        """(label, choice) of the side dropdowns: the current settings, every preset, the source filters."""
+        """(label, choice) of the side dropdowns: the current settings, every preset, the source filters, off."""
         return ([("Current settings", "current")]
                 + [(preset.name, f"preset:{preset.name}") for preset in self.presets.all]
-                + [(SOURCE_LABELS[name], name) for name in REFERENCE_FILTERS])
+                + [(SOURCE_LABELS[name], name) for name in REFERENCE_FILTERS]
+                + [("Off", OFF)])
 
     def _update_preset_lists(self) -> None:
         """The dropdowns' lists after presets changed; a side that showed a preset now gone shows the current
@@ -947,6 +978,11 @@ class App:
     def _side_chosen(self, side: str) -> None:
         box = self.side_boxes[side]
         self.side_choices[side] = self._side_entries()[box.current()][1]
+        other = "right" if side == "left" else "left"
+        if self.side_choices[side] == OFF and self.side_choices[other] == OFF:
+            # Never both: the other side comes back with what it shows by default.
+            self.side_choices[other] = DEFAULT_SIDES[other]
+            self._update_preset_lists()
         box.selection_clear()
         self.root.focus_set()  # back to the window, so Space and the arrows play and seek again
         self._update_layers()
@@ -1022,8 +1058,8 @@ class App:
         self._refresh()
 
     def _choice_settings(self, choice: str, current: RenderSettings) -> RenderSettings | None:
-        """The settings a side choice stands for; None for a source filter."""
-        if choice in REFERENCE_FILTERS:
+        """The settings a side choice stands for; None for a source filter or a side turned off."""
+        if choice in REFERENCE_FILTERS or choice == OFF:
             return None
         if choice == "current":
             return current
@@ -1048,7 +1084,7 @@ class App:
         for side, choice in self.side_choices.items():
             settings = self._choice_settings(choice, current) if current is not None else None
             if settings is None:
-                sides[side] = choice if choice in REFERENCE_FILTERS else "unavailable"
+                sides[side] = choice if choice in REFERENCE_FILTERS or choice == OFF else "unavailable"
                 continue
             labels[side] = self._choice_label(choice, settings)
             if image:
@@ -1217,6 +1253,25 @@ class App:
                 self.player.pause()
             self.player.step(frames)
 
+    def _speed_changed(self, speed: float) -> None:
+        if self.player is not None:
+            self.player.set_speed(speed)
+
+    def _render_target(self, frame: int) -> int:
+        """Where the renderer works: at the playhead; playing backwards, on the chunk just behind the stretch
+        ready behind the playhead, until REVERSE_AHEAD_SECONDS are ready there."""
+        player = self.player
+        if player is None or not player.playing or player.speed > 0 or self.renderer is None:
+            return frame
+        rate = float(self.info.frame_rate)
+        current = self.renderer.settings
+        upscaled = [settings for settings in self._shown_layers.values() if not self.batch or settings == current]
+        timelines = [self.renderer.timeline_of(settings) for settings in upscaled] or [self.renderer.timeline]
+        edge = max(timeline.ready_back_to(frame) for timeline in timelines)
+        if frame - edge >= REVERSE_AHEAD_SECONDS * rate:
+            return frame
+        return max(0, edge - int(round(REVERSE_CHUNK_SECONDS * rate)))
+
     def _volume_changed(self, volume: float, muted: bool) -> None:
         if self.player is not None:
             self.player.set_volume(volume, muted)
@@ -1231,9 +1286,12 @@ class App:
             self.sidebar.grid_remove()
 
     def toggle_fullscreen(self) -> None:
+        """Full screen on the monitor the window is on, or back to the window exactly as it was."""
         self.fullscreen = not self.fullscreen
         px = self.theme.px
-        self.root.attributes("-fullscreen", self.fullscreen)
+        if not self.fullscreen:
+            self.screen.leave()
+            self.root.update_idletasks()  # the rows come back laid out once, at the window's own size
         for widget in (self.header, self.footer, self.toolbar):
             if self.fullscreen:
                 widget.grid_remove()
@@ -1266,8 +1324,14 @@ class App:
                 setattr(self, name, None)
         self._cursor_hidden = False
         self.view.configure(cursor="")
-        # Tk lays the window out again only after an idle pass that sees the new size and the hidden rows.
+        if self.fullscreen:
+            self.root.update_idletasks()
+            self.screen.enter()
+        # Tk lays the window out again only after an idle pass that sees the new size and the hidden rows; then
+        # every widget repaints where it now is, so nothing is left unpainted (black) from the other layout.
         self.root.update_idletasks()
+        repaint(self.root)
+        self.view.redraw()
         if self.fullscreen:
             self._rest_later()
 
@@ -1441,6 +1505,8 @@ class App:
             if self.drop is not None:
                 self.drop.close()
         finally:
+            if self.video_memory is not None:
+                self.video_memory.close()
             log.set_sink(None)
             self.root.destroy()
 
@@ -1453,13 +1519,19 @@ class App:
             gpu = Gpu(verbose=False)
             try:
                 upscaler = Upscaler(gpu, (256, 144), (512, 288), FFX_UPSCALE_ENABLE_AUTO_EXPOSURE, find_sdk_dir(None))
-                text = f"{gpu.device_name.replace('AMD ', '')} · FSR {upscaler.version_name}"
+                name, version = gpu.device_name, upscaler.version_name
                 upscaler.destroy()
             finally:
                 gpu.destroy()
-            self.queue.put(("gpu", True, text))
         except Exception as error:  # noqa: BLE001 - shown in the header and the banner
-            self.queue.put(("gpu", False, str(error)))
+            self.queue.put(("gpu", False, str(error), None))
+            return
+        try:
+            video_memory = system.VideoMemory(name)
+        except Exception as error:  # noqa: BLE001 - the header shows the card without its memory; logged
+            log.emit(f"[ui] error: the graphics card's memory use is unavailable: {error}")
+            video_memory = None
+        self.queue.put(("gpu", True, f"{name.replace('AMD ', '')}|FSR {version}", video_memory))
 
     def _clean_temp(self) -> None:
         try:
@@ -1508,14 +1580,34 @@ class App:
         self.log_text.see("end")
         self.log_text.configure(state="disabled")
 
-    def _on_gpu(self, ready: bool, text: str) -> None:
+    def _on_gpu(self, ready: bool, text: str, video_memory: system.VideoMemory | None) -> None:
         self.gpu_ready = ready
         palette = self.theme.palette
         self.gpu_dot.configure(foreground=palette.success if ready else palette.error)
-        self.gpu_label.configure(text=text if ready else "GPU unavailable")
+        self.gpu_text = text if ready else "GPU unavailable"
+        self.video_memory = video_memory
+        self._show_machine(again=False)
         if not ready:
             self._show_banner(f"FSR 4 cannot start on this machine: {text}")
         self._refresh()
+
+    def _show_machine(self, again: bool = True) -> None:
+        """The processor with this program's RAM, the graphics card with its VRAM (every MACHINE_REFRESH_MS)."""
+        used, total = system.main_memory()
+        self.cpu_label.configure(text=f"{self.processor} · RAM {used / system.GIGABYTE:.1f} / "
+                                      f"{total / system.GIGABYTE:.0f} GB")
+        name, _, version = self.gpu_text.partition("|")
+        parts = [name]
+        if self.video_memory is not None:
+            try:
+                used, total = self.video_memory.read()
+                parts.append(f"VRAM {used / system.GIGABYTE:.1f} / {total / system.GIGABYTE:.0f} GB")
+            except OSError as error:
+                log.emit(f"[ui] error: the graphics card's memory use is unavailable: {error}")
+                self.video_memory = None
+        self.gpu_label.configure(text=" · ".join(parts + ([version] if version else [])) or "Checking the GPU…")
+        if again:
+            self.root.after(MACHINE_REFRESH_MS, self._show_machine)
 
     def _on_drop(self, paths: list[str]) -> None:
         if paths:
@@ -1567,6 +1659,8 @@ class App:
             return
         if kind == "piece":
             self.player.refresh()
+            if self.player.playing and self.player.speed < 0 and not self.transport.dragging:
+                renderer.set_target(self._render_target(self.player.position))
             self.transport.set_thumbnails(upscaled=renderer.thumbnails())
             self._update_progress()
         elif kind == "status":
@@ -1641,7 +1735,7 @@ class App:
         if kind == "position":
             self.transport.set_position(values[0])
             if self.renderer is not None and not self.transport.dragging:
-                self.renderer.set_target(values[0])
+                self.renderer.set_target(self._render_target(values[0]))
         elif kind == "state":
             playing, buffering = values
             self.transport.set_playing(playing, buffering)

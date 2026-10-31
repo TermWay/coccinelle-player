@@ -57,6 +57,18 @@ Radeon RX 9000 card, through Vulkan. The shared rules in `..\CLAUDE.md` apply; t
 - The side dropdowns, the Preset dropdown and every other choice are the same themed ttk Combobox; no native
   `tk.Menu` (it cannot be styled to match). A label on the picture opens its side's dropdown on release (on
   press, the release would land in the list and pick an entry).
+- Full screen goes through `fsr4/ui_window.py` (frame styles off, the window's own monitor covered, placement
+  restored), never Tk's `-fullscreen`, which always takes the primary monitor and rebuilds the frame window.
+  After either switch everything is repainted. The sidebar keeps its scrollbar column reserved: a canvas window
+  does not always follow its canvas back to a narrower width.
+- Playing speed: the sound card is the clock from 0.25x to 2x (atempo) and late frames are dropped; slower,
+  the system clock runs and late frames are still dropped; faster than 2x and backwards every frame is shown
+  in order, the clock re-anchored when a decoder is late. `ui.REVERSE_AHEAD_SECONDS` must stay above
+  `player.BUFFER_MAX_SECONDS` (tested), or a reverse stall never ends. `_Stream.put_back` returns frames taken for a tick that cannot be shown yet: in
+  frame-by-frame mode a released frame would never come back. Backwards, `ReverseFrameStream` decodes chunks
+  and the window sets the renderer's target just behind the ready stretch behind the playhead.
+- `tools/window_capture.py` can capture what the screen shows (`screen=True`) to catch unpainted areas, but it
+  refuses when another window covers ours: never capture other windows' content.
 - FSR 4 ignores the SDK's upscale tuning keys (verified bit-identical); `ffx.Upscaler(provider=...)` selects the
   DLL's FSR 3.1.6 or 2.3.4 through `ffxOverrideVersion` for comparisons. The frame count from the probe is an
   estimate until a read reaches the end (`Timeline.exact`); never stop rendering at the estimate.

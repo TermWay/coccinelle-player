@@ -1,8 +1,11 @@
-"""Playback controls under the video: a filmstrip, the seek bar, play/pause, time, volume and full screen.
+"""Playback controls under the video: a filmstrip, the seek bar, frame steps, play/pause, time, volume, speed
+and full screen.
 
 The filmstrip shows the video as tiles in time order: upscaled tiles at full brightness, parts not upscaled
 yet dimmed (from the source). The seek bar marks what is upscaled (lighter track), what has played (accent),
-and where the renderer works (a small tick). Clicking or dragging either seeks; hovering shows the time.
+and where the renderer works (a small tick). Clicking or dragging either seeks; hovering shows the frame number
+and its time to the millisecond. Holding a frame step button repeats it; the speed slider goes from 1x
+backwards to 4x forwards in SPEEDS steps (clicking its value goes back to 1x).
 """
 from __future__ import annotations
 
@@ -20,6 +23,9 @@ STRIP_HEIGHT = 50
 BAR_HEIGHT = 20
 TILE_GAP = 2
 DIM = 0.35
+SPEEDS = (-1.0, -0.5, -0.25, -0.1, 0.1, 0.25, 0.5, 1.0, 1.5, 2.0, 4.0)
+REPEAT_DELAY_MS = 400
+REPEAT_INTERVAL_MS = 70
 
 
 def format_time(seconds: float) -> str:
@@ -27,6 +33,22 @@ def format_time(seconds: float) -> str:
     hours, rest = divmod(seconds, 3600)
     minutes, seconds = divmod(rest, 60)
     return f"{hours}:{minutes:02d}:{seconds:02d}" if hours else f"{minutes}:{seconds:02d}"
+
+
+def format_precise(seconds: float) -> str:
+    """A time to the millisecond: 1:05.250, or 1:02:05.250."""
+    milliseconds = int(round(max(0.0, seconds) * 1000))
+    seconds, milliseconds = divmod(milliseconds, 1000)
+    hours, rest = divmod(seconds, 3600)
+    minutes, seconds = divmod(rest, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
+    return f"{minutes}:{seconds:02d}.{milliseconds:03d}"
+
+
+def format_speed(speed: float) -> str:
+    """1×, 0.25×, −2× (a real minus sign)."""
+    return ("\u2212" if speed < 0 else "") + f"{abs(speed):g}×"
 
 
 def nearest(thumbnails: dict[int, np.ndarray], frame: int) -> tuple[int, np.ndarray] | None:
@@ -38,16 +60,19 @@ def nearest(thumbnails: dict[int, np.ndarray], frame: int) -> tuple[int, np.ndar
 
 class Transport(ttk.Frame):
     """See the module docstring. Callbacks: `on_toggle()` play/pause, `on_seek(frame, final)` (final is False
-    while dragging), `on_volume(volume, muted)`, `on_fullscreen()`."""
+    while dragging), `on_step(frames)`, `on_volume(volume, muted)`, `on_speed(speed)`, `on_fullscreen()`."""
 
     def __init__(self, master: tk.Misc, theme: Theme, on_toggle: Callable[[], None],
-                 on_seek: Callable[[int, bool], None], on_volume: Callable[[float, bool], None],
+                 on_seek: Callable[[int, bool], None], on_step: Callable[[int], None],
+                 on_volume: Callable[[float, bool], None], on_speed: Callable[[float], None],
                  on_fullscreen: Callable[[], None]):
         super().__init__(master)
         self.theme = theme
         self.on_toggle = on_toggle
         self.on_seek = on_seek
+        self.on_step = on_step
         self.on_volume = on_volume
+        self.on_speed = on_speed
         self.on_fullscreen = on_fullscreen
         palette, px = theme.palette, theme.px
         self.total = 1
@@ -66,7 +91,11 @@ class Transport(ttk.Frame):
         self._hover_x: int | None = None
         self.dragging = False
         self._redraw_pending = False
-        self.icons = {name: self._icon(name) for name in ("play", "pause", "volume", "mute", "fullscreen", "windowed")}
+        self._repeat_job: str | None = None
+        self.speed = 1.0
+        self.speed_index = tk.DoubleVar(value=SPEEDS.index(1.0))
+        self.icons = {name: self._icon(name) for name in ("play", "pause", "volume", "mute", "fullscreen", "windowed",
+                                                          "frame_back", "frame_forward")}
         self.columnconfigure(0, weight=1)
         self.strip = tk.Canvas(self, height=px(STRIP_HEIGHT), background=palette.background, highlightthickness=0,
                                borderwidth=0, cursor="hand2")
@@ -76,23 +105,40 @@ class Transport(ttk.Frame):
         self.bar.grid(row=1, column=0, sticky="ew")
         controls = ttk.Frame(self)
         controls.grid(row=2, column=0, sticky="ew")
-        controls.columnconfigure(4, weight=1)
+        controls.columnconfigure(6, weight=1)
+        self.frame_back_button = ttk.Button(controls, image=self.icons["frame_back"], style="Icon.TButton",
+                                            takefocus=False)
+        self.frame_back_button.grid(row=0, column=0)
         self.play_button = ttk.Button(controls, image=self.icons["play"], style="Icon.TButton", takefocus=False,
                                       command=self.on_toggle)
-        self.play_button.grid(row=0, column=0)
-        self.time_label = ttk.Label(controls, text="0:00 / 0:00", style="Small.TLabel")
-        self.time_label.grid(row=0, column=1, padx=(px(6), px(14)))
+        self.play_button.grid(row=0, column=1)
+        self.frame_forward_button = ttk.Button(controls, image=self.icons["frame_forward"], style="Icon.TButton",
+                                               takefocus=False)
+        self.frame_forward_button.grid(row=0, column=2)
+        for button, frames in ((self.frame_back_button, -1), (self.frame_forward_button, 1)):
+            button.bind("<ButtonPress-1>", lambda _, frames=frames: self._start_repeat(frames), add="+")
+            button.bind("<ButtonRelease-1>", lambda _: self._stop_repeat(), add="+")
+            button.bind("<Leave>", lambda _: self._stop_repeat(), add="+")
+        self.time_label = ttk.Label(controls, text="", style="Small.TLabel")
+        self.time_label.grid(row=0, column=3, padx=(px(6), px(14)))
         self.volume_button = ttk.Button(controls, image=self.icons["volume"], style="Icon.TButton", takefocus=False,
                                         command=self.toggle_mute)
-        self.volume_button.grid(row=0, column=2)
+        self.volume_button.grid(row=0, column=4)
         self.volume_scale = ttk.Scale(controls, from_=0.0, to=1.0, variable=self.volume, length=px(84),
                                       takefocus=False, command=lambda _: self._volume_changed())
-        self.volume_scale.grid(row=0, column=3, padx=(px(2), px(12)))
+        self.volume_scale.grid(row=0, column=5, padx=(px(2), px(12)))
         self.state_label = ttk.Label(controls, text="", style="Faint.TLabel")
-        self.state_label.grid(row=0, column=4, sticky="w")
+        self.state_label.grid(row=0, column=6, sticky="w")
+        self.speed_scale = ttk.Scale(controls, from_=0, to=len(SPEEDS) - 1, variable=self.speed_index,
+                                     length=px(96), takefocus=False, command=lambda _: self._speed_moved())
+        self.speed_scale.grid(row=0, column=7, padx=(px(8), px(4)))
+        self.speed_label = ttk.Label(controls, text=format_speed(1.0), style="Small.TLabel", width=6, anchor="w",
+                                     cursor="hand2")
+        self.speed_label.grid(row=0, column=8, padx=(0, px(8)))
+        self.speed_label.bind("<ButtonRelease-1>", lambda _: self.set_speed(1.0, notify=True))
         self.fullscreen_button = ttk.Button(controls, image=self.icons["fullscreen"], style="Icon.TButton",
                                             takefocus=False, command=self.on_fullscreen)
-        self.fullscreen_button.grid(row=0, column=5)
+        self.fullscreen_button.grid(row=0, column=9)
         for canvas in (self.strip, self.bar):
             canvas.bind("<Configure>", lambda _: self.request_redraw())
             canvas.bind("<ButtonPress-1>", self._press)
@@ -111,6 +157,7 @@ class Transport(ttk.Frame):
         self.total, self.rate = max(1, total), rate
         self.position = 0
         self.set_playing(False, False)
+        self.set_speed(1.0)
         self.ready_ranges, self.render_position = [], None
         self.upscaled_thumbnails, self.source_thumbnails = {}, {}
         self._tiles.clear()
@@ -150,6 +197,41 @@ class Transport(ttk.Frame):
         self.fullscreen = fullscreen
         self.fullscreen_button.configure(image=self.icons["windowed" if fullscreen else "fullscreen"])
 
+    def set_speed(self, speed: float, notify: bool = False) -> None:
+        """Show `speed` (one of SPEEDS) on the slider; `notify` tells the window, as a slider move does."""
+        self.speed = speed
+        self.speed_index.set(SPEEDS.index(speed))
+        self.speed_label.configure(text=format_speed(speed))
+        if notify:
+            self.on_speed(speed)
+
+    def change_speed(self, steps: int) -> None:
+        """The next speed up (`steps` > 0) or down along SPEEDS."""
+        index = min(len(SPEEDS) - 1, max(0, SPEEDS.index(self.speed) + steps))
+        if SPEEDS[index] != self.speed:
+            self.set_speed(SPEEDS[index], notify=True)
+
+    def _speed_moved(self) -> None:
+        speed = SPEEDS[int(round(float(self.speed_index.get())))]
+        self.speed_index.set(SPEEDS.index(speed))  # the knob snaps to the step
+        if speed != self.speed:
+            self.set_speed(speed, notify=True)
+
+    def _start_repeat(self, frames: int) -> None:
+        """A frame step now, then repeated while the button is held."""
+        self._stop_repeat()
+        self.on_step(frames)
+        self._repeat_job = self.after(REPEAT_DELAY_MS, lambda: self._repeat(frames))
+
+    def _repeat(self, frames: int) -> None:
+        self.on_step(frames)
+        self._repeat_job = self.after(REPEAT_INTERVAL_MS, lambda: self._repeat(frames))
+
+    def _stop_repeat(self) -> None:
+        if self._repeat_job is not None:
+            self.after_cancel(self._repeat_job)
+            self._repeat_job = None
+
     def toggle_mute(self) -> None:
         self.muted = not self.muted
         self.volume_button.configure(image=self.icons["mute" if self.muted else "volume"])
@@ -167,7 +249,8 @@ class Transport(ttk.Frame):
 
     def _update_time(self) -> None:
         rate = self.rate or 30.0
-        self.time_label.configure(text=f"{format_time(self.position / rate)} / {format_time(self.total / rate)}")
+        self.time_label.configure(text=f"{format_precise(self.position / rate)} / {format_time(self.total / rate)}"
+                                       f" · frame {self.position}")
 
     # ---- drawing --------------------------------------------------------------------------------
 
@@ -260,8 +343,8 @@ class Transport(ttk.Frame):
         canvas.create_line(position, 0, position, height, fill=palette.accent, width=max(1, px(2)), tags="overlay")
         if self._hover_x is not None:
             frame = self._frame_at(self._hover_x, width)
-            text = format_time(frame / (self.rate or 30.0))
-            x = min(max(self._hover_x, px(24)), width - px(24))
+            text = f"frame {frame} · {format_precise(frame / (self.rate or 30.0))}"
+            x = min(max(self._hover_x, px(70)), width - px(70))
             label = canvas.create_text(x, height - px(12), text=text, fill=palette.text, font=self.theme.fonts["small"],
                                        tags="overlay")
             x0, y0, x1, y1 = canvas.bbox(label)

@@ -5,8 +5,10 @@
 Steps: empty window, a video dropped on it (a real WM_DROPFILES message), its first upscaled frame, a tooltip,
 a dropdown, the file dialog, playback, a seek into frames not upscaled yet (buffering), a paused zoom with the
 original pixels on the left, the zoom slider and wheel, a side's dropdown opened from its label, a preset saved
-and two presets upscaled side by side (paused and playing), full screen with its controls showing near the
-bottom and hiding at rest, the folded sidebar, the whole-file upscale and save, an image compared with a preset,
+and two presets upscaled side by side (paused and playing), a frame step, playing backwards at a quarter speed, a
+side turned off, full screen on the window's own monitor (the second one when there is one) with its controls
+showing near the bottom and hiding at rest, then back where the window was, the folded sidebar, the whole-file
+upscale and save, an image compared with a preset,
 the error banner for a bad file, and the minimum window size. Presets go to a scratch file in `--out`, not the
 user's. Screenshots go through PrintWindow, so the window may be covered; it does pop up on the desktop.
 """
@@ -26,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import window_capture  # noqa: E402
-from fsr4 import media, ui, ui_theme, usage  # noqa: E402
+from fsr4 import media, ui, ui_theme, ui_window, usage  # noqa: E402
 from fsr4.presets import PresetStore  # noqa: E402
 
 WM_DROPFILES = 0x0233
@@ -137,6 +139,8 @@ def main() -> int:
     def steps():
         yield lambda: app.gpu_ready is not None
         check(app.gpu_ready is True, f"GPU check: {app.gpu_label.cget('text')}")
+        check("RAM" in app.cpu_label.cget("text") and "VRAM" in app.gpu_label.cget("text"),
+              f"header: {app.cpu_label.cget('text')} | {app.gpu_label.cget('text')}")
         check(app.choose_button.cget("text") == "Choose file…", "button reads Choose file… without a file")
         shot("01_empty")
         post_drop(root, [args.video])
@@ -176,6 +180,15 @@ def main() -> int:
         played = app.player.position - first
         check(played >= 60 or app.player.buffering, f"playback advanced {played} frames in 2 s")
         shot("03_playing")
+        bar = app.transport.bar
+        bar.event_generate("<Motion>", x=bar.winfo_width() // 3, y=bar.winfo_height() // 2)
+        yield 0.3
+        strip = app.transport.strip
+        texts = [strip.itemcget(item, "text") for item in strip.find_withtag("overlay") if strip.type(item) == "text"]
+        check(any(text.startswith("frame ") and "." in text for text in texts),
+              f"hovering the seek bar shows the frame and its time to the millisecond: {texts}")
+        shot("03b_seek_bar_hover")
+        bar.event_generate("<Leave>")
         total = app._total()
         app.seek_to(int(total * 0.8), True)
         yield 0.4
@@ -263,10 +276,44 @@ def main() -> int:
               "a preset of one's own is deleted")
         choose("left", "cubic")
         yield 1.0
+        start = app.player.position
+        for sequence in ("<ButtonPress-1>", "<ButtonRelease-1>"):
+            app.transport.frame_back_button.event_generate(sequence)
+        yield 0.6
+        check(app.player.position == start - 1, f"the previous-frame button steps one frame ({start} -> "
+                                                f"{app.player.position})")
+        app.transport.set_speed(-0.25, notify=True)
+        app.toggle_play()
+        yield lambda: app.player.playing and not app.player.buffering
+        first = app.player.position
+        yield 2.0
+        check(first - app.player.position >= 15, f"plays backwards at a quarter speed ({first - app.player.position} "
+                                                 f"frames back in 2 s)")
+        shot("05g_backwards")
+        app.player.pause()
+        yield lambda: not app.player.playing
+        app.transport.set_speed(1.0, notify=True)
+        choose("left", "off")
+        yield 0.8
+        check(app.view.single and app.view.needed_layers() == {app.view.sides["right"]},
+              "left side off: the right one fills the picture")
+        shot("05h_left_side_off")
+        choose("right", "off")
+        check(app.side_choices == {"left": "cubic", "right": "off"}, "turning the other side off brings the first back")
+        choose("right", "current")
+        yield 0.5
         app.seek_to(0, True)
+        windowed = root.geometry()
+        other = next((screen for screen in ui_window.monitors() if not screen[4]), None)
+        if other is not None:  # the second monitor: full screen must cover that one
+            root.geometry(f"+{other[0] + 120}+{other[1] + 120}")
+            yield 0.6
+        placed = root.geometry()
         app.toggle_fullscreen()
         yield 1.0
-        check(app.view.winfo_width() == root.winfo_screenwidth(), "full screen video fills the screen width")
+        monitor = ui_window.monitor_of(root)
+        covered = (app.view.winfo_rootx(), app.view.winfo_rooty(), app.view.winfo_width(), app.view.winfo_height())
+        check(covered == monitor, f"full screen covers the window's monitor {monitor}: {covered}")
         shot("06_fullscreen")
         app.toggle_play()
         yield 3.5
@@ -289,6 +336,22 @@ def main() -> int:
         check(not app.transport.winfo_ismapped(), "they hide at rest while paused too")
         app.toggle_fullscreen()
         yield 0.8
+        check(root.geometry() == placed, f"leaving full screen puts the window back as it was ({root.geometry()})")
+        content, canvas = app.sidebar_content, app.sidebar_canvas
+        check(content.winfo_width() == canvas.winfo_width(), "the settings keep their width after full screen")
+        shot("06d_after_fullscreen")
+        root.state("zoomed")  # maximized: full screen still covers the monitor, and leaving maximizes again
+        yield 0.6
+        app.toggle_fullscreen()
+        yield 1.0
+        covered = (app.view.winfo_rootx(), app.view.winfo_rooty(), app.view.winfo_width(), app.view.winfo_height())
+        check(covered == ui_window.monitor_of(root), f"full screen from a maximized window covers the monitor: {covered}")
+        app.toggle_fullscreen()
+        yield 0.8
+        check(root.state() == "zoomed", f"leaving it, the window is maximized again ({root.state()})")
+        root.state("normal")
+        root.geometry(windowed)
+        yield 0.6
         app.toggle_sidebar()
         yield 0.6
         check(not app.sidebar.winfo_ismapped(), "sidebar folds away")

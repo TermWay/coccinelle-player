@@ -8,7 +8,8 @@ whichever thread presents (the Tk thread for interaction, the player thread for 
 
 Each side of the divider shows a layer: an upscaled version (the window names them: current settings,
 presets) or the source enlarged by a filter (original pixels, bilinear, bicubic or Lanczos), all at the same
-geometry; clicking a side's label tells the window, which opens that side's dropdown. Zoom is Fit, Original
+geometry; clicking a side's label tells the window, which opens that side's dropdown. A side can be OFF: the
+other one fills the picture and there is no divider. Zoom is Fit, Original
 size (one screen pixel per source pixel, the upscaled side shrunk to match) or any scale from Fit to 800%; from
 100% up every output pixel is a block of screen pixels (nearest neighbour), so what is drawn is what the file
 holds. The right or middle button pans, the wheel zooms around the cursor in quarter octaves (stopping at
@@ -46,6 +47,7 @@ REFERENCE_FILTERS = {
 MINIMAP_WIDTH = 180
 SPINNER_FRAMES = 24
 DIVIDER_COLOR = (0xf5, 0xf4, 0xf4)
+OFF = "off"
 PLACEHOLDER_DIM = 0.45
 
 
@@ -491,8 +493,8 @@ class VideoView(tk.Frame):
         self.redraw()
 
     def set_sides(self, sides: dict[str, str], labels: dict[str, str]) -> None:
-        """What each side ("left", "right") shows: a REFERENCE_FILTERS name or an upscaled layer's key (two sides
-        showing the same version share one), and the label of each side that shows an upscaled layer."""
+        """What each side ("left", "right") shows: a REFERENCE_FILTERS name, an upscaled layer's key (two sides
+        showing the same version share one) or OFF, and the label of each side that shows an upscaled layer."""
         with self._lock:
             self.sides.update(sides)
             self.side_labels = dict(labels)
@@ -501,7 +503,12 @@ class VideoView(tk.Frame):
     def needed_layers(self) -> set[str]:
         """The upscaled layers some side shows (the player decodes only those). Thread-safe."""
         with self._lock:
-            return {layer for layer in self.sides.values() if layer not in REFERENCE_FILTERS}
+            return {layer for layer in self.sides.values() if layer not in REFERENCE_FILTERS and layer != OFF}
+
+    @property
+    def single(self) -> bool:
+        """Whether one side is off (the other fills the picture, without the divider)."""
+        return OFF in self.sides.values()
 
     def set_fullscreen(self, fullscreen: bool) -> None:
         with self._lock:
@@ -632,6 +639,10 @@ class VideoView(tk.Frame):
         fill(canvas, left + shown_width, top, width, top + shown_height, background)
         source, layers = self._stream if self._stream is not None else self._still
         split = int(round(self.split * shown_width))
+        if self.sides["left"] == OFF:
+            split = 0
+        elif self.sides["right"] == OFF:
+            split = shown_width
         target = canvas[top:top + shown_height, left:left + shown_width]
         missing = set()
         for side, first, count in (("left", 0, split), ("right", split, shown_width - split)):
@@ -698,14 +709,18 @@ class VideoView(tk.Frame):
                        missing: set[str]) -> None:
         px = self.theme.px
         left, top, shown_width, shown_height = geometry.shown
-        x = left + split
-        line = max(1, px(2))
-        fill(canvas, x - line // 2, top, x - line // 2 + line, top + shown_height, DIVIDER_COLOR)
-        blend(canvas, self._handle, x - self._handle.shape[1] // 2, top + shown_height // 2 - self._handle.shape[0] // 2)
+        if not self.single:
+            x = left + split
+            line = max(1, px(2))
+            fill(canvas, x - line // 2, top, x - line // 2 + line, top + shown_height, DIVIDER_COLOR)
+            blend(canvas, self._handle, x - self._handle.shape[1] // 2,
+                  top + shown_height // 2 - self._handle.shape[0] // 2)
         margin = px(10)
         boxes = {}
         arrow = "" if self.fullscreen or self.on_side_click is None else "  ▾"
         for side in ("left", "right"):
+            if self.sides[side] == OFF:
+                continue
             pill = self._pill(self._side_label(side, geometry, source, side in missing) + arrow)
             pill_left = left + margin if side == "left" else left + shown_width - margin - pill.shape[1]
             blend(canvas, pill, pill_left, top + margin)
@@ -905,7 +920,7 @@ class VideoView(tk.Frame):
         if self._in_minimap(event.x, event.y):
             self._drag = "minimap"
             self._move_to_minimap(event.x, event.y)
-        else:
+        elif not self.single:
             self._drag = "divider"
             self._move_divider(event.x)
 
@@ -970,6 +985,6 @@ class VideoView(tk.Frame):
                                                      and self.on_side_click is not None and not self.fullscreen):
             cursor = "hand2"
         else:
-            cursor = "sb_h_double_arrow"
+            cursor = "" if self.single else "sb_h_double_arrow"
         if self._pan_origin is None and str(self.cget("cursor")) != cursor:
             self.configure(cursor=cursor)

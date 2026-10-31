@@ -136,6 +136,29 @@ class Timeline:
             index = bisect.bisect_right(self._starts, frame)
             return self._pieces[index].start if index < len(self._pieces) else self.total
 
+    def ready_back_to(self, frame: int) -> int:
+        """First frame of the playable stretch that ends at `frame`: the frames from there to `frame` play
+        backwards without waiting (`frame + 1` when `frame` itself is not playable)."""
+        with self._lock:
+            index = bisect.bisect_right(self._starts, frame) - 1
+            position = frame + 1
+            while index >= 0:
+                piece = self._pieces[index]
+                if not piece.ready or piece.end < position or piece.start >= position:
+                    break
+                position = piece.start
+                index -= 1
+            return position
+
+    def last_ready_before(self, frame: int) -> int | None:
+        """`frame` if a ready piece covers it, else the last frame of the closest ready piece before it; None if
+        there is none."""
+        with self._lock:
+            for piece in reversed(self._pieces):
+                if piece.ready and piece.start <= frame:
+                    return min(frame, piece.end - 1)
+            return None
+
     def next_ready_start(self, frame: int) -> int | None:
         """`frame` if a ready piece covers it, else the start of the next ready piece; None if there is none."""
         with self._lock:

@@ -56,6 +56,15 @@ class TimelineTest(unittest.TestCase):
         self.assertEqual([p.start for p in self.timeline.ready_prefix()], [0, 100])
         self.assertEqual(self.timeline.ready_frames(), 230)
 
+    def test_playable_backwards(self):
+        self.assertEqual(self.timeline.ready_back_to(120), 0, "two ready pieces in a row")
+        self.assertEqual(self.timeline.ready_back_to(450), 400, "the piece before is pending")
+        self.assertEqual(self.timeline.ready_back_to(200), 201, "nothing there")
+        self.assertEqual(self.timeline.ready_back_to(350), 351, "pending")
+        self.assertEqual(self.timeline.last_ready_before(350), 129)
+        self.assertEqual(self.timeline.last_ready_before(450), 450)
+        self.assertIsNone(Timeline(10).last_ready_before(5))
+
     def test_ranges_ready_in_two_versions(self):
         other = [(0, 50), (90, 120), (450, 700)]
         self.assertEqual(intersect_ranges(self.timeline.ready_ranges(), other), [(0, 50), (90, 120), (450, 500)])
@@ -147,6 +156,12 @@ class SchedulingTest(unittest.TestCase):
             target = playhead - int(round(0.5 * rate))
             self.assertIsNotNone(next_start(timeline, target, False, int(round(render.PREVIEW_LOW_SECONDS * rate))),
                                  f"{rate} fps")
+
+    def test_playing_backwards_never_waits_for_a_renderer_working_ahead(self):
+        """Backwards, the window keeps the renderer behind the playhead until REVERSE_AHEAD_SECONDS are ready
+        there; the player may wait for BUFFER_MAX_SECONDS, so less would leave both waiting."""
+        from fsr4 import ui
+        self.assertGreater(ui.REVERSE_AHEAD_SECONDS, player.BUFFER_MAX_SECONDS + 1)
 
     def test_piece_lengths_grow(self):
         lengths = piece_lengths(30)

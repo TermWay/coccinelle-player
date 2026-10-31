@@ -2,11 +2,18 @@
 
 Paused, the view shows a still: the full-resolution source and upscaled frames, so zoom, pan and the divider
 respond at once. Playing, decoders stream the source (for the filters) and the finished pieces of each upscaled
-layer shown (already cropped and scaled to the view by ffmpeg), and the sound card's clock decides which frame
-is due; late frames are dropped. Layers are versions of the upscale (settings or presets). When the next frame
-of a layer being upscaled is not ready yet the player buffers like a streaming site: sound and clock stop, a
-spinner turns, and playback resumes once enough is ready ahead in every such layer. A layer that is not being
-upscaled (a preset shown during a whole-file upscale) shows what it has and never holds playback up.
+layer shown (already cropped to the view by ffmpeg), and a clock decides which frame is due; late frames are
+dropped. Layers are versions of the upscale (settings or presets). When the next frame of a layer being
+upscaled is not ready yet the player buffers like a streaming site: sound and clock stop, a spinner turns, and
+playback resumes once enough is ready in every such layer. A layer that is not being upscaled (a preset shown
+during a whole-file upscale) shows what it has and never holds playback up.
+
+Playback runs at any `speed`: from 0.25x to 2x the sound plays, its pitch kept (ffmpeg's atempo), the sound
+card is the clock and late frames are dropped to stay with it. Slower, the sound is off and the system clock
+runs. Faster than 2x and backwards (negative speeds) the sound is off too and every frame is shown in order:
+when the decoders cannot keep up, playback slows down rather than skip to frames nobody decoded. Backwards,
+each decoder works in short chunks that it hands over last frame first, and the window has the renderer work
+behind the playhead.
 
 Everything runs on the player's own thread; the window sends commands and receives events through
 `on_event(kind, *values)`: "position" (frame shown), "state" (playing, buffering), "ended", "notice"
@@ -41,9 +48,13 @@ AUDIO_STALL_SECONDS = 0.25
 RESTART_SETTLE_SECONDS = 0.15
 FIRST_FRAME_TIMEOUT = 10.0
 LENIENT_FIRST_FRAME_TIMEOUT = 1.0
+SOUND_SPEEDS = (0.25, 2.0)
+REVERSE_CHUNK_BYTES = 64 * 1024 ** 2
+REVERSE_CHUNK_FRAMES = (4, 30)
 PIECE_CONTAINER = "mov,mp4,m4a,3gp,3g2,mj2"
 
-Segment = tuple[Callable[[], FrameReader], int]
+Segment = tuple[Callable[[int], FrameReader], int, int]
+"""(open(first) -> a reader from frame `first`, start, end): a stretch of frames [start, end) one file holds."""
 SEGMENT_POLL_SECONDS = 0.02
 
 
@@ -57,34 +68,116 @@ def merge_seeks(first: tuple, second: tuple) -> tuple:
     return ("step", first[1] + second[1])
 
 
-class FrameStream:
-    """Decodes consecutive segments (the source, or the ready upscaled pieces) into a small pool of BGRA buffers
-    on its own thread. `segments(frame)` returns (reader factory, end frame) for the segment holding `frame`, or
-    None while nothing can be decoded from there yet (the stream waits for it); the next segment's decoder
-    starts before the current one ends. A `strict` stream treats a segment that ends early as an error (a
-    damaged piece); otherwise it is the end of the video (the source, whose frame count may be an estimate).
-    With `skip` (frame -> next frame that has a segment, or None), gaps are jumped instead of waited for."""
+def reverse_chunk(width: int, height: int) -> int:
+    """Frames a reverse stream decodes per seek: as many as REVERSE_CHUNK_BYTES of BGRA frames, within bounds."""
+    low, high = REVERSE_CHUNK_FRAMES
+    return max(low, min(high, REVERSE_CHUNK_BYTES // max(1, width * height * 4)))
+
+
+class _Stream:
+    """Frames decoded on a thread into a pool of `buffers` BGRA buffers and taken in playing order: increasing
+    frame numbers (`direction` 1) or decreasing (-1). `segments(frame)` returns the Segment holding `frame`, or
+    None while nothing can be decoded there yet. A `strict` stream treats a segment that ends early as an error
+    (a damaged piece); otherwise it is the end of the video (the source, whose frame count may be an estimate).
+    With `skip`, gaps between segments are jumped instead of waited for."""
+
+    direction = 1
 
     def __init__(self, segments: Callable[[int], Segment | None], start: int, width: int, height: int, name: str,
-                 strict: bool, skip: Callable[[int], int | None] | None = None):
+                 strict: bool, buffers: int, skip: Callable[[int], int | None] | None = None):
         self.name = name
         self.strict = strict
-        self._skip = skip
         self.error: Exception | None = None
         self._segments = segments
+        self._skip = skip
         self._pool: queue.Queue = queue.Queue()
-        for _ in range(STREAM_BUFFERS):
+        for _ in range(buffers):
             self._pool.put(np.empty((height, width, 4), np.uint8))
         self._ready: queue.Queue = queue.Queue()
         self._waiting: tuple[int, np.ndarray] | None = None
         self._ended = False
         self._stop = threading.Event()
-        self._thread = threading.Thread(target=self._run, args=(start,), name=f"stream-{name}", daemon=True)
+        self._thread = threading.Thread(target=self._guarded_run, args=(start,), name=f"stream-{name}", daemon=True)
         self._thread.start()
+
+    def _guarded_run(self, frame: int) -> None:
+        try:
+            self._run(frame)
+        except Exception as error:  # noqa: BLE001 - the player reports it
+            if not self._stop.is_set():
+                self.error = error
+        finally:
+            self._ready.put(None)
+
+    def _run(self, frame: int) -> None:
+        raise NotImplementedError
+
+    def _take_free(self) -> np.ndarray | None:
+        while not self._stop.is_set():
+            try:
+                return self._pool.get(timeout=0.1)
+            except queue.Empty:
+                continue
+        return None
+
+    def take(self, frame: int, timeout: float) -> np.ndarray | None:
+        """The buffer holding `frame`, dropping frames already passed; None when it is not decoded within
+        `timeout` (or the stream ended: see `ended`). Release the buffer when it is no longer shown."""
+        deadline = time.perf_counter() + timeout
+        while True:
+            if self._waiting is not None:
+                number, buffer = self._waiting
+                if number == frame:
+                    self._waiting = None
+                    return buffer
+                if (number - frame) * self.direction > 0:
+                    return None  # the next frame decoded comes later in playing order
+                self._waiting = None
+                self._pool.put(buffer)
+            if self._ended:
+                return None
+            try:
+                item = self._ready.get(timeout=max(0.0, deadline - time.perf_counter()))
+            except queue.Empty:
+                return None
+            if item is None:
+                self._ended = True
+                if self.error is not None:
+                    raise self.error
+                return None
+            self._waiting = item
+
+    @property
+    def ended(self) -> bool:
+        return self._ended
+
+    def release(self, buffer: np.ndarray) -> None:
+        self._pool.put(buffer)
+
+    def request_stop(self) -> None:
+        """Ask the decoding thread to stop (`stop` waits for it)."""
+        self._stop.set()
+
+    def put_back(self, frame: int, buffer: np.ndarray) -> None:
+        """Return the buffer `take` just gave for `frame`, unshown: the next `take` of that frame gets it again."""
+        self._waiting = (frame, buffer)
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._thread.join()
+
+
+class FrameStream(_Stream):
+    """Decodes forward from `start`, segment after segment; the next segment's decoder starts before the current
+    one ends. With `skip` (frame -> the next frame that has a segment, or None), gaps are jumped."""
+
+    def __init__(self, segments: Callable[[int], Segment | None], start: int, width: int, height: int, name: str,
+                 strict: bool, skip: Callable[[int], int | None] | None = None):
+        super().__init__(segments, start, width, height, name, strict, STREAM_BUFFERS, skip)
 
     def _open(self, frame: int) -> tuple[FrameReader, int] | None:
         segment = self._segments(frame)
-        return None if segment is None else (segment[0](), segment[1])
+        return None if segment is None else (segment[0](frame), segment[2])
 
     def _open_from(self, frame: int) -> tuple[FrameReader, int, int] | None:
         """(reader, end, first frame) of the segment holding `frame` (or the next one, for a stream that skips
@@ -127,60 +220,63 @@ class FrameStream:
                     break
                 self._ready.put((frame, buffer))
                 current = (reader, end, frame + 1)
-        except Exception as error:  # noqa: BLE001 - the player reports it
-            if not self._stop.is_set():
-                self.error = error
         finally:
             for segment in (current, upcoming):
                 if segment is not None:
                     segment[0].stop()
-            self._ready.put(None)
 
-    def _take_free(self) -> np.ndarray | None:
-        while not self._stop.is_set():
-            try:
-                return self._pool.get(timeout=0.1)
-            except queue.Empty:
+
+class ReverseFrameStream(_Stream):
+    """Decodes backwards from `start`: a chunk of frames ending at the next frame wanted is decoded forward (one
+    seek) and handed over last frame first while the chunk before it decodes. With `skip` (frame -> the last
+    frame at or before it that has a segment, or None), gaps are jumped."""
+
+    direction = -1
+
+    def __init__(self, segments: Callable[[int], Segment | None], start: int, width: int, height: int, name: str,
+                 strict: bool, skip: Callable[[int], int | None] | None = None):
+        self._chunk = reverse_chunk(width, height)
+        super().__init__(segments, start, width, height, name, strict, 2 * self._chunk + 2, skip)
+
+    def _run(self, frame: int) -> None:
+        upcoming = frame
+        while upcoming >= 0 and not self._stop.is_set():
+            segment = self._segments(upcoming)
+            if segment is None:
+                if self._skip is None:
+                    self._stop.wait(SEGMENT_POLL_SECONDS)  # not upscaled yet: wait for the renderer
+                    continue
+                previous = self._skip(upcoming)
+                if previous is None:
+                    return
+                upcoming = previous
                 continue
-        return None
-
-    def take(self, frame: int, timeout: float) -> np.ndarray | None:
-        """The buffer holding `frame`, dropping older frames; None when it is not decoded within `timeout` (or
-        the stream ended: see `ended`). Release the buffer when it is no longer shown."""
-        deadline = time.perf_counter() + timeout
-        while True:
-            if self._waiting is not None:
-                number, buffer = self._waiting
-                if number == frame:
-                    self._waiting = None
-                    return buffer
-                if number > frame:
-                    return None
-                self._waiting = None
-                self._pool.put(buffer)
-            if self._ended:
-                return None
+            open_reader, start, _ = segment
+            first = max(start, upcoming - self._chunk + 1)
+            buffers = []
+            while len(buffers) < upcoming + 1 - first:
+                buffer = self._take_free()
+                if buffer is None:
+                    return
+                buffers.append(buffer)
+            decoded = 0
+            reader = open_reader(first)
             try:
-                item = self._ready.get(timeout=max(0.0, deadline - time.perf_counter()))
-            except queue.Empty:
-                return None
-            if item is None:
-                self._ended = True
-                if self.error is not None:
-                    raise self.error
-                return None
-            self._waiting = item
-
-    @property
-    def ended(self) -> bool:
-        return self._ended
-
-    def release(self, buffer: np.ndarray) -> None:
-        self._pool.put(buffer)
-
-    def stop(self) -> None:
-        self._stop.set()
-        self._thread.join()
+                for buffer in buffers:
+                    if self._stop.is_set() or not reader.read_into(buffer):
+                        break
+                    decoded += 1
+            finally:
+                reader.stop()
+            if self._stop.is_set():
+                return
+            for buffer in buffers[decoded:]:
+                self._pool.put(buffer)
+            if decoded < len(buffers) and self.strict:
+                raise RuntimeError(f"{self.name} ended at frame {first + decoded}, before {upcoming + 1}")
+            for index in range(decoded - 1, -1, -1):  # past the end of a source that ends early: what exists
+                self._ready.put((first + index, buffers[index]))
+            upcoming = first - 1
 
 
 class Player:
@@ -200,6 +296,7 @@ class Player:
         self.position = 0
         self.playing = False
         self.buffering = False
+        self.speed = 1.0
         self.volume = 0.8
         self.muted = False
         self.render_speed = 0.0
@@ -213,10 +310,10 @@ class Player:
         self._audio_thread = threading.Thread(target=self._prepare_audio, name="audio-open", daemon=True)
         if info.audio:
             self._audio_thread.start()
-        self._streams: dict[str, FrameStream] = {}
+        self._streams: dict[str, _Stream] = {}
         self._stream_keys: dict[str, tuple] = {}
         self._stream_layers: set[str] = set()
-        self._held: list[tuple[FrameStream, np.ndarray]] = []
+        self._held: list[tuple[_Stream, np.ndarray]] = []
         self._resume_frame = 0
         self._clock_frame0 = 0
         self._clock_perf0 = 0.0
@@ -237,6 +334,11 @@ class Player:
     @property
     def total(self) -> int:
         return self.timeline.total if self.timeline is not None else (self.info.frame_count or 1)
+
+    @property
+    def direction(self) -> int:
+        """1 playing forward, -1 backwards."""
+        return 1 if self.speed > 0 else -1
 
     def attach(self, timeline: Timeline | None, output_size: tuple[int, int],
                layers: dict[str, tuple[Timeline, bool]] | None = None) -> None:
@@ -279,6 +381,12 @@ class Player:
 
     def step(self, frames: int) -> None:
         self._commands.put(("step", frames))
+
+    def set_speed(self, speed: float) -> None:
+        """Playing speed: 1 is real time, 0.5 half speed, -1 backwards in real time (never 0)."""
+        if speed == 0:
+            raise ValueError("a speed of 0 is a pause")
+        self._commands.put(("speed", speed))
 
     def set_volume(self, volume: float, muted: bool) -> None:
         self._commands.put(("volume", volume, muted))
@@ -351,8 +459,11 @@ class Player:
             self.on_event("notice", "Nothing to play yet: the upscaler is not running (see the GPU status).")
         elif kind in ("play", "toggle") and not self.playing:
             self.follow_live = False
-            if self.position >= self.total - 1:
+            self.position = min(self.position, self.total - 1)  # the frame count may have shrunk to the real one
+            if self.speed > 0 and self.position >= self.total - 1:
                 self.position = 0
+            elif self.speed < 0 and self.position <= 0:
+                self.position = self.total - 1
             self.playing = True
             self._restart(self.position)
         elif kind in ("pause", "toggle") and self.playing:
@@ -367,6 +478,10 @@ class Player:
             else:
                 self._still_wanted = frame
             self._position_event(force=True)
+        elif kind == "speed" and command[1] != self.speed:
+            self.speed = command[1]
+            if self.playing:
+                self._restart(self.position)
         elif kind == "volume":
             _, self.volume, self.muted = command
             self._sound(lambda audio: audio.set_volume(0.0 if self.muted else self.volume))
@@ -411,6 +526,18 @@ class Player:
         """The layers among `layers` that playback waits for."""
         return [layer for layer in layers if self.layers.get(layer, (None, False))[1]]
 
+    def _ready_limit(self, timeline: Timeline, frame: int) -> int:
+        """The first frame from `frame` on, in the playing direction, that is not upscaled yet (-1 backwards
+        when everything down to the start is)."""
+        return timeline.ready_until(frame) if self.speed > 0 else timeline.ready_back_to(frame) - 1
+
+    def _buffered(self, timeline: Timeline, frame: int, versions: int) -> bool:
+        """Whether enough of `timeline` is ready from `frame` on, in the playing direction, to start playing."""
+        limit = self._ready_limit(timeline, frame)
+        ready = (limit - frame) * self.direction
+        to_the_end = limit < 0 if self.speed < 0 else timeline.exact and limit >= timeline.total
+        return ready > 0 and (to_the_end or ready >= self._buffer_needed(versions))
+
     def _try_resume(self) -> bool:
         """Start the decoders, show the first frame and start the clock once enough is upscaled ahead in every
         layer shown that is being upscaled (the source and the other layers never wait)."""
@@ -419,12 +546,8 @@ class Player:
         frame = self._resume_frame
         layers = self.view.needed_layers()
         paced = self._paced(layers)
-        for layer in paced:
-            timeline = self.layers[layer][0]
-            ready_end = timeline.ready_until(frame)
-            to_the_end = timeline.exact and ready_end >= timeline.total
-            if ready_end <= frame or (not to_the_end and ready_end - frame < self._buffer_needed(len(paced))):
-                return False
+        if not all(self._buffered(self.layers[layer][0], frame, len(paced)) for layer in paced):
+            return False
         self._start_streams(frame, layers)
         source_stream = self._streams["source"]
         source = source_stream.take(frame, FIRST_FRAME_TIMEOUT)
@@ -444,7 +567,7 @@ class Player:
         self.view.present(source, shown)
         self._held = held
         self.position = frame
-        self._resume_frame = frame + 1
+        self._resume_frame = frame + self.direction
         self._start_clock(frame)
         self._set_buffering(False)
         self._position_event(force=True)
@@ -452,11 +575,11 @@ class Player:
 
     def _buffer_needed(self, versions: int) -> int:
         """Frames to have ready ahead before playing: a short wait to start, and after playback caught up with a
-        renderer slower than real time, enough to play about BUFFER_HORIZON_SECONDS before the next wait. The
+        renderer slower than playback, enough to play about BUFFER_HORIZON_SECONDS before the next wait. The
         renderer shares its speed among the `versions` being upscaled."""
         seconds = BUFFER_MIN_SECONDS
         if self._caught_up and self.render_speed > 0 and self.rate:
-            ratio = self.render_speed / max(1, versions) / self.rate
+            ratio = self.render_speed / max(1, versions) / (self.rate * abs(self.speed))
             seconds = min(BUFFER_MAX_SECONDS, max(BUFFER_MIN_SECONDS, (1 - ratio) * BUFFER_HORIZON_SECONDS))
         return max(1, int(round(seconds * self.rate)))
 
@@ -470,9 +593,10 @@ class Player:
     def _start_streams(self, frame: int, layers: set[str]) -> None:
         keyframes = self.keyframes.get()
         source, info = self.source, self.info
-        self._streams["source"] = FrameStream(
-            lambda start: (lambda: FrameReader(source, info, start_frame=start, keyframes=keyframes,
-                                               pixel_format="bgra"), self.total),
+        stream_type = FrameStream if self.speed > 0 else ReverseFrameStream
+        self._streams["source"] = stream_type(
+            lambda start: ((lambda first: FrameReader(source, info, start_frame=first, keyframes=keyframes,
+                                                      pixel_format="bgra")), 0, self.total),
             frame, info.width, info.height, "source", strict=False)
         self._stream_layers = set(layers)
         for layer in layers:
@@ -493,14 +617,21 @@ class Player:
                 return None
             info = MediaInfo(width=output_size[0], height=output_size[1], frame_rate=rate, frame_count=piece.frames,
                              duration=None, codec="", color_matrix="bt709", container=PIECE_CONTAINER)
-            return (lambda: FrameReader(piece.path, info, start_frame=start - piece.start, crop=crop, size=size,
-                                        scale_flags=flags, pixel_format="bgra"), piece.end)
+            return ((lambda first: FrameReader(piece.path, info, start_frame=first - piece.start, crop=crop,
+                                               size=size, scale_flags=flags, pixel_format="bgra")),
+                    piece.start, piece.end)
 
-        skip = None if paced else timeline.next_ready_start
-        self._streams[layer] = FrameStream(segment, frame, size[0], size[1], "upscaled pieces", strict=True, skip=skip)
+        if self.speed > 0:
+            self._streams[layer] = FrameStream(segment, frame, size[0], size[1], "upscaled pieces", strict=True,
+                                               skip=None if paced else timeline.next_ready_start)
+        else:
+            self._streams[layer] = ReverseFrameStream(segment, frame, size[0], size[1], "upscaled pieces",
+                                                      strict=True, skip=None if paced else timeline.last_ready_before)
         self._stream_keys[layer] = key
 
     def _stop_streams(self) -> None:
+        for stream in self._streams.values():
+            stream.request_stop()  # all at once: each finishes its frame (or chunk) while the others do
         for stream in self._streams.values():
             stream.stop()
         self._streams.clear()
@@ -510,12 +641,21 @@ class Player:
             stream.release(buffer)
         self._held = []
 
+    def _sound_plays(self) -> bool:
+        """Whether the sound plays at this speed (and the sound card keeps time)."""
+        return bool(self.info.audio) and SOUND_SPEEDS[0] <= self.speed <= SOUND_SPEEDS[1]
+
+    def _every_frame(self) -> bool:
+        """Whether every frame is shown in order (faster than the sound plays, and backwards), slowing down when
+        the decoders cannot keep up."""
+        return self.speed < 0 or self.speed > SOUND_SPEEDS[1]
+
     def _start_clock(self, frame: int) -> None:
         self._clock_frame0 = frame
         self._clock_perf0 = time.perf_counter()
         self._last_audio = (None, 0.0)
-        if self._open_audio() is not None:
-            self._sound(lambda audio: audio.start(frame / self.rate))
+        if self._sound_plays() and self._open_audio() is not None:
+            self._sound(lambda audio: audio.start(frame / self.rate, self.speed))
 
     def _sound(self, call: Callable[[AudioPlayer], None]) -> None:
         """Run `call` on the sound device; one that fails (unplugged headset) is dropped, playback goes on."""
@@ -534,7 +674,7 @@ class Player:
         except OSError as close_error:
             log.emit(f"[player] could not close the sound device: {close_error}")
         # Keep time from here with the system clock.
-        self._clock_frame0 = self.position + 1
+        self._clock_frame0 = self.position + self.direction
         self._clock_perf0 = time.perf_counter()
         self.on_event("notice", f"Sound stopped ({error}); playing on without it.")
 
@@ -552,9 +692,10 @@ class Player:
         return self._audio
 
     def _clock_frame(self) -> float:
-        """Frames since the start of the file, from the sound card while it plays, else from the system clock."""
+        """Frames since the start of the file: from the sound card while the sound plays, else from the system
+        clock at the playing speed."""
         now = time.perf_counter()
-        audio = self._audio if self.info.audio else None
+        audio = self._audio if self._sound_plays() else None
         if audio is not None and audio.error is not None:
             self._drop_audio(audio.error)
             audio = None
@@ -569,9 +710,9 @@ class Player:
                 self._last_audio = (seconds, now)
             elif previous is not None and now - since > AUDIO_STALL_SECONDS:
                 # The track ended (or the device stalled): keep time with the system clock from there.
-                return previous * self.rate + (now - since) * self.rate
+                return (previous + (now - since) * self.speed) * self.rate
             return seconds * self.rate
-        return self._clock_frame0 + (now - self._clock_perf0) * self.rate
+        return self._clock_frame0 + (now - self._clock_perf0) * self.rate * self.speed
 
     def _play_step(self) -> None:
         if self.buffering:
@@ -581,18 +722,32 @@ class Player:
                 self.view.set_spinner(True, advance=True)
             self._try_resume()
             return
-        due = int(math.floor(self._clock_frame() + 1e-6))
-        due = max(due, self._clock_frame0)
+        direction = self.direction
+        clock = self._clock_frame()
         timeline = self.timeline
-        paced = self._paced(self._stream_layers)
-        if timeline.exact and due >= timeline.total:
+        if direction > 0:
+            due = max(int(math.floor(clock + 1e-6)), self._clock_frame0)
+        else:
+            due = min(int(math.ceil(clock - 1e-6)), self._clock_frame0)
+        if self._every_frame():
+            following = self._resume_frame
+            if (due - following) * direction < 0:
+                self._wait((following - clock) * direction / (self.rate * abs(self.speed)))
+                return
+            if (due - following) * direction > 1:
+                # Late (the decoders are slower than this speed): go on from this frame at the right pace.
+                self._clock_frame0, self._clock_perf0 = following, time.perf_counter()
+            due = following
+        if (direction > 0 and timeline.exact and due >= timeline.total) or due < 0:
             self._finish()
             return
-        ready_ends = [self.layers[layer][0].ready_until(self._resume_frame) for layer in paced]
-        if ready_ends and min(ready_ends) <= due:
+        paced = self._paced(self._stream_layers)
+        limits = [self._ready_limit(self.layers[layer][0], self._resume_frame) for layer in paced]
+        limit = (min(limits) if direction > 0 else max(limits)) if limits else None
+        if limit is not None and (limit - due) * direction <= 0:
             # The next frames are not upscaled yet in every layer shown: wait for the renderer.
-            self._resume_frame = min(ready_ends)
-            if timeline.exact and self._resume_frame >= timeline.total:
+            self._resume_frame = limit
+            if (timeline.exact and limit >= timeline.total) or limit < 0:
                 self._finish()
                 return
             self._stop_streams()
@@ -602,7 +757,7 @@ class Player:
             self._position_event(force=True)  # the renderer works from the playhead, not from a late one
             self._set_buffering(True)
             return
-        frame_time = 1 / self.rate
+        frame_time = 1 / (self.rate * abs(self.speed))
         source_stream = self._streams["source"]
         held, shown = [], {}
         for layer in paced:
@@ -611,7 +766,7 @@ class Player:
             image = stream.take(due, frame_time)
             if image is None:
                 for owner, buffer in held:
-                    owner.release(buffer)
+                    owner.put_back(due, buffer)  # this frame is tried again (frame by frame, it must be shown)
                 if stream.ended:
                     self._resume_frame = due
                     self._stop_streams()
@@ -625,7 +780,7 @@ class Player:
         source = source_stream.take(due, frame_time)
         if source is None:
             for stream, buffer in held:
-                stream.release(buffer)
+                stream.put_back(due, buffer)
             if source_stream.ended:
                 self._finish()
             return
@@ -640,7 +795,7 @@ class Player:
         self._release_held()
         self._held = held
         self.position = due
-        self._resume_frame = due + 1
+        self._resume_frame = due + direction
         self._position_event()
         # Zoomed or panned: decode at the new geometry once it has settled (the view stretches the old meanwhile).
         target, now = self.view.decode_target()[0], time.perf_counter()
@@ -652,22 +807,27 @@ class Player:
                     and now - self._target_since >= RESTART_SETTLE_SECONDS):
                 stream.stop()
                 self._held = [(owner, buffer) for owner, buffer in self._held if owner is not stream]
-                self._start_layer_stream(layer, due + 1)
-        wait = (due + 1 - self._clock_frame()) / self.rate
-        if wait > 0:
-            command = self._next_command(wait)
-            if command is None:
-                return
-            if command[0] == "close":
-                self._deferred.appendleft(command)
-            else:
-                self._handle(command)
+                self._start_layer_stream(layer, due + direction)
+        self._wait((due + direction - self._clock_frame()) * direction / (self.rate * abs(self.speed)))
+
+    def _wait(self, seconds: float) -> None:
+        """Wait up to `seconds` for the next frame's time, handling a command that arrives meanwhile."""
+        if seconds <= 0:
+            return
+        command = self._next_command(seconds)
+        if command is None:
+            return
+        if command[0] == "close":
+            self._deferred.appendleft(command)
+        else:
+            self._handle(command)
 
     def _finish(self) -> None:
-        last = self.total - 1
+        """Playback reached the end (or the start, backwards): stop there."""
+        end = self.total - 1 if self.speed > 0 else 0
         self._stop_playback()
-        self.position = last
-        self._still_wanted = last
+        self.position = end
+        self._still_wanted = end
         self._position_event(force=True)
         self.on_event("ended")
 

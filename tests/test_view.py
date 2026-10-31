@@ -4,7 +4,7 @@ import unittest
 import cv2
 import numpy as np
 
-from fsr4.ui_transport import format_time
+from fsr4.ui_transport import format_precise, format_speed, format_time
 from fsr4.ui_video import (blend, block_view, compute_geometry, decode_request, over, reference_view, step_zoom,
                            upscaled_view)
 
@@ -186,6 +186,10 @@ class CompositingTest(unittest.TestCase):
         self.assertEqual(format_time(0), "0:00")
         self.assertEqual(format_time(65.9), "1:05")
         self.assertEqual(format_time(3725), "1:02:05")
+        self.assertEqual(format_precise(65.25), "1:05.250")
+        self.assertEqual(format_precise(3725.0006), "1:02:05.001")
+        self.assertEqual(format_speed(1.0), "1×")
+        self.assertEqual(format_speed(-0.25), "−0.25×")
 
 
 if __name__ == "__main__":
