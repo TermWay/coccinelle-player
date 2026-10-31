@@ -63,6 +63,17 @@ class MediaTest(unittest.TestCase):
         self.assertEqual(loaded.shape, (20, 30, 4))
         np.testing.assert_array_equal(loaded[..., :3], pixels[..., :3])
 
+    def test_background_encoders_start(self):
+        """Background pieces cap the encoder's threads; x265 must get them through its pool, not -threads."""
+        frame = np.zeros((48, 64, 4), dtype=np.uint8)
+        for encoder in ("x264", "x265"):
+            path = self.root / f"piece_{encoder}.mp4"
+            writer = media.FrameWriter(path, 64, 48, Fraction(10), encoder, gop=20, background=True)
+            for _ in range(3):
+                writer.write(frame)
+            writer.close()
+            self.assertEqual(media.probe(path).frame_count, 3, encoder)
+
     def test_writer_rejects_wrong_size(self):
         writer = media.FrameWriter(self.root / "bad.mp4", 64, 48, Fraction(10), "x264")
         with self.assertRaises(ValueError):

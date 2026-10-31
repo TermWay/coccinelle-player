@@ -237,6 +237,8 @@ class Theme:
                            p.background, None, p.text_faint, (10, 6))
         self._button_style("Banner", p.error_soft, "#4a2225", "#331618", None, p.error_text, "body",
                            p.error_soft, None, p.text_faint, (8, 2), container=p.error_soft)
+        self._button_style("Icon", p.background, p.field_hover, p.field_pressed, None, p.text, "body",
+                           p.background, None, p.text_faint, (5, 4))
 
     def _configure_fields(self) -> None:
         p = self.palette

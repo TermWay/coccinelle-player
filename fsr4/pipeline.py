@@ -8,7 +8,9 @@ the input on FSR's Halton sequence only blurs the result, so it is not done.
 from __future__ import annotations
 
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Iterator
 
 import numpy as np
 
@@ -48,7 +50,8 @@ class Pipeline:
 
     def __init__(self, gpu: Gpu, render_size: tuple[int, int], output_size: tuple[int, int], sdk_dir: Path,
                  flow, sharpness: float | None = None, frame_time_ms: float = 1000 / 30,
-                 debug_view: bool = False, debug_checking: bool = False, verbose: bool = False):
+                 debug_view: bool = False, debug_checking: bool = False, verbose: bool = False,
+                 provider: str | None = None):
         self.gpu = gpu
         self.flow = flow
         self.sharpness = sharpness
@@ -82,8 +85,9 @@ class Pipeline:
                  | ffx.FFX_UPSCALE_ENABLE_DEPTH_INVERTED)
         if debug_view:
             flags |= ffx.FFX_UPSCALE_ENABLE_DEBUG_VISUALIZATION
+        self.provider = provider
         self.upscaler = ffx.Upscaler(gpu, render_size, output_size, flags, sdk_dir, verbose=verbose,
-                                     debug_checking=debug_checking)
+                                     debug_checking=debug_checking, provider=provider)
         self.frame_index = 0
         if verbose:
             log.emit(f"[pipeline] flow {flow.name}, sharpness {sharpness if sharpness is not None else 'off'}")
@@ -138,4 +142,42 @@ class Pipeline:
         return self.output_pixels
 
     def destroy(self) -> None:
+        """Free the FSR context and this pipeline's images and buffers; the device stays for the next one."""
+        self.gpu.wait_idle()
         self.upscaler.destroy()
+        for image in (self.color, self.depth, self.motion, self.output):
+            self.gpu.free_image(image)
+        for buffer in (self.color_staging, self.motion_staging, self.output_staging):
+            self.gpu.free_buffer(buffer)
+
+
+def upscale_stream(frames: Iterator[np.ndarray], pipeline: Pipeline,
+                   executor: ThreadPoolExecutor) -> Iterator[tuple[np.ndarray, np.ndarray]]:
+    """Upscale consecutive frames, yielding (source, upscaled) pairs valid until the next iteration.
+
+    The optical flow of the next frame runs on `executor`'s single worker while the current frame is on the GPU
+    and with the consumer (OpenCV and the Vulkan waits release the GIL). `frames` must keep the previous frame
+    valid while it reads the next one (FrameReader double-buffers). Closing the generator early waits for the
+    pending flow, so the worker never reads a buffer that is being overwritten.
+    """
+    flow = pipeline.flow
+
+    def compute_flow(rgba: np.ndarray) -> np.ndarray:
+        started = time.perf_counter()
+        motion = flow.compute(rgba)
+        pipeline.timings.add("flow (worker thread)", time.perf_counter() - started)
+        return motion
+
+    frame = next(frames, None)
+    pending = executor.submit(compute_flow, frame) if frame is not None else None
+    try:
+        while frame is not None:
+            motion = pending.result()
+            following = next(frames, None)
+            pending = executor.submit(compute_flow, following) if following is not None else None
+            upscaled = pipeline.process(frame, motion)
+            yield frame, upscaled
+            frame = following
+    finally:
+        if pending is not None and not pending.done():
+            pending.result()

@@ -82,6 +82,26 @@ class Sketch:
             mask = np.maximum(mask, self.segment(ax, ay, bx, by, thickness))
         return mask
 
+    def polygon(self, points: list[tuple[float, float]]) -> np.ndarray:
+        """A filled convex polygon (points in either winding order)."""
+        distance = np.full((self.height, self.width), -np.inf, np.float32)
+        area = sum(ax * by - bx * ay for (ax, ay), (bx, by) in zip(points, points[1:] + points[:1]))
+        sign = 1.0 if area > 0 else -1.0
+        for (ax, ay), (bx, by) in zip(points, points[1:] + points[:1]):
+            length = max(np.hypot(bx - ax, by - ay), 1e-6)
+            # signed distance to the edge line, negative on the inner side
+            edge = sign * ((self.x - ax) * (by - ay) - (self.y - ay) * (bx - ax)) / length
+            distance = np.maximum(distance, edge)
+        return np.clip(0.5 - distance, 0, 1)
+
+    def ring(self, center_x: float, center_y: float, radius: float, thickness: float, start: float,
+             end: float) -> np.ndarray:
+        """An arc of a circle outline between angles `start` and `end` (radians, 0 = right, clockwise in y-down)."""
+        distance = np.abs(np.hypot(self.x - center_x, self.y - center_y) - radius) - thickness / 2
+        angle = np.arctan2(self.y - center_y, self.x - center_x)
+        inside = (angle >= start) & (angle <= end)
+        return np.clip(0.5 - distance, 0, 1) * inside
+
     # ---- painting -------------------------------------------------------------------------------
 
     def fill(self, mask: np.ndarray, color: str | np.ndarray, opacity: float = 1.0) -> "Sketch":
@@ -104,6 +124,11 @@ class Sketch:
     def png_base64(self) -> str:
         return png_base64(self.rgba())
 
+    def premultiplied_bgra(self) -> np.ndarray:
+        """Premultiplied BGRA uint8, the layout the video view composites and blits."""
+        data = (self.premultiplied * 255 + 0.5).clip(0, 255).astype(np.uint8)
+        return np.ascontiguousarray(data[..., [2, 1, 0, 3]])
+
 
 # ---- shared artwork ---------------------------------------------------------------------------------
 
@@ -125,6 +150,56 @@ def app_icon(size: int) -> np.ndarray:
     arrow = sketch.polyline([(8.4 * unit, 7.6 * unit), (tip_x, tip_y)], stroke * 1.1)
     head = sketch.polyline([(tip_x - 2.4 * unit, tip_y), (tip_x, tip_y), (tip_x, tip_y + 2.4 * unit)], stroke * 1.1)
     sketch.fill(np.maximum(arrow, head), "#ffffff")
+    return sketch.rgba()
+
+
+ICON_NAMES = ("play", "pause", "volume", "mute", "fullscreen", "windowed", "sidebar")
+
+
+def icon(name: str, size: int, color: str) -> np.ndarray:
+    """A small control icon (straight RGBA) drawn on a 24-unit grid: play, pause, volume, mute, fullscreen,
+    windowed (leave full screen) or sidebar."""
+    sketch = Sketch(size, size)
+    unit = size / 24
+    stroke = max(1.2, 1.9 * unit)
+    if name == "play":
+        sketch.fill(sketch.polygon([(8 * unit, 5.5 * unit), (19 * unit, 12 * unit), (8 * unit, 18.5 * unit)]), color)
+    elif name == "pause":
+        for left in (7, 13.5):
+            sketch.fill(sketch.rounded_rect(left * unit, 5.5 * unit, (left + 3.5) * unit, 18.5 * unit, 1 * unit), color)
+    elif name in ("volume", "mute"):
+        speaker = sketch.polygon([(4 * unit, 9.5 * unit), (8 * unit, 9.5 * unit), (13 * unit, 5 * unit),
+                                  (13 * unit, 19 * unit), (8 * unit, 14.5 * unit), (4 * unit, 14.5 * unit)])
+        sketch.fill(speaker, color)
+        if name == "volume":
+            waves = np.maximum(sketch.ring(12 * unit, 12 * unit, 4.5 * unit, stroke, -0.9, 0.9),
+                               sketch.ring(12 * unit, 12 * unit, 8 * unit, stroke, -0.9, 0.9))
+            sketch.fill(waves, color)
+        else:
+            cross = np.maximum(sketch.segment(15.5 * unit, 9 * unit, 21 * unit, 15 * unit, stroke),
+                               sketch.segment(21 * unit, 9 * unit, 15.5 * unit, 15 * unit, stroke))
+            sketch.fill(cross, color)
+    elif name in ("fullscreen", "windowed"):
+        inward = name == "windowed"
+        mask = np.zeros((size, size), np.float32)
+        for corner_x, corner_y in ((4, 4), (20, 4), (4, 20), (20, 20)):
+            towards_x = 1 if corner_x < 12 else -1
+            towards_y = 1 if corner_y < 12 else -1
+            if inward:
+                tip_x, tip_y = corner_x + towards_x * 5, corner_y + towards_y * 5
+                points = [(tip_x - towards_x * 5, tip_y), (tip_x, tip_y), (tip_x, tip_y - towards_y * 5)]
+            else:
+                points = [(corner_x + towards_x * 5, corner_y), (corner_x, corner_y), (corner_x, corner_y + towards_y * 5)]
+            mask = np.maximum(mask, sketch.polyline([(x * unit, y * unit) for x, y in points], stroke))
+        sketch.fill(mask, color)
+    elif name == "sidebar":
+        outer = sketch.rounded_rect(3 * unit, 4.5 * unit, 21 * unit, 19.5 * unit, 2.5 * unit)
+        inner = sketch.rounded_rect(3 * unit + stroke, 4.5 * unit + stroke, 21 * unit - stroke, 19.5 * unit - stroke,
+                                    max(0.0, 2.5 * unit - stroke))
+        sketch.fill(np.clip(outer - inner, 0, 1), color)
+        sketch.fill(sketch.rounded_rect(3 * unit, 4.5 * unit, 9.5 * unit, 19.5 * unit, 2.5 * unit), color, opacity=0.9)
+    else:
+        raise ValueError(f"unknown icon {name}; choose from {', '.join(ICON_NAMES)}")
     return sketch.rgba()
 
 

@@ -180,6 +180,92 @@ class FormatTest(unittest.TestCase):
         self.assertGreater(green[1], 210)
 
 
+class SeekTest(unittest.TestCase):
+    """A read that starts at frame n returns exactly the frames a read from the start numbers n, n+1, ...
+
+    Pieces of an upscale are read from the middle of the file and joined later, so an off-by-one here would
+    duplicate or drop a frame at every join and shift the comparison view against the upscaled video.
+    """
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.directory.name)
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    def assert_seeks_exact(self, source: Path, starts: tuple[int, ...] = (1, 2, 7, 13, 31, 58)) -> None:
+        info = media.probe(source)
+        keyframes = None if info.seeks_by_index else media.scan_keyframes(source, info)
+        sequential = [frame.copy() for frame in media.FrameReader(source, info)]
+        checked = 0
+        for start in starts:
+            if start + 1 >= len(sequential):
+                continue
+            reader = media.FrameReader(source, info, max_frames=2, start_frame=start, keyframes=keyframes)
+            frames = [frame.copy() for frame in reader]
+            self.assertEqual(len(frames), 2, f"{source.name} from frame {start}")
+            np.testing.assert_array_equal(frames[0], sequential[start], f"{source.name} frame {start}")
+            np.testing.assert_array_equal(frames[1], sequential[start + 1], f"{source.name} frame {start + 1}")
+            checked += 1
+        self.assertGreater(checked, 2)
+
+    def long_sample(self, name: str, *codec: str, seconds: int = 6, rate: int = 10) -> Path:
+        source = self.root / name
+        ffmpeg("-f", "lavfi", "-i", f"testsrc2=size={WIDTH}x{HEIGHT}:rate={rate}", *audio_source(),
+               "-t", str(seconds), *codec, str(source))
+        return source
+
+    def test_mp4_h264_with_b_frames(self):
+        self.assert_seeks_exact(self.long_sample("seek.mp4", "-c:v", "libx264", "-g", "25", "-pix_fmt", "yuv420p"))
+
+    def test_wmv(self):
+        self.assert_seeks_exact(self.long_sample("seek.wmv", "-c:v", "wmv2", "-g", "25", "-c:a", "wmav2"))
+
+    def test_mkv_vp9(self):
+        self.assert_seeks_exact(self.long_sample("seek.mkv", "-c:v", "libvpx-vp9", "-b:v", "300k", "-g", "25"))
+
+    def test_mpeg_ts_with_long_gop_uses_the_keyframe_index(self):
+        source = self.long_sample("seek.ts", "-c:v", "libx264", "-g", "40", "-pix_fmt", "yuv420p", "-c:a", "aac")
+        self.assertFalse(media.probe(source).seeks_by_index)
+        self.assert_seeks_exact(source)
+
+    def test_a_seek_that_lands_late_is_retried(self):
+        """Without its keyframe index, an MPEG-TS seek lands after the target; the reader must notice (the
+        first decoded picture comes after the target) and read from further back, not pad or return nothing."""
+        source = self.long_sample("late.ts", "-c:v", "libx264", "-g", "50", "-pix_fmt", "yuv420p", "-c:a", "aac")
+        info = media.probe(source)
+        sequential = [frame.copy() for frame in media.FrameReader(source, info)]
+        for start in (31, 45):
+            frames = [frame.copy() for frame in media.FrameReader(source, info, max_frames=2, start_frame=start)]
+            self.assertEqual(len(frames), 2, f"from frame {start}")
+            np.testing.assert_array_equal(frames[0], sequential[start], f"frame {start}")
+            np.testing.assert_array_equal(frames[1], sequential[start + 1], f"frame {start + 1}")
+
+    def test_mpeg_ps(self):
+        self.assert_seeks_exact(self.long_sample("seek.mpg", "-c:v", "mpeg2video", "-g", "25", "-c:a", "mp2"))
+
+    def test_variable_frame_rate(self):
+        source = self.root / "seek_vfr.mkv"
+        ffmpeg("-f", "lavfi", "-i", f"testsrc2=size={WIDTH}x{HEIGHT}:rate=10", "-t", "6",
+               "-vf", "setpts='N/10/TB+0.03*sin(N)/TB'", "-fps_mode", "vfr", "-c:v", "libx264",
+               "-pix_fmt", "yuv420p", str(source))
+        self.assert_seeks_exact(source)
+
+    def test_video_starting_after_the_audio_is_padded(self):
+        plain = self.long_sample("plain.mp4", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac")
+        late = self.root / "late.mp4"
+        ffmpeg("-itsoffset", "0.5", "-i", str(plain), "-i", str(plain), "-map", "0:v", "-map", "1:a", "-c", "copy",
+               str(late))
+        info = media.probe(late)
+        frames = [frame.copy() for frame in media.FrameReader(late, info)]
+        # 0.5 s at 10 fps: frames 0-4 repeat the first picture, so frame 5 is shown 0.5 s after the audio starts.
+        for index in range(1, 5):
+            np.testing.assert_array_equal(frames[index], frames[0])
+        self.assertFalse(np.array_equal(frames[5], frames[6]))
+        self.assert_seeks_exact(late)
+
+
 class ArgumentTest(unittest.TestCase):
     def test_audio_arguments(self):
         tracks = [media.AudioStream(0, "wmav2", 2), media.AudioStream(1, "aac", 6), media.AudioStream(2, "pcm_s24le", 6)]

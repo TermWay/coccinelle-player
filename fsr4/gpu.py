@@ -326,6 +326,22 @@ class Gpu:
         self._buffers.append(buffer)
         return buffer
 
+    def free_image(self, image: Image) -> None:
+        """Destroy one image and its memory now; the device must be done with it (see `wait_idle`)."""
+        vk.vkDestroyImage(self.device, image.handle, None)
+        vk.vkFreeMemory(self.device, image.memory, None)
+        self._images.remove(image)
+
+    def free_buffer(self, buffer: Buffer) -> None:
+        """Unmap, destroy and free one buffer now; the device must be done with it (see `wait_idle`)."""
+        vk.vkUnmapMemory(self.device, buffer.memory)
+        vk.vkDestroyBuffer(self.device, buffer.handle, None)
+        vk.vkFreeMemory(self.device, buffer.memory, None)
+        self._buffers.remove(buffer)
+
+    def wait_idle(self) -> None:
+        vk.check(vk.vkDeviceWaitIdle(self.device), "vkDeviceWaitIdle")
+
     # ---- commands -------------------------------------------------------------------------------
 
     def begin(self) -> int:

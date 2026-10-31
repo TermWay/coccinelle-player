@@ -34,6 +34,7 @@ FFX_API_QUERY_DESC_TYPE_UPSCALE_GETRENDERRESOLUTIONFROMQUALITYMODE = FFX_API_EFF
 FFX_API_QUERY_DESC_TYPE_UPSCALE_GETJITTERPHASECOUNT = FFX_API_EFFECT_ID_UPSCALE | 0x04
 FFX_API_QUERY_DESC_TYPE_UPSCALE_GETJITTEROFFSET = FFX_API_EFFECT_ID_UPSCALE | 0x05
 FFX_API_QUERY_DESC_TYPE_UPSCALE_GPU_MEMORY_USAGE = FFX_API_EFFECT_ID_UPSCALE | 0x08
+FFX_API_CONFIGURE_DESC_TYPE_UPSCALE_KEYVALUE = FFX_API_EFFECT_ID_UPSCALE | 0x07
 FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE_VERSION = FFX_API_EFFECT_ID_UPSCALE | 0x0B
 FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK = FFX_API_BACKEND_ID_VK | 0x03
 FFX_API_QUERY_DESC_TYPE_GET_VERSIONS = 4
@@ -46,6 +47,9 @@ FFX_API_CONFIGURE_GLOBALDEBUG_LEVEL_WARNINGS = 2
 FFX_API_CONFIGURE_GLOBALDEBUG_LEVEL_VERBOSE = 0xFFFFFFF
 
 FFX_UPSCALER_VERSION = (4 << 22) | (1 << 12) | 2
+# ffxConfigureDescUpscaleKeyValue keys (ffx_upscale.h); the header documents them for FSR 3.1.
+UPSCALE_KEYS = {"velocity_factor": 0, "reactiveness_scale": 1, "shading_change_scale": 2,
+                "accumulation_added_per_frame": 3, "min_disocclusion_accumulation": 4}
 
 FFX_UPSCALE_ENABLE_HIGH_DYNAMIC_RANGE = 1 << 0
 FFX_UPSCALE_ENABLE_DISPLAY_RESOLUTION_MOTION_VECTORS = 1 << 1
@@ -163,6 +167,10 @@ class ffxOverrideVersion(ctypes.Structure):
     _fields_ = [("header", ffxApiHeader), ("versionId", c_uint64)]
 
 
+class ffxConfigureDescUpscaleKeyValue(ctypes.Structure):
+    _fields_ = [("header", ffxApiHeader), ("key", c_uint64), ("u64", c_uint64), ("ptr", c_void_p)]
+
+
 class ffxConfigureDescGlobalDebug(ctypes.Structure):
     _fields_ = [("header", ffxApiHeader), ("effectId", c_uint64), ("fpMessage", ffxApiMessage), ("debugLevel", c_uint32)]
 
@@ -251,7 +259,7 @@ class Upscaler:
     """One FSR Upscaling context on a `Gpu`, for fixed render and output sizes."""
 
     def __init__(self, gpu: Gpu, render_size: tuple[int, int], upscale_size: tuple[int, int], flags: int,
-                 sdk_dir: Path, verbose: bool = False, debug_checking: bool = False):
+                 sdk_dir: Path, verbose: bool = False, debug_checking: bool = False, provider: str | None = None):
         self.gpu = gpu
         self.verbose = verbose
         self.render_size = render_size
@@ -263,7 +271,7 @@ class Upscaler:
             vkDevice=gpu.device, vkPhysicalDevice=gpu.physical_device, vkDeviceProcAddr=vk.address_of_vkGetDeviceProcAddr())
         self.versions = self._query_versions()
         self.context = c_void_p()
-        self._create_context(flags | (FFX_UPSCALE_ENABLE_DEBUG_CHECKING if debug_checking else 0))
+        self._create_context(flags | (FFX_UPSCALE_ENABLE_DEBUG_CHECKING if debug_checking else 0), provider)
         self.version_name = self._provider_version()
         if verbose:
             log.emit(f"[fsr] available upscaler versions: {', '.join(name for _, name in self.versions)}")
@@ -289,12 +297,21 @@ class Upscaler:
         check(self.api.query(None, byref(query.header)), "ffxQuery(GetVersions)")
         return [(ids[index], names[index].decode("ascii", "replace")) for index in range(count.value)]
 
-    def _create_context(self, flags: int) -> None:
+    def _create_context(self, flags: int, provider: str | None) -> None:
+        """Create the context; `provider` names one of the DLL's upscaler versions ("3.1.6"), else the newest."""
         self._backend = ffxCreateBackendVKDesc(
             header=ffxApiHeader(type=FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK), deviceContext=self.device_context)
+        chain = ctypes.addressof(self._backend)
+        if provider is not None:
+            ids = [version_id for version_id, name in self.versions if name == provider]
+            if not ids:
+                raise ValueError(f"the FSR DLL has no upscaler {provider}; it has "
+                                 f"{', '.join(name for _, name in self.versions)}")
+            self._override = ffxOverrideVersion(
+                header=ffxApiHeader(type=FFX_API_DESC_TYPE_OVERRIDE_VERSION, pNext=chain), versionId=ids[0])
+            chain = ctypes.addressof(self._override)
         self._version = ffxCreateContextDescUpscaleVersion(
-            header=ffxApiHeader(type=FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE_VERSION,
-                                pNext=ctypes.addressof(self._backend)),
+            header=ffxApiHeader(type=FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE_VERSION, pNext=chain),
             version=FFX_UPSCALER_VERSION)
         self._create = ffxCreateContextDescUpscale(
             header=ffxApiHeader(type=FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE, pNext=ctypes.addressof(self._version)),
@@ -351,6 +368,14 @@ class Upscaler:
             preExposure=1.0, reset=reset, cameraNear=0.1, cameraFar=1000.0, cameraFovAngleVertical=1.0,
             viewSpaceToMetersFactor=1.0, flags=flags)
         check(self.api.dispatch(byref(self.context), byref(description.header)), "ffxDispatch(Upscale)")
+
+    def configure(self, key: str, value: float) -> None:
+        """Set one tuning key (UPSCALE_KEYS) for the following dispatches."""
+        number = c_float(value)
+        description = ffxConfigureDescUpscaleKeyValue(
+            header=ffxApiHeader(type=FFX_API_CONFIGURE_DESC_TYPE_UPSCALE_KEYVALUE), key=UPSCALE_KEYS[key],
+            ptr=ctypes.cast(ctypes.pointer(number), c_void_p))
+        check(self.api.configure(byref(self.context), byref(description.header)), f"ffxConfigure({key})")
 
     def destroy(self) -> None:
         if self.context.value:

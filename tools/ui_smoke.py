@@ -2,9 +2,11 @@
 
     python tools/ui_smoke.py --video out/ui/sample.wmv --image out/lab/in.png --out out/ui
 
-Steps: empty window, a file dropped on it (a real WM_DROPFILES message), the loaded preview, the live preview
-while upscaling, the finished comparison, zoom plus log, an image job, and the error banner for a bad file.
-Screenshots go through PrintWindow, so the window may be covered; it does pop up on the desktop.
+Steps: empty window, a video dropped on it (a real WM_DROPFILES message), its first upscaled frame, a tooltip,
+a dropdown, the file dialog, playback, a seek into frames not upscaled yet (buffering), a paused zoom with the
+original pixels on the left, full screen with and without its controls, the folded sidebar, the whole-file
+upscale and save, an image, the error banner for a bad file, and the minimum window size. Screenshots go
+through PrintWindow, so the window may be covered; it does pop up on the desktop.
 """
 from __future__ import annotations
 
@@ -21,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import window_capture  # noqa: E402
-from fsr4 import ui, ui_theme  # noqa: E402
+from fsr4 import media, ui, ui_theme, usage  # noqa: E402
 
 WM_DROPFILES = 0x0233
 GMEM_MOVEABLE_ZEROINIT = 0x0042
@@ -79,7 +81,6 @@ def main() -> int:
     parser.add_argument("--video", type=Path, required=True)
     parser.add_argument("--image", type=Path, required=True)
     parser.add_argument("--out", type=Path, default=Path("out/ui"))
-    parser.add_argument("--frames", type=int, default=0, help="limit the video job (0: whole file)")
     args = parser.parse_args()
     sys.stdout.reconfigure(errors="replace")
     args.out.mkdir(parents=True, exist_ok=True)
@@ -88,19 +89,12 @@ def main() -> int:
 
     ctypes.windll.shcore.SetProcessDpiAwareness(1)
     ui_theme.enable_dark_dialogs()
+    usage.apply(usage.DEFAULT.threads, usage.DEFAULT.priority)
     root = tk.Tk()
     root.withdraw()
     app = ui.App(root)
     ui_theme.style_title_bar(root)
     root.deiconify()
-    original_options = app._options
-
-    def limited_options():
-        options = original_options()
-        options.frames = args.frames or None
-        return options
-
-    app._options = limited_options
     failures: list[str] = []
     started = time.monotonic()
 
@@ -116,65 +110,139 @@ def main() -> int:
     def steps():
         yield lambda: app.gpu_ready is not None
         check(app.gpu_ready is True, f"GPU check: {app.gpu_label.cget('text')}")
+        check(app.choose_button.cget("text") == "Choose file…", "button reads Choose file… without a file")
         shot("01_empty")
         post_drop(root, [args.video])
         yield lambda: app.info is not None or "Cannot" in app.banner_label.cget("text")
         check(app.info is not None and app.input_path.name == args.video.name, "dropped video loaded")
-        yield 0.4
+        check(app.choose_button.cget("text") == "Choose another file…", "button reads Choose another file…")
+        loaded = time.monotonic()
+        yield lambda: app.view.comparing and app.view._still is not None             and app.view._still[1].get("current") is not None
+        check(time.monotonic() - loaded < 6, f"first upscaled frame shown {time.monotonic() - loaded:.1f} s after load")
+        check(app.transport.winfo_ismapped(), "playback controls shown for a video")
+        yield 0.5
         shot("02_loaded")
-        check(app.start_button.instate(["!disabled"]), "Upscale enabled after loading")
-        root.tk.call("ttk::combobox::Post", app.motion_choice)
+        chip = app.size_chips["1440"]
+        chip.event_generate("<Enter>", x=5, y=5)
+        yield 0.8
+        tips = [child for child in chip.winfo_children() if isinstance(child, tk.Toplevel)]
+        check(bool(tips), "hovering a size chip shows a tooltip")
+        if tips:
+            window_capture.save_handle(int(tips[0].wm_frame(), 16), args.out / "02a_tooltip.png")
+            print("      screenshot 02a_tooltip.png", flush=True)
+        chip.event_generate("<Leave>")
+        root.tk.call("ttk::combobox::Post", app.encoder_choice)
         yield 0.4
-        popdown = root.tk.call("ttk::combobox::PopdownWindow", app.motion_choice)
+        popdown = root.tk.call("ttk::combobox::PopdownWindow", app.encoder_choice)
         window_capture.save_handle(int(root.tk.call("wm", "frame", popdown), 16), args.out / "02b_dropdown.png")
         print("      screenshot 02b_dropdown.png", flush=True)
-        root.tk.call("ttk::combobox::Unpost", app.motion_choice)
+        root.tk.call("ttk::combobox::Unpost", app.encoder_choice)
         found: list = []
         watcher = close_dialog_later("Choose a video or an image", args.out / "02c_file_dialog.png", found)
         app.browse()
         watcher.join(timeout=5)
         check(bool(found), "file dialog opened and closed")
-        job_started = time.monotonic()
-        app.start()
-        yield lambda: app.view.comparing
-        first_preview = time.monotonic() - job_started
-        check(first_preview < 3.0, f"first live preview {first_preview:.1f} s after start")
-        yield 0.6
-        shot("03_running")
-        check(app.running, "job running with a live comparison")
-        yield lambda: not app.running
-        check(app.last_result is not None and app.last_result.output.exists(), "video job finished")
-        yield 0.5
-        shot("04_done")
-        app.view.split = 0.35
+        app.toggle_play()
+        yield lambda: app.player.playing and not app.player.buffering and app.player.position > 0
+        first = app.player.position
+        yield 2.0
+        played = app.player.position - first
+        check(played >= 60 or app.player.buffering, f"playback advanced {played} frames in 2 s")
+        shot("03_playing")
+        total = app._total()
+        app.seek_to(int(total * 0.8), True)
+        yield 0.4
+        check(app.player.buffering or app.player.position >= int(total * 0.8), "seek into frames not upscaled yet")
+        shot("04_buffering")
+        yield lambda: not app.player.buffering or not app.player.playing
+        yield 1.0
+        app.toggle_play()
+        yield lambda: not app.player.playing
+        yield 0.8
+        app._choose_layer("left", "nearest")
         app.view.set_zoom(2, anchor=(app.view.winfo_width() // 2, app.view.winfo_height() // 2))
-        app.toggle_log()
+        yield 0.6
+        check(app.zoom_var.get() == "2", "zoom chip follows the view")
+        check(app.view.sides["left"] == "nearest", "left side shows the original pixels")
+        shot("05_paused_zoom_original")
+        app.zoom_var.set("source")
+        app.view.set_zoom("source")
+        yield 0.6
+        shot("05b_original_size")
+        app.view.set_zoom("fit")
+        app._choose_layer("left", "cubic")
+        # two settings side by side: sharpening on, the version without it kept as "before"
+        app.sharpen_var.set(True)
+        app.sharpness_var.set(0.8)
+        app._settings_changed()
+        yield lambda: app.renderer.before is not None
+        yield lambda: app.renderer.timeline.ready_until(app.player.position) > app.player.position
+        app._choose_layer("left", "before")
+        yield lambda: app.view._still is not None and app.view._still[1].get("before") is not None             and app.view._still[1].get("current") is not None
+        app.view.set_zoom(2, anchor=(app.view.winfo_width() // 2, app.view.winfo_height() // 2))
+        yield 0.8
+        check("Before" in app.view.layer_labels.get("before", ""), "previous settings available as a layer")
+        shot("05c_before_and_after_settings")
+        app.view.set_zoom("fit")
+        app._choose_layer("left", "cubic")
+        app.sharpen_var.set(False)
+        app._settings_changed()
+        yield 1.0
+        check(app.renderer.settings.sharpness is None and app.renderer.before is not None,
+              "switching back reuses the earlier version")
+        app.seek_to(0, True)
+        app.toggle_fullscreen()
+        yield 1.0
+        check(app.view.winfo_width() == root.winfo_screenwidth(), "full screen video fills the screen width")
+        shot("06_fullscreen")
+        app.toggle_play()
+        yield 3.5
+        check(app.player.playing, "still playing after 3.5 s in full screen")
+        check(not app.transport.winfo_ismapped(), "controls hide while playing full screen")
+        shot("06b_fullscreen_playing")
+        app.toggle_play()
+        app.toggle_fullscreen()
+        yield 0.8
+        app.toggle_sidebar()
+        yield 0.6
+        check(not app.sidebar.winfo_ismapped(), "sidebar folds away")
+        shot("07_sidebar_hidden")
+        app.toggle_sidebar()
+        app.start()
+        yield lambda: not app.busy
+        check(app.last_saved is not None and app.last_saved.exists(), "whole video saved")
+        if app.last_saved is not None and app.last_saved.exists():
+            saved = media.probe(app.last_saved)
+            check(abs((saved.frame_count or 0) - total) <= 1, f"saved {saved.frame_count} of {total} frames")
+            check([track.codec for track in saved.audio] == ["aac"], "WMA audio converted to AAC")
         yield 0.5
-        shot("05_zoom_log")
-        check(app.zoom_var.get() == 2, "zoom chip follows the view")
-        app.toggle_log()
+        shot("08_saved")
         app.load(args.image)
         yield lambda: app.info is not None
         app.start()
-        yield lambda: not app.running and app.last_result is not None
-        check(app.last_result.output.exists(), "image job finished")
+        yield lambda: not app.busy and app.last_saved is not None
+        check(app.last_saved.exists(), "image job finished")
         yield 0.5
-        shot("06_image")
+        shot("09_image")
         app.load(bad_file)
         yield lambda: app.banner.winfo_ismapped()
         yield 0.3
-        shot("07_error")
+        shot("10_error")
         check("Cannot open" in app.banner_label.cget("text"), "bad file shows the error banner")
         app._hide_banner()
         app.load(args.video)
         yield lambda: app.info is not None
         minimum_width, minimum_height = root.minsize()
         root.geometry(f"{minimum_width}x{minimum_height}")
-        yield 0.8
-        shot("08_minimum_size")
-        sidebar_bottom = app.audio_note.winfo_rooty() + app.audio_note.winfo_height()
-        footer_top = app.progress.winfo_rooty()
-        check(sidebar_bottom <= footer_top, f"sidebar fits at the minimum size ({sidebar_bottom} <= {footer_top})")
+        yield 1.0
+        shot("11_minimum_size")
+        content, canvas = app.sidebar_content, app.sidebar_canvas
+        fits = content.winfo_reqheight() <= canvas.winfo_height() + 1
+        check(fits or app.sidebar_scrollbar.winfo_ismapped(),
+              f"sidebar fits or scrolls at the minimum size ({content.winfo_reqheight()} for {canvas.winfo_height()})")
+        app.sidebar_canvas.yview_moveto(1.0)
+        yield 0.4
+        shot("11b_minimum_size_scrolled")
 
     sequence = steps()
     deadline = {"time": 0.0, "condition": None}

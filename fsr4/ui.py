@@ -1,8 +1,14 @@
-"""The window: pick or drop a file, set the upscale, run it, and compare the result with a plain upscale.
+"""The window: open a video or an image, watch it upscaled while it is made, compare it, save it.
 
-Layout: a header (title and GPU), a settings sidebar, the compare view, an optional log, and a footer with the
-progress and the actions. The job runs on a worker thread; progress, live previews, log lines and the result
-reach the window through a queue polled every 50 ms. Files can be dropped anywhere on the window.
+Layout: a header (title and GPU), a settings sidebar that folds away (Ctrl+B), the preview with its toolbar
+(sidebar button, the filter the left side is enlarged with, zoom), the playback controls with the filmstrip,
+an optional log, and a footer with the progress and the actions. Full screen (F11 or F) keeps the video and
+its controls, which hide while the video plays and come back when the mouse moves.
+
+A loaded video gets a Renderer (fsr4.render), which upscales into pieces around the playhead, and a Player
+(fsr4.player), which plays the finished pieces in real time with sound. Upscale makes the renderer do the
+whole file and joins the pieces into the output. Images go through the one-shot job. Workers reach the window
+through a queue polled every 30 ms. Files can be dropped anywhere on the window.
 """
 from __future__ import annotations
 
@@ -12,28 +18,82 @@ import queue
 import subprocess
 import sys
 import threading
+import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, ttk
 
-from . import log
+import cv2
+import numpy as np
+
+from . import log, usage
+from .ffx import find_sdk_dir
 from .job import JobOptions, JobPlan, JobResult, default_output, plan_from_info, run_job
-from .media import (COPY_ANY_AUDIO_SUFFIXES, IMAGE_SUFFIXES, MP4_AUDIO_COPY, VIDEO_SUFFIXES, MediaInfo, is_image,
-                    probe, read_frame)
-from .ui_compare import ZOOM_LEVELS, CompareView
+from .media import (COPY_ANY_AUDIO_SUFFIXES, IMAGE_SUFFIXES, MP4_AUDIO_COPY, VIDEO_SUFFIXES, KeyframeIndex, MediaInfo,
+                    is_image, probe, read_frame, read_thumbnail)
+from .player import Player
+from .render import RenderSettings, Renderer, clean_stale_directories
+from .ui_art import icon, png_base64
 from .ui_theme import Theme, enable_dark_dialogs, style_title_bar
+from .ui_tooltip import Tooltip
+from .ui_transport import Transport, format_time
+from .ui_video import REFERENCE_FILTERS, ZOOM_LEVELS, VideoView
 
 APP_NAME = "FSR4 Upscaler"
-POLL_MS = 50
+POLL_MS = 30
+DRAG_SEEK_SECONDS = 0.12
 SIDEBAR_WIDTH = 340
-PREVIEW_POSITION = 0.1
-PREVIEW_MAX_SECONDS = 10.0
+SETTINGS_DELAY_MS = 450
+HIDE_CONTROLS_MS = 2500
+SEEK_STEP_SECONDS = 5
+SOURCE_THUMBNAILS = 40
+THUMBNAIL_HEIGHT = 108
 SIZE_CHOICES = [("1.5×", "1.5"), ("2×", "2"), ("3×", "3"), ("1440p", "1440"), ("4K", "2160"), ("Custom", "custom")]
+SIZE_TIPS = {
+    "1.5": "1.5 times the width and height (2.25 times the pixels). FSR calls this ratio Quality.",
+    "2": "Twice the width and height, four times the pixels. FSR calls this ratio Performance.",
+    "3": "Three times the width and height: FSR's largest step (Ultra Performance). Best for small sources.",
+    "1440": "The short side becomes 1440 pixels (2560 × 1440 for a 16:9 video).",
+    "2160": "The short side becomes 2160 pixels: 4K, 3840 × 2160 for a 16:9 video.",
+    "custom": "Any factor from 1× to 3× with the slider.",
+}
 TARGET_SHORT_SIDES = {"1440": 1440, "2160": 2160}
-MOTION_CHOICES = [("Optical flow · fast", "dis", "fast"), ("Optical flow · ultrafast", "dis", "ultrafast"),
-                  ("Optical flow · medium, best", "dis", "medium"), ("Off", "zero", "fast")]
-ENCODER_CHOICES = [("HEVC · GPU (AMF)", "amf"), ("H.264 · GPU (AMF)", "h264_amf"), ("H.264 · CPU (x264)", "x264"),
-                   ("HEVC · CPU (x265)", "x265")]
+MOTION_CHOICES = [
+    ("Optical flow · fast", "dis", "fast",
+     "Follows how things move between frames, so FSR can add detail from earlier frames. Good quality at full speed."),
+    ("Optical flow · ultrafast", "dis", "ultrafast",
+     "A rougher motion estimate, a little faster. Fine moving detail can come out softer."),
+    ("Optical flow · medium, best", "dis", "medium",
+     "The most accurate motion, for fast or detailed movement. Slower."),
+    ("Off", "zero", "fast",
+     "No motion: FSR mostly works on each frame alone. Fine for still shots, moving parts can smear."),
+]
+ENCODER_CHOICES = [
+    ("HEVC · GPU (AMF)", "amf",
+     "Encoded by the graphics card: fast and leaves the processor free. Plays on most devices from the last "
+     "ten years."),
+    ("AV1 · GPU (AMF)", "av1_amf",
+     "Encoded by the graphics card, files about 15–20% smaller than HEVC at the same quality. Needs a recent "
+     "player or device."),
+    ("H.264 · GPU (AMF)", "h264_amf",
+     "Plays everywhere, even on old devices and browsers; files about 15% larger than HEVC. At most 4096 pixels "
+     "wide."),
+    ("H.264 · CPU (x264)", "x264",
+     "Encoded by the processor: plays everywhere and suits sharp text, but keeps the processor busy."),
+    ("HEVC · CPU (x265)", "x265",
+     "Small files from the processor, but the slowest choice: at 4K it can hold the upscale back."),
+]
+UPSCALER_CHOICES = [
+    ("FSR 4 · machine learning", None,
+     "AMD's newest upscaler, a neural network made for RDNA 4. The best results here."),
+    ("FSR 3.1 · older, hand-tuned", "3.1.6",
+     "AMD's previous upscaler, kept in the same DLL. Softer and less stable on video; here to compare."),
+    ("FSR 2.3 · older, hand-tuned", "2.3.4",
+     "The upscaler before that, also in the DLL. Here to compare."),
+]
+FILTER_HELP = {"nearest": "every source pixel as a block, exactly what the file holds",
+               "linear": "smooth, what most players do", "cubic": "a little sharper, the usual photo editor filter",
+               "lanczos": "the sharpest classic filter (mpv, madVR)"}
 OPEN_TYPES = [("Videos and images", " ".join(f"*{suffix}" for suffix in VIDEO_SUFFIXES + IMAGE_SUFFIXES)),
               ("Videos", " ".join(f"*{suffix}" for suffix in VIDEO_SUFFIXES)),
               ("Images", " ".join(f"*{suffix}" for suffix in IMAGE_SUFFIXES)), ("All files", "*.*")]
@@ -101,26 +161,47 @@ def describe_audio_plan(info: MediaInfo, output: Path) -> str:
     return "Audio: " + "; ".join(parts) + "."
 
 
+def to_bgra(rgba: np.ndarray) -> np.ndarray:
+    return cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGRA)
+
+
 class App:
-    """The main window. `load`, `start` and `cancel` are also what the automated UI check drives."""
+    """The main window. `load`, `start`, `cancel` and the playback methods are also what the UI check drives."""
 
     def __init__(self, root: tk.Tk, preselected: Path | None = None):
         self.root = root
         self.theme = Theme(root)
         self.queue: queue.Queue = queue.Queue()
-        self.cancel_event = threading.Event()
-        self.worker: threading.Thread | None = None
         self.load_token = 0
         self.input_path: Path | None = None
         self.info: MediaInfo | None = None
+        self.keyframes: KeyframeIndex | None = None
+        self.renderer: Renderer | None = None
+        self.player: Player | None = None
+        self.source_thumbnails: dict[int, np.ndarray] = {}
         self.output_custom = False
         self._setting_output = False
-        self.last_result: JobResult | None = None
-        self.running = False
+        self.last_saved: Path | None = None
+        self.image_running = False
+        self.image_cancel = threading.Event()
+        self.worker: threading.Thread | None = None
+        self.batch = False
+        self.saving = False
+        self.render_position: int | None = None
+        self.render_speed = 0.0
         self.gpu_ready: bool | None = None
         self.log_visible = False
+        self.sidebar_visible = True
+        self.fullscreen = False
+        self._settings_job: str | None = None
+        self._hide_job: str | None = None
+        self._comparing_shown = False
+        self._last_drag_seek = 0.0
         root.title(APP_NAME)
         root.iconphoto(True, *self.theme.icon_photos())
+        self.icons = {name: tk.PhotoImage(master=root, data=png_base64(icon(name, self.theme.px(20),
+                                                                              self.theme.palette.text_secondary)))
+                      for name in ("sidebar",)}
         self._build()
         self._place_window()
         log.set_sink(lambda line: self.queue.put(("log", line)))
@@ -129,34 +210,50 @@ class App:
         root.protocol("WM_DELETE_WINDOW", self.close)
         root.after(POLL_MS, self._poll)
         threading.Thread(target=self._probe_gpu, daemon=True).start()
+        threading.Thread(target=self._clean_temp, daemon=True).start()
         self._refresh()
         if preselected is not None:
             self.load(preselected)
 
+    @property
+    def busy(self) -> bool:
+        """A whole-file upscale, a save or an image job is running: the settings are locked."""
+        return self.batch or self.saving or self.image_running
+
     # ---- layout ---------------------------------------------------------------------------------
 
     def _build(self) -> None:
-        px = self.theme.px
         root = self.root
         root.columnconfigure(0, weight=1)
         root.rowconfigure(1, weight=1)
-        self._build_header().grid(row=0, column=0, sticky="ew")
-        body = ttk.Frame(root)
-        body.grid(row=1, column=0, sticky="nsew")
-        body.columnconfigure(1, weight=1)
-        body.rowconfigure(0, weight=1)
-        self._build_sidebar(body).grid(row=0, column=0, sticky="ns")
-        self._build_main(body).grid(row=0, column=1, sticky="nsew")
-        self._build_footer().grid(row=2, column=0, sticky="ew")
+        self.header = self._build_header()
+        self.header.grid(row=0, column=0, sticky="ew")
+        self.body = ttk.Frame(root)
+        self.body.grid(row=1, column=0, sticky="nsew")
+        self.body.columnconfigure(1, weight=1)
+        self.body.rowconfigure(0, weight=1)
+        self.sidebar = self._build_sidebar(self.body)
+        self.sidebar.grid(row=0, column=0, sticky="ns")
+        self.main = self._build_main(self.body)
+        self.main.grid(row=0, column=1, sticky="nsew")
+        self.footer = self._build_footer()
+        self.footer.grid(row=2, column=0, sticky="ew")
+
+    def _tip(self, widget: tk.Misc, text) -> None:
+        Tooltip(widget, self.theme, text)
 
     def _build_header(self) -> ttk.Frame:
         px = self.theme.px
-        header = ttk.Frame(self.root, padding=(px(20), px(12), px(20), px(8)))
-        header.columnconfigure(2, weight=1)
-        ttk.Label(header, image=self.theme.icon(24)).grid(row=0, column=0, padx=(0, px(10)))
-        ttk.Label(header, text=APP_NAME, style="Title.TLabel").grid(row=0, column=1, sticky="w")
+        header = ttk.Frame(self.root, padding=(px(12), px(12), px(20), px(8)))
+        header.columnconfigure(3, weight=1)
+        sidebar_button = ttk.Button(header, image=self.icons["sidebar"], style="Icon.TButton", takefocus=False,
+                                    command=self.toggle_sidebar)
+        sidebar_button.grid(row=0, column=0, padx=(0, px(10)))
+        self._tip(sidebar_button, "Hide or show the settings (Ctrl+B).")
+        ttk.Label(header, image=self.theme.icon(24)).grid(row=0, column=1, padx=(0, px(10)))
+        ttk.Label(header, text=APP_NAME, style="Title.TLabel").grid(row=0, column=2, sticky="w")
         status = ttk.Frame(header)
-        status.grid(row=0, column=3, sticky="e")
+        status.grid(row=0, column=4, sticky="e")
         self.gpu_dot = ttk.Label(status, text="●", style="Faint.TLabel")
         self.gpu_dot.grid(row=0, column=0, padx=(0, px(6)))
         self.gpu_label = ttk.Label(status, text="Checking the GPU…", style="Small.TLabel")
@@ -166,15 +263,44 @@ class App:
     def _section(self, parent: ttk.Frame, row: int, title: str) -> int:
         px = self.theme.px
         ttk.Label(parent, text=title.upper(), style="Section.TLabel").grid(
-            row=row, column=0, sticky="w", pady=(px(13) if row else px(2), px(5)))
+            row=row, column=0, sticky="w", pady=(px(10) if row else px(2), px(4)))
         return row + 1
 
     def _build_sidebar(self, parent: ttk.Frame) -> ttk.Frame:
-        """Settings top to bottom in the order they are decided: source, size, motion, sharpening, output."""
-        px = self.theme.px
-        sidebar = ttk.Frame(parent, width=px(SIDEBAR_WIDTH), padding=(px(20), px(2), px(18), px(8)))
-        sidebar.grid_propagate(False)
+        """Settings top to bottom in the order they are decided: source, size, motion, sharpening, output.
+
+        The settings sit in a canvas that scrolls (wheel or scrollbar) when the window is too short for them.
+        """
+        palette, px = self.theme.palette, self.theme.px
+        holder = ttk.Frame(parent, width=px(SIDEBAR_WIDTH))
+        holder.grid_propagate(False)
+        holder.rowconfigure(0, weight=1)
+        holder.columnconfigure(0, weight=1)
+        canvas = tk.Canvas(holder, background=palette.background, highlightthickness=0, borderwidth=0)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar = ttk.Scrollbar(holder, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        sidebar = ttk.Frame(canvas, padding=(px(20), px(2), px(18), px(8)))
         sidebar.columnconfigure(0, weight=1)
+        item = canvas.create_window(0, 0, window=sidebar, anchor="nw")
+        self.sidebar_canvas, self.sidebar_scrollbar, self.sidebar_content = canvas, scrollbar, sidebar
+
+        def fit(_event=None) -> None:
+            canvas.itemconfigure(item, width=canvas.winfo_width())
+            height = sidebar.winfo_reqheight()
+            canvas.configure(scrollregion=(0, 0, canvas.winfo_width(), height))
+            scrolling = height > canvas.winfo_height() + 1
+            if scrolling != bool(scrollbar.winfo_ismapped()):
+                # The scrollbar takes the place of the right margin, so nothing reflows or gets cut.
+                sidebar.configure(padding=(px(20), px(2), px(6) if scrolling else px(18), px(8)))
+            if scrolling:
+                scrollbar.grid(row=0, column=1, sticky="ns", padx=(0, px(2)))
+            else:
+                scrollbar.grid_remove()
+                canvas.yview_moveto(0)
+
+        sidebar.bind("<Configure>", fit)
+        canvas.bind("<Configure>", fit)
         wrap = px(SIDEBAR_WIDTH - 38)
 
         row = self._section(sidebar, 0, "Source")
@@ -182,9 +308,11 @@ class App:
         self.source_name.grid(row=row, column=0, sticky="w")
         self.source_details = ttk.Label(sidebar, text="Drop a file anywhere on this window, or choose one.",
                                         style="Small.TLabel", wraplength=wrap, justify="left")
-        self.source_details.grid(row=row + 1, column=0, sticky="w", pady=(px(2), px(7)))
+        self.source_details.grid(row=row + 1, column=0, sticky="w", pady=(px(2), px(6)))
         self.choose_button = ttk.Button(sidebar, text="Choose file…", style="Secondary.TButton", command=self.browse)
         self.choose_button.grid(row=row + 2, column=0, sticky="w")
+        self._tip(self.choose_button, "Open a video or an image (Ctrl+O). You can also drop a file anywhere on "
+                                      "the window.")
 
         row = self._section(sidebar, row + 3, "Size")
         chips = ttk.Frame(sidebar)
@@ -193,28 +321,48 @@ class App:
         self.size_chips: dict[str, ttk.Radiobutton] = {}
         for index, (text, value) in enumerate(SIZE_CHOICES):
             chip = ttk.Radiobutton(chips, text=text, value=value, variable=self.size_var,
-                                   style="Segment.TRadiobutton", command=self._refresh, takefocus=False)
+                                   style="Segment.TRadiobutton", command=self._settings_changed, takefocus=False)
             chip.grid(row=0, column=index, padx=(0, px(5)))
             self.size_chips[value] = chip
+            self._tip(chip, SIZE_TIPS[value])
         self.custom_row = ttk.Frame(sidebar)
         self.custom_row.grid(row=row + 1, column=0, sticky="ew", pady=(px(8), 0))
         self.custom_row.columnconfigure(0, weight=1)
         self.custom_scale = tk.DoubleVar(value=2.0)
-        ttk.Scale(self.custom_row, from_=1.0, to=3.0, variable=self.custom_scale,
-                  command=lambda _: self._refresh()).grid(row=0, column=0, sticky="ew")
+        custom_slider = ttk.Scale(self.custom_row, from_=1.0, to=3.0, variable=self.custom_scale,
+                                  command=lambda _: self._settings_changed())
+        custom_slider.grid(row=0, column=0, sticky="ew")
+        self._tip(custom_slider, "The factor applied to the width and the height, from 1× (same size, FSR only "
+                                 "cleans the picture) to 3×.")
         self.custom_label = ttk.Label(self.custom_row, text="2.00×", style="Small.TLabel", width=6, anchor="e")
         self.custom_label.grid(row=0, column=1, padx=(px(8), 0))
         self.custom_row.grid_remove()
         self.size_label = ttk.Label(sidebar, text="", style="Strong.TLabel", wraplength=wrap, justify="left")
-        self.size_label.grid(row=row + 2, column=0, sticky="w", pady=(px(8), 0))
+        self.size_label.grid(row=row + 2, column=0, sticky="w", pady=(px(7), 0))
         self.size_note = ttk.Label(sidebar, text="", style="Faint.TLabel", wraplength=wrap, justify="left")
         self.size_note.grid(row=row + 3, column=0, sticky="w")
 
-        row = self._section(sidebar, row + 4, "Motion vectors")
+        row = self._section(sidebar, row + 4, "Upscaler")
+        self.upscaler_choice = ttk.Combobox(sidebar, state="readonly", values=[c[0] for c in UPSCALER_CHOICES])
+        self.upscaler_choice.current(0)
+        self.upscaler_choice.grid(row=row, column=0, sticky="ew")
+        self.upscaler_choice.bind("<<ComboboxSelected>>", lambda _: self._settings_changed())
+        self._tip(self.upscaler_choice, "AMD's FSR DLL holds three upscalers. FSR 4 is the one this tool is for; "
+                                        "FSR 3.1 and 2.3 are there to compare. Measured on a test clip (PSNR "
+                                        "against the original, higher is better): FSR 4 26.8 dB, FSR 2.3 26.5, "
+                                        "Lanczos 26.4, FSR 3.1 25.9. After switching, the previous version stays "
+                                        "available on either side of the divider.")
+        self.upscaler_note = ttk.Label(sidebar, text="", style="Faint.TLabel", wraplength=wrap, justify="left")
+        self.upscaler_note.grid(row=row + 1, column=0, sticky="w", pady=(px(4), 0))
+
+        row = self._section(sidebar, row + 2, "Motion vectors")
         self.motion_choice = ttk.Combobox(sidebar, state="readonly", values=[c[0] for c in MOTION_CHOICES])
         self.motion_choice.current(0)
         self.motion_choice.grid(row=row, column=0, sticky="ew")
-        self.motion_choice.bind("<<ComboboxSelected>>", lambda _: self._refresh())
+        self.motion_choice.bind("<<ComboboxSelected>>", lambda _: self._settings_changed())
+        self._tip(self.motion_choice, "FSR 4 was made for games, which tell it how every pixel moved. A video does "
+                                      "not, so the motion is measured with optical flow. Better motion lets FSR "
+                                      "build detail from several frames; faster settings trade some of it.")
         self.motion_note = ttk.Label(sidebar, text="", style="Faint.TLabel", wraplength=wrap, justify="left")
         self.motion_note.grid(row=row + 1, column=0, sticky="w", pady=(px(4), 0))
 
@@ -224,14 +372,19 @@ class App:
         sharpen_row.columnconfigure(1, weight=1)
         self.sharpen_var = tk.BooleanVar(value=False)
         self.sharpen_switch = ttk.Checkbutton(sharpen_row, text="", variable=self.sharpen_var,
-                                              style="Switch.TCheckbutton", command=self._refresh, takefocus=False)
+                                              style="Switch.TCheckbutton", command=self._settings_changed,
+                                              takefocus=False)
         self.sharpen_switch.grid(row=0, column=0, padx=(0, px(4)))
         self.sharpness_var = tk.DoubleVar(value=0.4)
         self.sharpness_scale = ttk.Scale(sharpen_row, from_=0.0, to=1.0, variable=self.sharpness_var,
-                                         command=lambda _: self._refresh())
+                                         command=lambda _: self._settings_changed())
         self.sharpness_scale.grid(row=0, column=1, sticky="ew")
         self.sharpness_label = ttk.Label(sharpen_row, text="off", style="Small.TLabel", width=5, anchor="e")
         self.sharpness_label.grid(row=0, column=2, padx=(px(8), 0))
+        sharpen_tip = ("FSR's own sharpening (RCAS) after the upscale. Off keeps FSR 4's natural look; 0.2 to 0.5 "
+                       "makes edges crisper; high values also sharpen noise and can leave halos.")
+        self._tip(self.sharpen_switch, sharpen_tip)
+        self._tip(self.sharpness_scale, sharpen_tip)
 
         row = self._section(sidebar, row + 1, "Output")
         output_row = ttk.Frame(sidebar)
@@ -241,22 +394,72 @@ class App:
         self.output_var.trace_add("write", self._output_edited)
         self.output_entry = ttk.Entry(output_row, textvariable=self.output_var)
         self.output_entry.grid(row=0, column=0, sticky="ew")
+        self._tip(self.output_entry, "Where the upscaled file is saved. .mp4 plays everywhere; .mkv keeps every "
+                                     "audio track exactly as it is.")
         self.save_button = ttk.Button(output_row, text="…", width=3, style="Secondary.TButton",
                                       command=self.browse_output)
         self.save_button.grid(row=0, column=1, padx=(px(6), 0))
+        self._tip(self.save_button, "Choose where to save, and the file type.")
         self.encoder_choice = ttk.Combobox(sidebar, state="readonly", values=[c[0] for c in ENCODER_CHOICES])
         self.encoder_choice.current(0)
         self.encoder_choice.grid(row=row + 1, column=0, sticky="ew", pady=(px(6), 0))
-        self.encoder_choice.bind("<<ComboboxSelected>>", lambda _: self._refresh())
+        self.encoder_choice.bind("<<ComboboxSelected>>", lambda _: self._settings_changed())
+        self._tip(self.encoder_choice, "How the upscaled video is compressed. Every choice keeps the same quality; "
+                                       "they differ in file size, speed and which devices play the result. The "
+                                       "GPU encoders are fast and leave the processor free: HEVC is the default, "
+                                       "AV1 makes smaller files for recent devices, H.264 plays on anything. The "
+                                       "CPU encoders (x264, x265) are slower and keep the processor busy.")
+        self.encoder_note = ttk.Label(sidebar, text="", style="Faint.TLabel", wraplength=wrap, justify="left")
+        self.encoder_note.grid(row=row + 2, column=0, sticky="w", pady=(px(4), 0))
         self.audio_note = ttk.Label(sidebar, text="", style="Faint.TLabel", wraplength=wrap, justify="left")
-        self.audio_note.grid(row=row + 2, column=0, sticky="w", pady=(px(4), 0))
+        self.audio_note.grid(row=row + 3, column=0, sticky="w", pady=(px(3), 0))
+
+        row = self._section(sidebar, row + 4, "Processor")
+        threads_row = ttk.Frame(sidebar)
+        threads_row.grid(row=row, column=0, sticky="ew")
+        threads_row.columnconfigure(1, weight=1)
+        ttk.Label(threads_row, text="Threads", style="Small.TLabel").grid(row=0, column=0, padx=(0, px(8)))
+        self.threads_var = tk.DoubleVar(value=usage.DEFAULT.threads)
+        threads_slider = ttk.Scale(threads_row, from_=1, to=usage.CPU_THREADS, variable=self.threads_var,
+                                   command=lambda _: self._processor_changed())
+        threads_slider.grid(row=0, column=1, sticky="ew")
+        self.threads_label = ttk.Label(threads_row, text="", style="Small.TLabel", width=9, anchor="e")
+        self.threads_label.grid(row=0, column=2, padx=(px(8), 0))
+        threads_tip = (f"How many of the processor's {usage.CPU_THREADS} threads upscaling may use (a core runs two "
+                       "threads). Fewer leaves more for other programs. Optical flow uses at most 8, the CPU "
+                       "encoders (x264, x265) and the decoder use them all; the GPU encoders barely use any.")
+        self._tip(threads_slider, threads_tip)
+        priority_row = ttk.Frame(sidebar)
+        priority_row.grid(row=row + 1, column=0, sticky="w", pady=(px(8), 0))
+        self.priority_var = tk.StringVar(value=usage.DEFAULT.priority)
+        for index, priority in enumerate(usage.PRIORITIES.values()):
+            chip = ttk.Radiobutton(priority_row, text=priority.label, value=priority.name,
+                                   variable=self.priority_var, style="Segment.TRadiobutton", takefocus=False,
+                                   command=self._processor_changed)
+            chip.grid(row=0, column=index, padx=(0, px(5)))
+            self._tip(chip, priority.description)
+        self._processor_job: str | None = None
+        self.threads_label.configure(text=f"{usage.DEFAULT.threads} of {usage.CPU_THREADS}")
         self.setting_widgets = [self.choose_button, self.output_entry, self.save_button, self.motion_choice,
-                                self.sharpen_switch, self.sharpness_scale, self.encoder_choice]
-        return sidebar
+                                self.sharpen_switch, self.sharpness_scale, self.encoder_choice, custom_slider,
+                                self.upscaler_choice]
+        self._route_wheel(holder)
+        return holder
+
+    def _route_wheel(self, widget: tk.Misc) -> None:
+        """The wheel scrolls the sidebar wherever the pointer is on it (instead of changing a dropdown's value)."""
+        widget.bind("<MouseWheel>", self._sidebar_wheel)
+        for child in widget.winfo_children():
+            self._route_wheel(child)
+
+    def _sidebar_wheel(self, event: tk.Event) -> str:
+        if self.sidebar_scrollbar.winfo_ismapped():
+            self.sidebar_canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")
+        return "break"
 
     def _build_main(self, parent: ttk.Frame) -> ttk.Frame:
         px = self.theme.px
-        main = ttk.Frame(parent, padding=(px(4), px(4), px(20), px(8)))
+        main = ttk.Frame(parent, padding=(px(4), px(4), px(20), px(6)))
         main.columnconfigure(0, weight=1)
         main.rowconfigure(2, weight=1)
         self.banner = ttk.Frame(main, style="Banner.TFrame", padding=(px(14), px(8), px(6), px(8)))
@@ -268,28 +471,50 @@ class App:
         self.banner.grid(row=0, column=0, sticky="ew", pady=(0, px(10)))
         self.banner.grid_remove()
 
-        toolbar = ttk.Frame(main)
-        toolbar.grid(row=1, column=0, sticky="ew", pady=(0, px(8)))
-        toolbar.columnconfigure(1, weight=1)
-        self.view_title = ttk.Label(toolbar, text="Preview", style="Strong.TLabel")
-        self.view_title.grid(row=0, column=0, sticky="w")
-        self.view_hint = ttk.Label(toolbar, text="", style="Faint.TLabel")
-        self.view_hint.grid(row=0, column=1, sticky="w", padx=(px(12), 0))
-        zoom_chips = ttk.Frame(toolbar)
-        zoom_chips.grid(row=0, column=2, sticky="e")
-        self.zoom_var = tk.IntVar(value=1)
+        self.toolbar = ttk.Frame(main)
+        self.toolbar.grid(row=1, column=0, sticky="ew", pady=(0, px(8)))
+        self.toolbar.columnconfigure(2, weight=1)
+        self.view_title = ttk.Label(self.toolbar, text="Preview", style="Strong.TLabel")
+        self.view_title.grid(row=0, column=1, sticky="w")
+        self.view_hint = ttk.Label(self.toolbar, text="Click a label on the picture to choose what its side shows",
+                                   style="Faint.TLabel")
+        self.view_hint.grid(row=0, column=2, sticky="w", padx=(px(12), 0))
+        self._tip(self.view_hint, "Each side of the divider can show the current upscale, the version made with "
+                                  "your previous settings (after you change one), or the source enlarged by a "
+                                  "classic filter:\nOriginal pixels: " + FILTER_HELP["nearest"] + ".\nBilinear: "
+                                  + FILTER_HELP["linear"] + ".\nBicubic: " + FILTER_HELP["cubic"] + ".\nLanczos: "
+                                  + FILTER_HELP["lanczos"] + ".\nDrag the divider to move it.")
+        zoom_chips = ttk.Frame(self.toolbar)
+        zoom_chips.grid(row=0, column=4, sticky="e")
+        self.zoom_var = tk.StringVar(value="fit")
         self.zoom_chips = []
+        zoom_names = {"fit": "Fit", "source": "Original size"}
+        zoom_tips = {"fit": "The whole picture.",
+                     "source": "The source at its own size, one screen pixel per source pixel; the upscaled side is "
+                               "shrunk to match. What upscaling changes at the size you watched the original.",
+                     1: "One screen pixel per upscaled pixel."}
         for index, level in enumerate(ZOOM_LEVELS):
-            chip = ttk.Radiobutton(zoom_chips, text=f"{level * 100}%", value=level, variable=self.zoom_var,
-                                   style="Segment.TRadiobutton", takefocus=False,
-                                   command=lambda: self.view.set_zoom(self.zoom_var.get()))
+            chip = ttk.Radiobutton(zoom_chips, text=zoom_names.get(level) or f"{level * 100}%",
+                                   value=str(level), variable=self.zoom_var, style="Segment.TRadiobutton",
+                                   takefocus=False, command=lambda: self.view.set_zoom(self._zoom_value()))
             chip.grid(row=0, column=index, padx=(px(5) if index else 0, 0))
             self.zoom_chips.append(chip)
-
-        self.view = CompareView(main, self.theme, on_browse=self.browse, on_zoom_changed=self.zoom_var.set)
+            self._tip(chip, zoom_tips.get(level, f"Each upscaled pixel as a {level}×{level} block, to inspect detail."))
+        self.view = VideoView(main, self.theme, on_browse=self.browse, on_zoom_changed=self._zoom_changed,
+                              on_side_menu=self._side_menu)
         self.view.grid(row=2, column=0, sticky="nsew")
+        self.transport = Transport(main, self.theme, on_toggle=self.toggle_play, on_seek=self.seek_to,
+                                   on_volume=self._volume_changed, on_fullscreen=self.toggle_fullscreen)
+        self.transport.grid(row=3, column=0, sticky="ew", pady=(px(4), 0))
+        self.transport.grid_remove()
+        self._tip(self.transport.play_button, "Play or pause (Space). ← and → jump 5 seconds, , and . step one frame.")
+        self._tip(self.transport.volume_button, "Mute (M). ↑ and ↓ change the volume.")
+        self._tip(self.transport.fullscreen_button, "Full screen (F11 or F). Esc leaves it.")
+        self._tip(self.transport.bar, "Click or drag to jump. The lighter bar is what is upscaled; the small tick is "
+                                      "where the upscaler works.")
+        self._tip(self.transport.strip, "Bright pictures are upscaled, dim ones are not yet. Click to jump there.")
         self.log_panel = self._build_log(main)
-        self.log_panel.grid(row=3, column=0, sticky="ew", pady=(px(10), 0))
+        self.log_panel.grid(row=4, column=0, sticky="ew", pady=(px(10), 0))
         self.log_panel.grid_remove()
         return main
 
@@ -312,10 +537,10 @@ class App:
 
     def _build_footer(self) -> ttk.Frame:
         px = self.theme.px
-        footer = ttk.Frame(self.root, padding=(px(20), px(4), px(20), px(16)))
+        footer = ttk.Frame(self.root, padding=(px(20), px(4), px(20), px(14)))
         footer.columnconfigure(0, weight=1)
         self.progress = ttk.Progressbar(footer, style="Thin.Horizontal.TProgressbar", maximum=1000)
-        self.progress.grid(row=0, column=0, columnspan=6, sticky="ew", pady=(0, px(12)))
+        self.progress.grid(row=0, column=0, columnspan=6, sticky="ew", pady=(0, px(10)))
         self.status_var = tk.StringVar(value="Ready")
         ttk.Label(footer, textvariable=self.status_var, style="Status.TLabel").grid(row=1, column=0, sticky="w")
         self.log_button = ttk.Button(footer, text="Show log", style="Ghost.TButton", command=self.toggle_log,
@@ -323,20 +548,25 @@ class App:
         self.log_button.grid(row=1, column=1, padx=(px(8), 0))
         self.open_button = ttk.Button(footer, text="Open", style="Secondary.TButton", command=self.open_result)
         self.open_button.grid(row=1, column=2, padx=(px(8), 0))
+        self._tip(self.open_button, "Open the saved file in your usual player.")
         self.folder_button = ttk.Button(footer, text="Show in folder", style="Secondary.TButton",
                                         command=self.show_result_in_folder)
         self.folder_button.grid(row=1, column=3, padx=(px(8), 0))
-        self.cancel_button = ttk.Button(footer, text="Cancel", style="Secondary.TButton", command=self.cancel)
+        self.cancel_button = ttk.Button(footer, text="Stop", style="Secondary.TButton", command=self.cancel)
         self.cancel_button.grid(row=1, column=4, padx=(px(8), 0))
+        self._tip(self.cancel_button, "Stop upscaling the rest (Esc). What is done is kept while the file stays "
+                                      "open: Upscale carries on from there.")
         self.start_button = ttk.Button(footer, text="Upscale", style="Accent.TButton", command=self.start)
         self.start_button.grid(row=1, column=5, padx=(px(8), 0))
+        self._tip(self.start_button, "Upscale the whole file and save it (Ctrl+Enter). Parts already upscaled "
+                                     "while watching are reused.")
         return footer
 
     def _place_window(self) -> None:
         px = self.theme.px
         screen_width, screen_height = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
-        width = min(px(1240), int(screen_width * 0.92))
-        height = min(px(820), int(screen_height * 0.88))
+        width = min(px(1280), int(screen_width * 0.92))
+        height = min(px(860), int(screen_height * 0.88))
         self.root.minsize(min(px(960), width), min(px(640), height))
         self.root.geometry(f"{width}x{height}+{(screen_width - width) // 2}+{max(0, (screen_height - height) // 3)}")
 
@@ -351,10 +581,33 @@ class App:
             return None
 
     def _bind_keys(self) -> None:
-        self.root.bind("<Control-o>", lambda _: self.browse())
-        self.root.bind("<Control-Return>", lambda _: self.start())
-        self.root.bind("<Escape>", lambda _: self.cancel())
-        self.root.bind("<Control-l>", lambda _: self.toggle_log())
+        root = self.root
+        root.bind("<Control-o>", lambda _: self.browse())
+        root.bind("<Control-Return>", lambda _: self.start())
+        root.bind("<Control-l>", lambda _: self.toggle_log())
+        root.bind("<Control-b>", lambda _: self.toggle_sidebar())
+        root.bind("<Escape>", lambda _: self.toggle_fullscreen() if self.fullscreen else self.cancel())
+        root.bind("<F11>", lambda _: self.toggle_fullscreen())
+        for sequence, action in (("<space>", self.toggle_play), ("<f>", self.toggle_fullscreen),
+                                 ("<Left>", lambda: self.seek_by(-SEEK_STEP_SECONDS)),
+                                 ("<Right>", lambda: self.seek_by(SEEK_STEP_SECONDS)),
+                                 ("<comma>", lambda: self.step(-1)), ("<period>", lambda: self.step(1)),
+                                 ("<Home>", lambda: self.seek_to(0, True)),
+                                 ("<End>", lambda: self.seek_to(self._total() - 1, True)),
+                                 ("<m>", self.transport.toggle_mute),
+                                 ("<Up>", lambda: self.transport.change_volume(0.1)),
+                                 ("<Down>", lambda: self.transport.change_volume(-0.1))):
+            root.bind(sequence, self._shortcut(action))
+        root.bind_all("<Motion>", lambda _: self._show_controls(), add="+")
+
+    def _shortcut(self, action):
+        """Run `action` unless the key goes to a text field or a list."""
+        def handler(event: tk.Event):
+            if isinstance(event.widget, (tk.Entry, ttk.Entry, tk.Listbox, tk.Text)):
+                return None
+            action()
+            return "break"
+        return handler
 
     # ---- settings -------------------------------------------------------------------------------
 
@@ -369,18 +622,69 @@ class App:
         return float(choice)
 
     def _options(self) -> JobOptions:
-        _, flow, preset = MOTION_CHOICES[self.motion_choice.current()]
+        _, flow, preset, _ = MOTION_CHOICES[self.motion_choice.current()]
         output = self.output_var.get().strip().strip('"')
         return JobOptions(
             input=self.input_path, output=Path(output) if output else None, scale=self._scale_for(self.size_var.get()),
             flow=flow, flow_preset=preset,
             sharpness=round(float(self.sharpness_var.get()), 2) if self.sharpen_var.get() else None,
-            codec=ENCODER_CHOICES[self.encoder_choice.current()][1])
+            codec=ENCODER_CHOICES[self.encoder_choice.current()][1],
+            upscaler=UPSCALER_CHOICES[self.upscaler_choice.current()][1])
 
     def _plan(self) -> JobPlan | None:
         if self.info is None or self.input_path is None:
             return None
         return plan_from_info(self._options(), self.info)
+
+    def _render_settings(self) -> RenderSettings | None:
+        try:
+            plan = self._plan()
+        except ValueError:
+            return None
+        if plan is None:
+            return None
+        options = self._options()
+        return RenderSettings(plan.output_size, options.flow, options.flow_preset, options.sharpness, options.codec,
+                              options.upscaler)
+
+    def _settings_changed(self) -> None:
+        """A setting moved: update the labels now, restart the upscale once the setting stops moving."""
+        self._refresh()
+        if self._settings_job is not None:
+            self.root.after_cancel(self._settings_job)
+        self._settings_job = self.root.after(SETTINGS_DELAY_MS, self._apply_settings)
+
+    def _apply_settings(self) -> None:
+        self._settings_job = None
+        settings = self._render_settings()
+        if self.renderer is None or settings is None:
+            return
+        try:
+            self.renderer.change_settings(settings)
+        except OSError as error:
+            log.emit(f"[ui] error: {error}")
+            self._show_banner(f"The new settings could not be applied: {self._first_line(error)}")
+            return
+        self.view.set_media((self.info.width, self.info.height), settings.output_size)
+        self._update_layers()
+        self.transport.set_thumbnails(upscaled=self.renderer.thumbnails())
+        self._update_progress()
+
+    def _processor_changed(self) -> None:
+        """Threads or priority moved: show it now, apply it once the slider stops."""
+        threads = int(round(float(self.threads_var.get())))
+        self.threads_label.configure(text=f"{threads} of {usage.CPU_THREADS}")
+        if self._processor_job is not None:
+            self.root.after_cancel(self._processor_job)
+        self._processor_job = self.root.after(SETTINGS_DELAY_MS, self._apply_processor)
+
+    def _apply_processor(self) -> None:
+        self._processor_job = None
+        applied = usage.apply(int(round(float(self.threads_var.get()))), self.priority_var.get())
+        log.emit(f"[ui] processor: {applied.threads} threads ({applied.opencv_threads} for optical flow), "
+                 f"{usage.PRIORITIES[applied.priority].label.lower()} priority")
+        if self.renderer is not None:
+            self.renderer.restart_processes()
 
     def _output_edited(self, *_args) -> None:
         if not self._setting_output:
@@ -403,11 +707,12 @@ class App:
         widget.state(["!disabled"] if enabled else ["disabled"])
 
     def _refresh(self) -> None:
-        """Bring every derived label and widget state in line with the file, the settings and the job."""
-        idle = not self.running
+        """Bring every derived label and widget state in line with the file, the settings and the work."""
+        idle = not self.busy
         image = self.input_path is not None and is_image(self.input_path)
         for widget in self.setting_widgets:
             self._set_state(widget, idle)
+        self.choose_button.configure(text="Choose another file…" if self.input_path is not None else "Choose file…")
         if self.info is not None:
             for value, chip in self.size_chips.items():
                 scale = self._scale_for(value)
@@ -417,8 +722,7 @@ class App:
         else:
             for value, chip in self.size_chips.items():
                 self._set_state(chip, idle and value not in TARGET_SHORT_SIDES)
-        custom = self.size_var.get() == "custom"
-        if custom:
+        if self.size_var.get() == "custom":
             self.custom_row.grid()
         else:
             self.custom_row.grid_remove()
@@ -428,7 +732,9 @@ class App:
         self._set_state(self.sharpness_scale, idle and self.sharpen_var.get())
         self.sharpness_label.configure(text=f"{self.sharpness_var.get():.2f}" if self.sharpen_var.get() else "off")
         self.motion_note.configure(text="Not used for images." if image
-                                   else "Lets FSR reuse detail from earlier frames.")
+                                   else MOTION_CHOICES[self.motion_choice.current()][3])
+        self.encoder_note.configure(text="" if image else ENCODER_CHOICES[self.encoder_choice.current()][2])
+        self.upscaler_note.configure(text=UPSCALER_CHOICES[self.upscaler_choice.current()][2])
         plan, problem = None, None
         if self.input_path is not None and not self.output_custom:
             self._set_output(self._default_output())
@@ -454,22 +760,22 @@ class App:
             self.size_note.configure(text=problem)
         ready = idle and plan is not None and problem is None and self.gpu_ready is not False
         self._set_state(self.start_button, ready)
-        self._set_state(self.cancel_button, self.running and not self.cancel_event.is_set())
-        if self.running:
+        self._set_state(self.cancel_button, self.batch and not self.saving)
+        if self.batch:
             self.cancel_button.grid()
         else:
             self.cancel_button.grid_remove()
-        done = idle and self.last_result is not None and self.last_result.output.exists()
+        done = idle and self.last_saved is not None and self.last_saved.exists()
         for button in (self.open_button, self.folder_button):
             if done:
                 button.grid()
             else:
                 button.grid_remove()
         comparing = self.view.comparing
+        self._comparing_shown = comparing
         for chip in self.zoom_chips:
             self._set_state(chip, comparing)
         self.view_title.configure(text="Compare" if comparing else "Preview")
-        self.view_hint.configure(text="Drag to compare · scroll to zoom · right-drag to pan" if comparing else "")
 
     def _default_output(self) -> Path:
         current = self.output_var.get().strip()
@@ -478,10 +784,64 @@ class App:
             path = path.with_suffix(Path(current).suffix)
         return path
 
-    # ---- actions --------------------------------------------------------------------------------
+    def _zoom_value(self):
+        value = self.zoom_var.get()
+        return value if value in ("fit", "source") else int(value)
+
+    def _zoom_changed(self, zoom) -> None:
+        self.zoom_var.set(str(zoom))
+
+    def _side_menu(self, side: str, x: int, y: int) -> None:
+        """The menu of what `side` can show, at the label that was clicked."""
+        palette = self.theme.palette
+        menu = tk.Menu(self.root, tearoff=False, background=palette.field, foreground=palette.text,
+                       activebackground=palette.accent_soft, activeforeground=palette.text,
+                       font=self.theme.fonts["body"])
+        choice = tk.StringVar(value=self.view.sides[side])
+        menu.choice = choice  # the menu keeps its variable alive while it is open
+        labels = self.view.layer_labels
+        menu.add_radiobutton(label=labels.get("current", "FSR 4") + " (current settings)", value="current",
+                             variable=choice, command=lambda: self._choose_layer(side, "current"))
+        if self.view.before_size is not None:
+            menu.add_radiobutton(label=labels.get("before", "Before"), value="before", variable=choice,
+                                 command=lambda: self._choose_layer(side, "before"))
+        else:
+            menu.add_command(label="Previous settings: change a setting to keep this version", state="disabled")
+        menu.add_separator()
+        for name, (label, _) in REFERENCE_FILTERS.items():
+            menu.add_radiobutton(label=f"{label}: {FILTER_HELP[name]}", value=name, variable=choice,
+                                 command=lambda name=name: self._choose_layer(side, name))
+        menu.tk_popup(x, y)
+
+    def _choose_layer(self, side: str, layer: str) -> None:
+        self.view.set_side(side, layer)
+        if self.player is not None:
+            self.player.layers_changed()
+
+    def _update_layers(self) -> None:
+        """Names of the current and "before" versions on the picture, and the player's view of both."""
+        renderer = self.renderer
+        if renderer is None:
+            self.view.set_layer_labels({"current": "FSR 4"}, None)
+            return
+        current, before = renderer.settings, renderer.before
+        if before is None:
+            self.view.set_layer_labels({"current": current.describe()}, None)
+            for side, layer in self.view.sides.items():
+                if layer == "before":
+                    self.view.set_side(side, "cubic")
+            self.player.attach(renderer.timeline, current.output_size)
+            return
+        self.view.set_layer_labels({"current": current.describe(before.settings),
+                                    "before": "Before: " + before.settings.describe(current)},
+                                   before.settings.output_size)
+        self.player.attach(renderer.timeline, current.output_size,
+                           (before.timeline, before.settings.output_size))
+
+    # ---- files ----------------------------------------------------------------------------------
 
     def browse(self) -> None:
-        if self.running:
+        if self.busy:
             return
         initial = str(self.input_path.parent) if self.input_path else None
         chosen = filedialog.askopenfilename(parent=self.root, title="Choose a video or an image",
@@ -503,21 +863,22 @@ class App:
             self._refresh()
 
     def load(self, path: Path) -> None:
-        """Probe `path` and show its preview frame (on a worker thread)."""
-        if self.running:
-            self._show_banner("A job is running. Cancel it before opening another file.")
+        """Probe `path` (on a worker thread), then set up its preview and playback."""
+        if self.busy:
+            self._show_banner("An upscale is running. Stop it before opening another file.")
             return
         path = Path(path)
         if not path.is_file():
             self._show_banner(f"Not found: {path}")
             return
+        self._close_media()
         self.load_token += 1
-        self.input_path, self.info, self.last_result = path, None, None
+        self.input_path, self.info, self.last_saved = path, None, None
         self.output_custom = False
         self._hide_banner()
         self.source_name.configure(text=path.name)
         self.source_details.configure(text="Reading…")
-        self.view.show_message(f"Reading {path.name}…")
+        self.view.show_message(f"Reading {path.name}…", spinner=True)
         self.progress.configure(value=0)
         self.status_var.set("Reading the file…")
         self._refresh()
@@ -526,80 +887,276 @@ class App:
     def _load_worker(self, token: int, path: Path) -> None:
         try:
             info = probe(path)
-            seconds = None
-            if not is_image(path) and info.duration:
-                seconds = min(info.duration * PREVIEW_POSITION, PREVIEW_MAX_SECONDS)
-            frame = read_frame(path, info, seconds)
-            self.queue.put(("loaded", token, path, info, frame, seconds))
+            image = to_bgra(read_frame(path, info)) if is_image(path) else None
+            self.queue.put(("loaded", token, path, info, image))
         except Exception as error:  # noqa: BLE001 - any failure is shown in the window
             self.queue.put(("load_failed", token, path, error))
 
+    def _close_media(self) -> None:
+        """Stop playback and upscaling of the current file and delete its pieces."""
+        if self.player is not None:
+            self.player.close()
+            self.player = None
+        if self.renderer is not None:
+            self.renderer.close()
+            self.renderer = None
+        self.keyframes = None
+        self.source_thumbnails = {}
+        self.render_position, self.render_speed = None, 0.0
+        self.transport.grid_remove()
+
+    def _start_video(self, path: Path, info: MediaInfo) -> None:
+        self.keyframes = KeyframeIndex(path, info)
+        settings = self._render_settings()
+        output_size = settings.output_size if settings is not None else (info.width, info.height)
+        self.view.set_media((info.width, info.height), output_size)
+        self.player = Player(self.view, path, info, self.keyframes,
+                             lambda kind, *values: self.queue.put(("player", kind, values)))
+        if settings is not None and self.gpu_ready is not False:
+            self.renderer = Renderer(path, info, settings, find_sdk_dir(None),
+                                     lambda kind, *values: self.queue.put(("render", kind, values)), self.keyframes)
+            self._update_layers()
+        else:
+            self.player.attach(None, output_size)
+        self.transport.set_media(self._total(), float(info.frame_rate))
+        self.transport.grid()
+        threading.Thread(target=self._source_thumbnail_worker, args=(self.load_token, path, info),
+                         daemon=True).start()
+
+    def _source_thumbnail_worker(self, token: int, path: Path, info: MediaInfo) -> None:
+        usage.lower_current_thread()
+        total = info.frame_count or 1
+        try:
+            for index in range(SOURCE_THUMBNAILS):
+                if token != self.load_token:
+                    return
+                frame = int(index * total / SOURCE_THUMBNAILS)
+                thumbnail = read_thumbnail(path, info, frame, THUMBNAIL_HEIGHT)
+                if thumbnail is not None:
+                    self.queue.put(("source_thumbnail", token, frame, thumbnail))
+        except Exception as error:  # noqa: BLE001 - thumbnails are a nicety: log, keep going without them
+            log.emit(f"[ui] filmstrip pictures unavailable: {error}")
+
+    def _total(self) -> int:
+        if self.renderer is not None:
+            return self.renderer.timeline.total
+        return (self.info.frame_count or 1) if self.info is not None else 1
+
+    # ---- playback -------------------------------------------------------------------------------
+
+    def toggle_play(self) -> None:
+        if self.player is not None:
+            self.player.toggle()
+
+    def seek_to(self, frame: int, final: bool) -> None:
+        """Jump to `frame`. While dragging (not final) the player gets a seek every DRAG_SEEK_SECONDS at most
+        and the renderer stays where it is; the release moves both."""
+        if self.player is None:
+            return
+        now = time.perf_counter()
+        if not final and now - self._last_drag_seek < DRAG_SEEK_SECONDS:
+            return
+        self._last_drag_seek = now
+        self.player.seek(frame)
+        if final and self.renderer is not None:
+            self.renderer.set_target(frame)
+
+    def seek_by(self, seconds: float) -> None:
+        if self.player is not None and self.info is not None:
+            self.seek_to(self.player.position + int(round(seconds * float(self.info.frame_rate))), True)
+
+    def step(self, frames: int) -> None:
+        if self.player is not None:
+            if self.player.playing:
+                self.player.pause()
+            self.player.step(frames)
+
+    def _volume_changed(self, volume: float, muted: bool) -> None:
+        if self.player is not None:
+            self.player.set_volume(volume, muted)
+
+    def toggle_sidebar(self) -> None:
+        if self.fullscreen:
+            return
+        self.sidebar_visible = not self.sidebar_visible
+        if self.sidebar_visible:
+            self.sidebar.grid()
+        else:
+            self.sidebar.grid_remove()
+
+    def toggle_fullscreen(self) -> None:
+        self.fullscreen = not self.fullscreen
+        px = self.theme.px
+        self.root.attributes("-fullscreen", self.fullscreen)
+        for widget in (self.header, self.footer, self.toolbar):
+            if self.fullscreen:
+                widget.grid_remove()
+            else:
+                widget.grid()
+        if self.fullscreen:
+            self.sidebar.grid_remove()
+            self.banner.grid_remove()
+            self.log_panel.grid_remove()
+            self.main.configure(padding=0)
+        else:
+            if self.sidebar_visible:
+                self.sidebar.grid()
+            if self.log_visible:
+                self.log_panel.grid()
+            self.main.configure(padding=(px(4), px(4), px(20), px(6)))
+        self.view.set_fullscreen(self.fullscreen)
+        self.transport.set_fullscreen(self.fullscreen)
+        if self.info is not None and not is_image(self.input_path):
+            if self.fullscreen:
+                self.transport.grid_remove()
+                self.transport.place(in_=self.view, relx=0, rely=1, anchor="sw", relwidth=1)
+                self.transport.lift()
+            else:
+                self.transport.place_forget()
+                self.transport.grid()
+        self.view.configure(cursor="")
+        # Tk lays the window out again only after an idle pass that sees the new size and the hidden rows.
+        self.root.update_idletasks()
+        self._show_controls()
+
+    def _show_controls(self) -> None:
+        """In full screen, bring the controls back on mouse movement and hide them again later while playing."""
+        if not self.fullscreen:
+            return
+        if self.info is not None and not is_image(self.input_path) and not self.transport.winfo_ismapped():
+            self.transport.place(in_=self.view, relx=0, rely=1, anchor="sw", relwidth=1)
+            self.transport.lift()
+            self.view.configure(cursor="")
+        if self._hide_job is not None:
+            self.root.after_cancel(self._hide_job)
+        self._hide_job = self.root.after(HIDE_CONTROLS_MS, self._hide_controls)
+
+    def _hide_controls(self) -> None:
+        self._hide_job = None
+        if self.fullscreen and self.player is not None and self.player.playing:
+            self.transport.place_forget()
+            self.view.configure(cursor="none")
+
+    # ---- upscaling and saving -------------------------------------------------------------------
+
     def start(self) -> None:
-        if self.running or self.info is None:
+        if self.busy or self.info is None:
             return
         try:
-            options = self._options()
-            plan = plan_from_info(options, self.info)
+            plan = plan_from_info(self._options(), self.info)
         except ValueError as error:
             self._show_banner(str(error))
             return
-        self.cancel_event.clear()
-        self.running = True
-        self.last_result = None
+        if plan.output.resolve() == self.input_path.resolve():
+            self._show_banner("The output would overwrite the input; choose another name.")
+            return
         self._hide_banner()
+        if plan.image_mode:
+            self._start_image(self._options())
+            return
+        if self.renderer is None:
+            self._show_banner("The upscaler is not available on this machine (see the GPU status).")
+            return
+        if self._settings_job is not None:
+            self.root.after_cancel(self._settings_job)
+            self._apply_settings()
+        self.batch = True
+        self.last_saved = None
+        self.renderer.set_batch(True)
+        if self.player is not None and not self.player.playing:
+            self.player.follow_live = True
+        self.renderer.want_live = True
+        self.status_var.set(f"Upscaling · {plan.output_size[0]} × {plan.output_size[1]}")
+        self._refresh()
+        if self.renderer.timeline.complete():
+            self._save()
+
+    def cancel(self) -> None:
+        if self.image_running and not self.image_cancel.is_set():
+            self.image_cancel.set()
+            self.status_var.set("Cancelling after the current frame…")
+            return
+        if self.batch and not self.saving:
+            self.batch = False
+            self.renderer.set_batch(False)
+            self.renderer.want_live = False
+            done = self.renderer.timeline.ready_frames() / max(1, self._total())
+            self.status_var.set(f"Stopped at {done:.0%} upscaled · Upscale carries on from there")
+            self._refresh()
+
+    def _save(self) -> None:
+        output = self._plan().output
+        self.saving = True
+        self.renderer.want_live = False
+        self.status_var.set(f"Saving {output.name}…")
+        self.progress.configure(mode="indeterminate")
+        self.progress.start(12)
+        self._refresh()
+        renderer = self.renderer
+        self.worker = threading.Thread(target=self._save_worker, args=(renderer, output), daemon=True)
+        self.worker.start()
+
+    def _save_worker(self, renderer: Renderer, output: Path) -> None:
+        try:
+            frames = renderer.export(output)
+            self.queue.put(("saved", output, frames))
+        except Exception as error:  # noqa: BLE001 - every failure must reach the window
+            self.queue.put(("save_failed", error))
+
+    def _start_image(self, options: JobOptions) -> None:
+        self.image_cancel.clear()
+        self.image_running = True
+        self.last_saved = None
         self._clear_log()
         self.progress.configure(mode="indeterminate", value=0)
         self.progress.start(12)
-        self.status_var.set(f"Starting · {plan.output_size[0]} × {plan.output_size[1]}")
-        self.worker = threading.Thread(target=self._work, args=(options,), daemon=True)
+        self.status_var.set("Upscaling the image…")
+        self.worker = threading.Thread(target=self._image_work, args=(options,), daemon=True)
         self.worker.start()
         self._refresh()
 
-    def _work(self, options: JobOptions) -> None:
+    def _image_work(self, options: JobOptions) -> None:
         try:
-            result = run_job(options, cancel=self.cancel_event,
-                             progress=lambda done, total, fps: self.queue.put(("progress", done, total, fps)),
-                             preview=lambda source, upscaled, done: self.queue.put(("preview", source, upscaled)))
-            self.queue.put(("done", result))
+            result = run_job(options, cancel=self.image_cancel,
+                             preview=lambda source, upscaled, done: self.queue.put(("image_preview", source, upscaled)))
+            self.queue.put(("image_done", result))
         except Exception as error:  # noqa: BLE001 - every failure must reach the window
-            self.queue.put(("failed", error))
-
-    def cancel(self) -> None:
-        if self.running and not self.cancel_event.is_set():
-            self.cancel_event.set()
-            self.status_var.set("Cancelling after the current frame…")
-            self._refresh()
+            self.queue.put(("image_failed", error))
 
     def open_result(self) -> None:
-        if self.last_result is not None and self.last_result.output.exists():
-            os.startfile(self.last_result.output)
+        if self.last_saved is not None and self.last_saved.exists():
+            os.startfile(self.last_saved)
 
     def show_result_in_folder(self) -> None:
-        if self.last_result is not None and self.last_result.output.exists():
-            subprocess.Popen(["explorer", "/select,", str(self.last_result.output)])
+        if self.last_saved is not None and self.last_saved.exists():
+            subprocess.Popen(["explorer", "/select,", str(self.last_saved)])
 
     def toggle_log(self) -> None:
         self.log_visible = not self.log_visible
-        if self.log_visible:
+        if self.log_visible and not self.fullscreen:
             self.log_panel.grid()
         else:
             self.log_panel.grid_remove()
         self.log_button.configure(text="Hide log" if self.log_visible else "Show log")
 
     def close(self) -> None:
+        if self.image_running:
+            self.image_cancel.set()
         if self.worker is not None and self.worker.is_alive():
-            self.cancel_event.set()
-            self.worker.join(timeout=15)
-        if self.drop is not None:
-            self.drop.close()
-        log.set_sink(None)
-        self.root.destroy()
+            self.worker.join(timeout=30)
+        try:
+            self._close_media()
+            if self.drop is not None:
+                self.drop.close()
+        finally:
+            log.set_sink(None)
+            self.root.destroy()
 
     # ---- messages from the workers --------------------------------------------------------------
 
     def _probe_gpu(self) -> None:
         try:
-            from .ffx import FFX_UPSCALE_ENABLE_AUTO_EXPOSURE, Upscaler, find_sdk_dir
+            from .ffx import FFX_UPSCALE_ENABLE_AUTO_EXPOSURE, Upscaler
             from .gpu import Gpu
             gpu = Gpu(verbose=False)
             try:
@@ -612,6 +1169,13 @@ class App:
         except Exception as error:  # noqa: BLE001 - shown in the header and the banner
             self.queue.put(("gpu", False, str(error)))
 
+    def _clean_temp(self) -> None:
+        try:
+            for directory in clean_stale_directories():
+                log.emit(f"[ui] removed pieces left by an earlier session: {directory}")
+        except OSError as error:
+            log.emit(f"[ui] could not clean old pieces: {error}")
+
     def _poll(self) -> None:
         messages = []
         try:
@@ -619,14 +1183,34 @@ class App:
                 messages.append(self.queue.get_nowait())
         except queue.Empty:
             pass
-        last_preview = max((index for index, message in enumerate(messages) if message[0] == "preview"), default=-1)
-        last_progress = max((index for index, message in enumerate(messages) if message[0] == "progress"), default=-1)
+        latest: dict[tuple, int] = {}
         for index, message in enumerate(messages):
-            kind = message[0]
-            if (kind == "preview" and index != last_preview) or (kind == "progress" and index != last_progress):
-                continue
-            getattr(self, f"_on_{kind}")(*message[1:])
-        self.root.after(POLL_MS, self._poll)
+            if message[0] in ("render", "player") and message[1] in ("status", "position", "live"):
+                latest[message[:2]] = index
+            elif message[0] == "image_preview":
+                latest[("image_preview",)] = index
+        try:
+            for index, message in enumerate(messages):
+                key = message[:2] if message[0] in ("render", "player") else message[:1]
+                if key in latest and latest[key] != index:
+                    continue
+                try:
+                    self._handle_message(message)
+                except Exception as error:  # noqa: BLE001 - one bad message must not stop the others
+                    log.emit(f"[ui] error handling {message[0]} {message[1] if len(message) > 1 else ''}: {error}")
+                    self._show_banner(f"Something went wrong: {self._first_line(error)}")
+            if self.view.comparing != self._comparing_shown:
+                self._refresh()
+        finally:
+            self.root.after(POLL_MS, self._poll)
+
+    def _handle_message(self, message: tuple) -> None:
+        if message[0] == "render":
+            self._on_render(message[1], *message[2])
+        elif message[0] == "player":
+            self._on_player(message[1], *message[2])
+        else:
+            getattr(self, f"_on_{message[0]}")(*message[1:])
 
     def _on_log(self, line: str) -> None:
         self.log_text.configure(state="normal")
@@ -649,14 +1233,20 @@ class App:
         if len(paths) > 1:
             self._show_banner(f"Opened {Path(paths[0]).name}; drop one file at a time.")
 
-    def _on_loaded(self, token: int, path: Path, info: MediaInfo, frame, seconds: float | None) -> None:
+    def _on_loaded(self, token: int, path: Path, info: MediaInfo, image: np.ndarray | None) -> None:
         if token != self.load_token:
             return
         self.info = info
         self.source_details.configure(text=describe_source(path, info))
-        where = f" · frame at {format_duration(seconds)}" if seconds else ""
-        self.view.show_source(frame, f"Source · {info.width} × {info.height}{where}")
-        self.status_var.set("Ready · press Upscale or Ctrl+Enter")
+        self._refresh()
+        if image is not None:
+            settings = self._render_settings()
+            self.view.set_media((info.width, info.height), settings.output_size if settings else (info.width, info.height))
+            self.view.show_still(image, {"current": None}, "press Upscale")
+            self.status_var.set("Ready · press Upscale or Ctrl+Enter")
+        else:
+            self._start_video(path, info)
+            self.status_var.set("Ready · Space plays it upscaled · Upscale saves the whole video")
         self._refresh()
 
     def _on_load_failed(self, token: int, path: Path, error: Exception) -> None:
@@ -672,39 +1262,127 @@ class App:
         log.emit(f"[ui] error reading {path}: {error}")
         self._refresh()
 
-    def _on_progress(self, done: int, total: int | None, fps: float) -> None:
-        if str(self.progress.cget("mode")) != "determinate":
-            self.progress.stop()
-            self.progress.configure(mode="determinate")
-        if total:
-            fraction = min(1.0, done / total)
-            self.progress.configure(value=1000 * fraction)
-            left = (total - done) / fps if fps else 0
-            self.status_var.set(f"Upscaling · frame {done:,} / {total:,} · {fps:.1f} fps · {format_duration(left)} left")
-            self.root.title(f"{int(fraction * 100)}% · {APP_NAME}")
-        else:
-            self.status_var.set(f"Upscaling · frame {done:,} · {fps:.1f} fps")
+    def _on_source_thumbnail(self, token: int, frame: int, thumbnail: np.ndarray) -> None:
+        if token == self.load_token:
+            self.source_thumbnails[frame] = thumbnail
+            self.transport.set_thumbnails(source=dict(self.source_thumbnails))
 
-    def _on_preview(self, source, upscaled) -> None:
-        self.view.show_result(source, upscaled)
+    def _on_render(self, kind: str, *values) -> None:
+        renderer = self.renderer
+        if renderer is None:
+            return
+        if kind == "piece":
+            self.player.refresh()
+            self.transport.set_thumbnails(upscaled=renderer.thumbnails())
+            self._update_progress()
+        elif kind == "status":
+            position, speed = values
+            self.render_position = position
+            if position is not None:
+                self.render_speed = speed
+                self.player.render_speed = speed
+            self.player.render_active = position is not None
+            self._update_progress()
+        elif kind == "total":
+            self.transport.set_total(values[0])
+            self._update_progress()
+        elif kind == "complete":
+            if self.batch and not self.saving:
+                self._save()
+        elif kind == "live":
+            self.player.show_live(*values)
+            self.renderer.want_live = self.batch and self.player.follow_live
+        elif kind == "error":
+            error = values[0]
+            if self.batch:
+                self.batch = False
+                renderer.set_batch(False)
+            if self.player.playing:
+                self.player.pause()
+            self._show_banner(f"Upscaling stopped: {self._first_line(error)}")
+            if not self.log_visible:
+                self.toggle_log()
+            self._refresh()
+
+    def _update_progress(self) -> None:
+        renderer = self.renderer
+        if renderer is None:
+            return
+        total = renderer.timeline.total
+        ready = renderer.timeline.ready_frames()
+        self.transport.set_progress(renderer.timeline.ready_ranges(), self.render_position)
+        if self.saving:
+            return
+        self.progress.configure(value=1000 * ready / max(1, total))
+        speed = f" · {self.render_speed:.0f} fps" if self.render_position is not None else ""
+        if self.batch:
+            left = (total - ready) / self.render_speed if self.render_speed else 0
+            remaining = f" · {format_duration(left)} left" if self.render_position is not None and left else ""
+            self.status_var.set(f"Upscaling · {ready / max(1, total):.0%}{speed}{remaining}")
+            self.root.title(f"{int(100 * ready / max(1, total))}% · {APP_NAME}")
+        elif self.render_position is not None:
+            ahead = (renderer.timeline.ready_until(self.player.position) - self.player.position) / float(
+                self.info.frame_rate)
+            ready = f"{ahead:.1f} s" if ahead < 60 else format_time(ahead)
+            self.status_var.set(f"Upscaling ahead of the playhead · {ready} ready{speed}")
+
+    def _on_player(self, kind: str, *values) -> None:
+        if self.player is None:
+            return
+        if kind == "position":
+            self.transport.set_position(values[0])
+            if self.renderer is not None and not self.transport.dragging:
+                self.renderer.set_target(values[0])
+        elif kind == "state":
+            playing, buffering = values
+            self.transport.set_playing(playing, buffering)
+            if not playing and self.fullscreen:
+                self._show_controls()
+        elif kind == "notice":
+            self._show_banner(values[0])
+        elif kind == "error":
+            self._show_banner(f"Playback stopped: {self._first_line(values[0])}")
+
+    def _on_saved(self, output: Path, frames: int) -> None:
+        self._end_save()
+        self.last_saved = output
+        width, height = self.renderer.settings.output_size
+        seconds = frames / float(self.info.frame_rate)
+        self.status_var.set(f"Saved {output.name} · {format_duration(seconds)} of video at {width} × {height}")
         self._refresh()
 
-    def _on_done(self, result: JobResult) -> None:
-        self._finish()
-        self.last_result = result
-        self.progress.configure(value=1000)
-        rate = result.frames / max(result.seconds, 1e-6)
-        if result.cancelled:
-            self.status_var.set(f"Cancelled after {result.frames:,} frames · partial file saved as {result.output.name}")
-        else:
-            frames = "1 image" if result.frames == 1 else f"{result.frames:,} frames"
-            self.status_var.set(f"Saved {result.output.name} · {frames} in {format_duration(result.seconds)}"
-                                f" ({rate:.1f} fps)")
+    def _on_save_failed(self, error: Exception) -> None:
+        self._end_save()
+        self.status_var.set("Saving failed")
+        log.emit(f"[ui] error: {error}")
+        self._show_banner(f"Saving failed: {self._first_line(error)}")
+        if not self.log_visible:
+            self.toggle_log()
         self._refresh()
 
-    def _on_failed(self, error: Exception) -> None:
-        self._finish()
-        self.progress.configure(value=0)
+    def _end_save(self) -> None:
+        self.saving = False
+        self.batch = False
+        if self.renderer is not None:
+            self.renderer.set_batch(False)
+        self.progress.stop()
+        self.progress.configure(mode="determinate", value=1000)
+        self.root.title(APP_NAME)
+
+    def _on_image_preview(self, source: np.ndarray, upscaled: np.ndarray) -> None:
+        self.view.set_media((source.shape[1], source.shape[0]), (upscaled.shape[1], upscaled.shape[0]))
+        self.view.show_still(to_bgra(source), {"current": to_bgra(upscaled)})
+        self._refresh()
+
+    def _on_image_done(self, result: JobResult) -> None:
+        self._end_image()
+        self.last_saved = result.output
+        width, height = self.view.output_size
+        self.status_var.set(f"Saved {result.output.name} · {width} × {height} in {result.seconds:.1f} s")
+        self._refresh()
+
+    def _on_image_failed(self, error: Exception) -> None:
+        self._end_image()
         self.status_var.set("Failed")
         log.emit(f"[ui] error: {error}")
         self._show_banner(f"Upscaling failed: {self._first_line(error)}")
@@ -712,11 +1390,10 @@ class App:
             self.toggle_log()
         self._refresh()
 
-    def _finish(self) -> None:
-        self.running = False
+    def _end_image(self) -> None:
+        self.image_running = False
         self.progress.stop()
-        self.progress.configure(mode="determinate")
-        self.root.title(APP_NAME)
+        self.progress.configure(mode="determinate", value=1000)
 
     # ---- small helpers --------------------------------------------------------------------------
 
@@ -728,7 +1405,8 @@ class App:
 
     def _show_banner(self, text: str) -> None:
         self.banner_label.configure(text=text)
-        self.banner.grid()
+        if not self.fullscreen:
+            self.banner.grid()
 
     def _hide_banner(self) -> None:
         self.banner.grid_remove()
@@ -747,6 +1425,7 @@ def run_ui(preselected: Path | None = None) -> int:
         except (AttributeError, OSError) as error:
             log.emit(f"[ui] DPI awareness unavailable: {error}")
         enable_dark_dialogs()
+    usage.apply(usage.DEFAULT.threads, usage.DEFAULT.priority)
     root = tk.Tk()
     root.withdraw()
     App(root, preselected)

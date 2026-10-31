@@ -13,8 +13,9 @@ import numpy as np
 from . import log
 from .ffx import QUALITY_MODE_SCALES, find_sdk_dir
 from .flow import create_flow
-from .media import FrameReader, FrameWriter, MediaInfo, describe_audio, is_image, probe, read_image, write_image
-from .pipeline import Pipeline
+from .media import (ENCODER_LIMITS, ENCODER_NAMES, FrameReader, FrameWriter, MediaInfo, describe_audio, is_image,
+                    probe, read_image, write_image)
+from .pipeline import Pipeline, upscale_stream
 
 VIDEO_SUFFIX = ".mp4"
 MIN_SCALE = 1.0
@@ -40,6 +41,7 @@ class JobOptions:
     flow_scale: int = 1
     sharpness: float | None = None
     codec: str = "amf"
+    upscaler: str | None = None
     frames: int | None = None
     debug_view: bool = False
     debug_checking: bool = False
@@ -105,9 +107,16 @@ def plan_from_info(options: JobOptions, info: MediaInfo) -> JobPlan:
     if not (MIN_SCALE - 1e-6 <= scale_x <= MAX_SCALE + 1e-6 and MIN_SCALE - 1e-6 <= scale_y <= MAX_SCALE + 1e-6):
         raise ValueError(f"FSR supports scales from 1x to 3x; {width}x{height} -> {out_width}x{out_height} "
                          f"is {scale_x:.2f}x")
+    image_mode = is_image(options.input)
+    limits = ENCODER_LIMITS.get(options.codec)
+    if not image_mode and limits is not None:
+        (low_width, low_height), (high_width, high_height) = limits
+        if not (low_width <= out_width <= high_width and low_height <= out_height <= high_height):
+            raise ValueError(f"{ENCODER_NAMES[options.codec]} encodes from {low_width} × {low_height} to "
+                             f"{high_width} × {high_height}; {out_width} × {out_height} needs another encoder "
+                             f"or another size")
     return JobPlan(info=info, output=options.output or default_output(options.input),
-                   render_size=(width, height), output_size=(out_width, out_height),
-                   image_mode=is_image(options.input))
+                   render_size=(width, height), output_size=(out_width, out_height), image_mode=image_mode)
 
 
 def plan(options: JobOptions) -> JobPlan:
@@ -144,7 +153,8 @@ def run_job(options: JobOptions, progress: ProgressCallback | None = None,
                            options.flow_preset, options.flow_scale)
         pipeline = Pipeline(gpu, job.render_size, job.output_size, sdk_dir, flow, sharpness=options.sharpness,
                             frame_time_ms=job.info.frame_time_ms, debug_view=options.debug_view,
-                            debug_checking=options.debug_checking, verbose=options.verbose)
+                            debug_checking=options.debug_checking, verbose=options.verbose,
+                            provider=options.upscaler)
         started = time.perf_counter()
         cancelled = False
         if job.image_mode:
@@ -157,7 +167,7 @@ def run_job(options: JobOptions, progress: ProgressCallback | None = None,
             if progress:
                 progress(1, 1, 1 / max(time.perf_counter() - started, 1e-6))
         else:
-            frames_done, cancelled = _run_video(options, job, pipeline, flow, progress, preview, cancel, started)
+            frames_done, cancelled = _run_video(options, job, pipeline, progress, preview, cancel, started)
         elapsed = time.perf_counter() - started
         if options.verbose:
             verb = "cancelled after" if cancelled else "wrote"
@@ -172,7 +182,7 @@ def run_job(options: JobOptions, progress: ProgressCallback | None = None,
         gpu.destroy()
 
 
-def _run_video(options: JobOptions, job: JobPlan, pipeline: Pipeline, flow, progress: ProgressCallback | None,
+def _run_video(options: JobOptions, job: JobPlan, pipeline: Pipeline, progress: ProgressCallback | None,
                preview: PreviewCallback | None, cancel: threading.Event | None, started: float) -> tuple[int, bool]:
     info = job.info
     reader = FrameReader(options.input, info, max_frames=options.frames)
@@ -186,49 +196,37 @@ def _run_video(options: JobOptions, job: JobPlan, pipeline: Pipeline, flow, prog
     cancelled = False
     exhausted = False
     last_report = last_preview = started
-
-    # Optical flow for the next frame runs on a worker thread while this one is on the GPU and in the
-    # encoder pipe (OpenCV and the Vulkan waits release the GIL). The reader double-buffers, so `frame`
-    # stays valid while `following` is read.
-    def compute_flow(rgba):
-        flow_started = time.perf_counter()
-        motion = flow.compute(rgba)
-        pipeline.timings.add("flow (worker thread)", time.perf_counter() - flow_started)
-        return motion
-
+    frame = upscaled = None
     try:
         with ThreadPoolExecutor(max_workers=1) as executor:
-            frames = iter(reader)
-            frame = next(frames, None)
-            pending = executor.submit(compute_flow, frame) if frame is not None else None
-            while frame is not None:
-                motion = pending.result()
-                following = next(frames, None)
-                pending = executor.submit(compute_flow, following) if following is not None else None
-                upscaled = pipeline.process(frame, motion)
+            stream = upscale_stream(iter(reader), pipeline, executor)
+            for frame, upscaled in stream:
                 writer.write(upscaled)
                 frames_done += 1
                 now = time.perf_counter()
-                last = following is None
-                if preview and (now - last_preview >= PREVIEW_INTERVAL or last):
+                if preview and now - last_preview >= PREVIEW_INTERVAL:
                     preview(frame.copy(), upscaled.copy(), frames_done)
                     last_preview = now
-                frame = following
-                if progress and (now - last_report >= PROGRESS_INTERVAL or last):
+                if progress and now - last_report >= PROGRESS_INTERVAL:
                     progress(frames_done, total, frames_done / (now - started))
                     last_report = now
-                if cancel is not None and cancel.is_set() and not last:
+                if cancel is not None and cancel.is_set():
                     cancelled = True
-                    if pending is not None:
-                        pending.result()
                     break
-            exhausted = frame is None
+            stream.close()
+            exhausted = not cancelled
     except BaseException:
-        if not exhausted:
-            reader.stop()
+        reader.stop()
         writer.abort()
         raise
     if not exhausted:
         reader.stop()
     writer.close()
+    # The pair from the last iteration is still intact: the reader stopped and the pipeline ran no further.
+    if frames_done:
+        if preview:
+            preview(frame.copy(), upscaled.copy(), frames_done)
+        if progress:
+            progress(frames_done, frames_done if exhausted else total,
+                     frames_done / max(time.perf_counter() - started, 1e-6))
     return frames_done, cancelled

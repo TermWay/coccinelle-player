@@ -12,6 +12,8 @@ from .job import JobOptions, run_job
 from .media import ENCODERS
 
 
+UPSCALERS = {"4": None, "3.1": "3.1.6", "2.3": "2.3.4"}
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="fsr4", description="Upscale an image or a video with AMD FSR 4.")
     parser.add_argument("--version", action="version", version=f"fsr4 {__version__}")
@@ -33,7 +35,9 @@ def build_parser() -> argparse.ArgumentParser:
                          help="compute optical flow at 1/N resolution (default: 1)")
     upscale.add_argument("--sharpness", type=float, help="RCAS sharpening 0..1 (default: off)")
     upscale.add_argument("--codec", choices=sorted(ENCODERS), default="amf",
-                         help="video encoder: amf (HEVC on the GPU), h264_amf, x264, x265 (default: amf)")
+                         help="video encoder: amf (HEVC on the GPU), av1_amf, h264_amf, x264, x265 (default: amf)")
+    upscale.add_argument("--upscaler", choices=sorted(UPSCALERS), default="4",
+                         help="which of the DLL's upscalers: 4 (FSR 4, default), 3.1 or 2.3 (to compare)")
     upscale.add_argument("--frames", type=int, help="stop after this many frames (for tests)")
     upscale.add_argument("--debug-view", action="store_true", help="draw FSR's debug overlay on the output")
     upscale.add_argument("--debug-checking", action="store_true", help="enable FSR's input checker messages")
@@ -76,7 +80,8 @@ def run_upscale(args) -> int:
     options = JobOptions(
         input=args.input, output=args.output, mode=args.mode, scale=args.scale, width=args.width,
         height=args.height, flow=args.flow, flow_preset=args.flow_preset, flow_scale=args.flow_scale,
-        sharpness=args.sharpness, codec=args.codec, frames=args.frames, debug_view=args.debug_view,
+        sharpness=args.sharpness, codec=args.codec, upscaler=UPSCALERS[args.upscaler], frames=args.frames,
+        debug_view=args.debug_view,
         debug_checking=args.debug_checking, validate=args.validate, gpu=args.gpu, sdk=args.sdk,
         verbose=not args.quiet)
 
