@@ -67,8 +67,16 @@ Radeon RX 9000 card, through Vulkan. The shared rules in `..\CLAUDE.md` apply; t
   `player.BUFFER_MAX_SECONDS` (tested), or a reverse stall never ends. `_Stream.put_back` returns frames taken for a tick that cannot be shown yet: in
   frame-by-frame mode a released frame would never come back. Backwards, `ReverseFrameStream` decodes chunks
   and the window sets the renderer's target just behind the ready stretch behind the playhead.
-- `tools/window_capture.py` can capture what the screen shows (`screen=True`) to catch unpainted areas, but it
-  refuses when another window covers ours: never capture other windows' content.
+- After a big layout change (sidebar folded or unfolded, full screen, log, the window moved or resized) the
+  window repaints every widget through Windows (`ui_window.repaint`) and through Tk (an Expose each), now and
+  again `REPAINT_SETTLE_MS` later: the user saw widgets left black after unfolding the sidebar (not reproduced
+  here), so never rely on Tk's own Expose alone there.
+- While playing, a layer whose decoder still works at the previous zoom or position is drawn with `reframe`
+  (its picture resampled to where it belongs), never stretched: both sides of the divider must move together.
+- `tools/window_capture.py` can capture what the screen shows (`screen=True`; `settle=False` to see paints Tk
+  has not done yet) but it refuses when another window covers ours: never capture other windows' content.
+  Probes that drive a window find it by the process they started, never by its title (the user may have the
+  app open).
 - FSR 4 ignores the SDK's upscale tuning keys (verified bit-identical); `ffx.Upscaler(provider=...)` selects the
   DLL's FSR 3.1.6 or 2.3.4 through `ffxOverrideVersion` for comparisons. The frame count from the probe is an
   estimate until a read reaches the end (`Timeline.exact`); never stop rendering at the estimate.

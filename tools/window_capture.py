@@ -86,10 +86,13 @@ def capture_handle(handle: int) -> np.ndarray:
     return image
 
 
-def capture_screen(window) -> np.ndarray:
+def capture_screen(window, settle: bool = True) -> np.ndarray:
     """RGBA pixels of the screen where a Tk toplevel is: what is really displayed, unlike PrintWindow, which
-    asks the window to draw itself and so hides areas that were never repainted. The window must be on top."""
-    window.update()
+    asks the window to draw itself and so hides areas that were never repainted. The window must be on top.
+    `settle` lets Tk handle its pending events first; without it, the capture shows what is on screen this
+    instant (paints Tk has not done yet included)."""
+    if settle:
+        window.update()
     handle = int(window.wm_frame(), 16)
     bounds = wintypes.RECT()
     dwmapi.DwmGetWindowAttribute(handle, DWMWA_EXTENDED_FRAME_BOUNDS, ctypes.byref(bounds), ctypes.sizeof(bounds))
@@ -123,10 +126,11 @@ def capture_screen(window) -> np.ndarray:
     return image
 
 
-def save(window, path: Path, screen: bool = False) -> None:
-    """Save a Tk toplevel as PNG, drawn by itself (PrintWindow) or as the screen shows it (`screen`)."""
+def save(window, path: Path, screen: bool = False, settle: bool = True) -> None:
+    """Save a Tk toplevel as PNG, drawn by itself (PrintWindow) or as the screen shows it (`screen`, see
+    `capture_screen` for `settle`)."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(png_bytes(capture_screen(window) if screen else capture(window)))
+    path.write_bytes(png_bytes(capture_screen(window, settle) if screen else capture(window)))
 
 
 def save_handle(handle: int, path: Path) -> None:

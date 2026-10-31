@@ -5,8 +5,8 @@ import cv2
 import numpy as np
 
 from fsr4.ui_transport import format_precise, format_speed, format_time
-from fsr4.ui_video import (blend, block_view, compute_geometry, decode_request, over, reference_view, step_zoom,
-                           upscaled_view)
+from fsr4.ui_video import (blend, block_view, compute_geometry, decode_request, over, reference_view, reframe,
+                           step_zoom, upscaled_view)
 
 
 def gradient(width: int, height: int) -> np.ndarray:
@@ -150,6 +150,32 @@ class AnyZoomTest(unittest.TestCase):
             paused = upscaled_view(upscaled, geometry)
             right = block_view(decoded, geometry.scale, 113, geometry.shown[2] - 113, geometry.shown[3])
             np.testing.assert_array_equal(right, paused[:, 113:], f"zoom {zoom}")
+
+    def test_a_picture_decoded_for_the_last_zoom_stays_in_place(self):
+        """While the decoder restarts after a zoom or pan, its last picture is redrawn where it belongs in the new
+        geometry, so the upscaled side lines up with the source side at once."""
+        ys, xs = np.mgrid[0:360, 0:640]
+        upscaled = np.zeros((360, 640, 4), np.uint8)
+        upscaled[..., 0] = (xs * 0.35) % 256
+        upscaled[..., 1] = (ys * 0.6) % 256
+        upscaled[..., 3] = 255
+        cases = [(compute_geometry((300, 200), (640, 360), 2, (320, 180)),
+                  compute_geometry((300, 200), (640, 360), 2.5, (330, 170))),  # zoom in and pan, playing at 2x
+                 (compute_geometry((300, 200), (640, 360), "fit", None),
+                  compute_geometry((300, 200), (640, 360), 1.5, (300, 200)))]  # from Fit
+        for old, new in cases:
+            crop, size, _ = decode_request(old)
+            if crop is None:
+                decoded = upscaled_view(upscaled, old)
+            else:
+                x0, y0, width, height = crop
+                decoded = upscaled[y0:y0 + height, x0:x0 + width]
+                if size != (width, height):
+                    decoded = upscaled_view(upscaled, old)
+            shown = reframe(decoded, old, new, 40, new.shown[2] - 40)
+            exact = upscaled_view(upscaled, new)[:, 40:]
+            difference = np.abs(shown[..., :2].astype(int) - exact[..., :2].astype(int))
+            self.assertLess(difference.mean(), 2.0, f"{old.scale} -> {new.scale}")
 
     def test_wheel_stops_at_whole_zooms(self):
         stops = [0.3, 0.5, 1.0, 2.0, 4.0, 8.0]

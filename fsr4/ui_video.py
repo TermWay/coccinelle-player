@@ -353,6 +353,20 @@ def upscaled_view(upscaled: np.ndarray, geometry: Geometry) -> np.ndarray:
     return block_view(region, geometry.scale, 0, shown_width, shown_height)
 
 
+def reframe(image: np.ndarray, old: Geometry, new: Geometry, first: int, columns: int) -> np.ndarray:
+    """View columns `first`..`first + columns` of geometry `new` drawn from `image`, a picture of `old`'s region
+    at any size: the same output pixels where they now belong, resampled. A picture decoded for the previous
+    zoom or position stays in place (softer) until its decoder catches up, so it moves with the other side."""
+    height, width = image.shape[:2]
+    old_x0, old_y0, old_width, old_height = old.region
+    new_x0, new_y0, _, _ = new.region
+    image_x, image_y = width / old_width, height / old_height  # image pixels per output pixel
+    matrix = np.array([[image_x / new.scale, 0, ((first + 0.5) / new.scale + new_x0 - old_x0) * image_x - 0.5],
+                       [0, image_y / new.scale, (0.5 / new.scale + new_y0 - old_y0) * image_y - 0.5]], np.float32)
+    return cv2.warpAffine(image, matrix, (columns, new.shown[3]), flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP,
+                          borderMode=cv2.BORDER_REPLICATE)
+
+
 def decode_request(geometry: Geometry) -> tuple[tuple[int, int, int, int] | None, tuple[int, int], str]:
     """What the playback decoder should crop and scale an upscaled video to for `geometry` (crop, size, scale
     flags). From 100% up it decodes the region at its own pixels, which the view draws as blocks exactly as
@@ -675,7 +689,10 @@ class VideoView(tk.Frame):
         if self._stream is not None:
             image, key = entry
             if key != geometry.key:
-                # The decoder still runs at the previous zoom or size: stretch until it restarts.
+                previous = Geometry(*key)
+                if previous.output_size == geometry.output_size:
+                    # The decoder still works at the previous zoom or position: its picture, put where it belongs.
+                    return reframe(image, previous, geometry, first, count)
                 image = cv2.resize(image, (shown_width, shown_height), interpolation=cv2.INTER_LINEAR)
             elif not geometry.fit and geometry.scale >= 1:
                 return block_view(image, geometry.scale, first, count, shown_height)

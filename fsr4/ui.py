@@ -53,6 +53,7 @@ DRAG_SEEK_SECONDS = 0.12
 SIDEBAR_WIDTH = 340
 SETTINGS_DELAY_MS = 450
 HIDE_CONTROLS_MS = 2500
+REPAINT_SETTLE_MS = 150
 MACHINE_REFRESH_MS = 2000
 # Playing backwards, the renderer fills the frames just behind the playhead a chunk at a time, nearest first,
 # until this much is ready behind it: more than the player ever waits for (BUFFER_MAX_SECONDS).
@@ -221,6 +222,7 @@ class App:
         self.video_memory: system.VideoMemory | None = None
         self.gpu_text = ""
         self.screen = Fullscreen(root)
+        self._repaint_job: str | None = None
         self.presets = PresetStore()
         self.side_choices = dict(DEFAULT_SIDES)
         self._shown_layers: dict[str, RenderSettings] = {}
@@ -244,6 +246,7 @@ class App:
         self.drop = self._enable_drop()
         self._bind_keys()
         root.protocol("WM_DELETE_WINDOW", self.close)
+        root.bind("<Configure>", self._window_configured, add="+")
         root.report_callback_exception = self._callback_failed
         root.after(POLL_MS, self._poll)
         self._show_machine()
@@ -1284,6 +1287,7 @@ class App:
             self.sidebar.grid()
         else:
             self.sidebar.grid_remove()
+        self._repaint_everything()
 
     def toggle_fullscreen(self) -> None:
         """Full screen on the monitor the window is on, or back to the window exactly as it was."""
@@ -1327,13 +1331,40 @@ class App:
         if self.fullscreen:
             self.root.update_idletasks()
             self.screen.enter()
-        # Tk lays the window out again only after an idle pass that sees the new size and the hidden rows; then
-        # every widget repaints where it now is, so nothing is left unpainted (black) from the other layout.
-        self.root.update_idletasks()
-        repaint(self.root)
-        self.view.redraw()
+        self._repaint_everything()
         if self.fullscreen:
             self._rest_later()
+
+    def _repaint_everything(self) -> None:
+        """After a big layout change: lay out now, then have every widget repaint where it now is, now and once
+        more when the layout has settled, so none is left unpainted (black) or showing the old layout."""
+        self.root.update_idletasks()
+        self._repaint_widgets()
+        if self._repaint_job is not None:
+            self.root.after_cancel(self._repaint_job)
+        self._repaint_job = self.root.after(REPAINT_SETTLE_MS, self._repaint_widgets)
+
+    def _repaint_widgets(self) -> None:
+        """Windows repaints every child window and Tk redraws every widget (an Expose each), whichever missed
+        the paint after being shown again."""
+        self._repaint_job = None
+        repaint(self.root)
+        pending = [self.root]
+        while pending:
+            for child in pending.pop().winfo_children():
+                if child.winfo_ismapped() and not isinstance(child, tk.Toplevel):
+                    child.event_generate("<Expose>", x=0, y=0, width=child.winfo_width(),
+                                         height=child.winfo_height())
+                    pending.append(child)
+
+    def _window_configured(self, event: tk.Event) -> None:
+        """The window moved or changed size (another monitor, restored from the taskbar): repaint it all once
+        it stops."""
+        if event.widget is not self.root:
+            return
+        if self._repaint_job is not None:
+            self.root.after_cancel(self._repaint_job)
+        self._repaint_job = self.root.after(REPAINT_SETTLE_MS, self._repaint_widgets)
 
     def _set_pointer_pressed(self, pressed: bool) -> None:
         self._pointer_pressed = pressed
@@ -1494,6 +1525,7 @@ class App:
         else:
             self.log_panel.grid_remove()
         self.log_button.configure(text="Hide log" if self.log_visible else "Show log")
+        self._repaint_everything()
 
     def close(self) -> None:
         if self.image_running:
