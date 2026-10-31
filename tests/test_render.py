@@ -11,10 +11,11 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 
-from fsr4 import media
+from fsr4 import media, render
 from fsr4.ffx import find_sdk_dir
 from fsr4.job import JobOptions, run_job
 from fsr4.render import RenderSettings, Renderer
@@ -157,35 +158,35 @@ class RendererTest(unittest.TestCase):
             saved, decoded = self.export_whole(source)
             self.assertEqual(saved, decoded, f"{source.name}: the saved video ends where the source does")
 
-    def test_previous_settings_are_kept_and_switched_back_to(self):
+    def test_versions_are_kept_and_upscaled_side_by_side(self):
         timeline = self.renderer.timeline
         plain = self.renderer.settings
         self.wait_for(lambda: timeline.ready_until(0) >= 45, "a second and a half")
         kept = [piece.path for piece in timeline.pieces(ready_only=True)]
         sharp = RenderSettings((WIDTH * 2, HEIGHT * 2), sharpness=0.5)
         self.renderer.change_settings(sharp)
-        before = self.renderer.before
-        self.assertIsNotNone(before)
-        self.assertEqual(before.settings, plain)
-        self.assertTrue(all(path.exists() for path in kept), "the previous version stays for comparison")
-        self.assertEqual(sharp.describe(plain), "FSR 4 · sharpening 0.50")
+        self.assertTrue(all(path.exists() for path in kept), "the previous version is kept")
         self.wait_for(lambda: self.renderer.timeline.ready_until(0) >= 30, "the new version's first second")
         self.renderer.change_settings(plain)  # back to the previous settings: no work to redo
         self.assertIs(self.renderer.timeline, timeline)
         self.assertGreaterEqual(self.renderer.timeline.ready_until(0), 45)
-        self.assertEqual(self.renderer.before.settings, sharp)
+        fsr3 = RenderSettings((WIDTH * 2, HEIGHT * 2), upscaler="3.1.6")
+        self.renderer.show([plain, fsr3])  # one on each side of the picture: both are upscaled at the playhead
+        self.renderer.set_target(75)
+        other = self.renderer.timeline_of(fsr3)
+        self.wait_for(lambda: timeline.ready_until(75) >= 105 and other.ready_until(75) >= 105,
+                      "both versions after the seek")
 
-    def test_a_dropped_version_is_deleted_even_while_played(self):
+    def test_forgotten_versions_are_deleted_even_while_played(self):
         first = self.renderer.timeline
         self.wait_for(lambda: first.ready_until(0) >= 30, "the first second")
         playing = first.pieces(ready_only=True)[0].path
-        self.renderer.change_settings(RenderSettings((WIDTH * 2, HEIGHT * 2), sharpness=0.3))
-        self.wait_for(lambda: self.renderer.timeline.ready_until(0) >= 30, "the second version")
-        with open(playing, "rb"):  # like a playback decoder: Windows refuses to delete the file meanwhile
-            self.renderer.change_settings(RenderSettings((WIDTH * 2, HEIGHT * 2), sharpness=0.6))
-            self.assertTrue(playing.exists())
-        self.wait_for(lambda: self.renderer.timeline.ready_until(0) >= 30 and not playing.exists(),
-                      "the oldest version deleted once its file is closed")
+        with mock.patch.object(render, "KEPT_VERSIONS", 0):
+            with open(playing, "rb"):  # like a playback decoder: Windows refuses to delete the file meanwhile
+                self.renderer.change_settings(RenderSettings((WIDTH * 2, HEIGHT * 2), sharpness=0.3))
+                self.assertTrue(playing.exists())
+            self.wait_for(lambda: self.renderer.timeline.ready_until(0) >= 30 and not playing.exists(),
+                          "the forgotten version deleted once its file is closed")
 
     def test_settings_change_starts_over(self):
         timeline = self.renderer.timeline

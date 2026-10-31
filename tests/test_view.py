@@ -5,7 +5,8 @@ import cv2
 import numpy as np
 
 from fsr4.ui_transport import format_time
-from fsr4.ui_video import blend, compute_geometry, decode_request, over, reference_view, upscaled_view
+from fsr4.ui_video import (blend, block_view, compute_geometry, decode_request, over, reference_view, step_zoom,
+                           upscaled_view)
 
 
 def gradient(width: int, height: int) -> np.ndarray:
@@ -31,7 +32,7 @@ class GeometryTest(unittest.TestCase):
         geometry = compute_geometry((1000, 800), (3840, 2160), 2, (100, 100))
         self.assertEqual(geometry.region, (0, 0, 500, 400), "the region stays inside the picture")
         self.assertEqual(geometry.shown, (0, 0, 1000, 800))
-        self.assertEqual(decode_request(geometry), ((0, 0, 500, 400), (1000, 800), "neighbor"))
+        self.assertEqual(decode_request(geometry), ((0, 0, 500, 400), (500, 400), "neighbor"))
         geometry = compute_geometry((1000, 800), (3840, 2160), 1, (1920, 1080))
         self.assertEqual(geometry.region, (1420, 680, 1000, 800))
 
@@ -100,6 +101,68 @@ class ReferenceTest(unittest.TestCase):
         geometry = compute_geometry((200, 120), self.output_size, 1, (301, 151))
         x0, y0, width, height = geometry.region
         np.testing.assert_array_equal(upscaled_view(upscaled, geometry), upscaled[y0:y0 + height, x0:x0 + width])
+
+
+class AnyZoomTest(unittest.TestCase):
+    """The slider zooms to any scale: from 100% up every view pixel is a whole output pixel on both sides."""
+
+    def setUp(self):
+        self.source = gradient(320, 180)
+        self.output_size = (640, 360)
+
+    def test_upscaled_pixels_are_blocks(self):
+        upscaled = gradient(*self.output_size)
+        geometry = compute_geometry((300, 200), self.output_size, 1.5, (321, 181))
+        x0, y0, _, _ = geometry.region
+        _, _, width, height = geometry.shown
+        self.assertEqual((width, height), (300, 200))
+        columns = ((np.arange(width) + 0.5) / 1.5).astype(int)
+        rows = ((np.arange(height) + 0.5) / 1.5).astype(int)
+        np.testing.assert_array_equal(upscaled_view(upscaled, geometry), upscaled[y0 + rows][:, x0 + columns])
+
+    def test_both_sides_line_up(self):
+        full = cv2.resize(self.source, self.output_size, interpolation=cv2.INTER_NEAREST)
+        for zoom in (1.5, 2.75):
+            geometry = compute_geometry((300, 200), self.output_size, zoom, (301, 151))
+            left = reference_view(self.source, geometry, cv2.INTER_NEAREST, geometry.shown[2])
+            difference = np.abs(left.astype(int) - upscaled_view(full, geometry).astype(int)).max()
+            self.assertLessEqual(difference, 1, f"zoom {zoom}")
+
+    def test_right_side_columns_match_at_any_zoom(self):
+        for zoom in (0.7, 1.37, 2.5):
+            geometry = compute_geometry((200, 120), self.output_size, zoom, (301, 151))
+            width = geometry.shown[2]
+            for interpolation in (cv2.INTER_NEAREST, cv2.INTER_CUBIC):
+                full = reference_view(self.source, geometry, interpolation, width)
+                part = reference_view(self.source, geometry, interpolation, width - 61, 61)
+                difference = np.abs(part.astype(int) - full[:, 61:].astype(int)).max()
+                self.assertLessEqual(difference, 1, f"zoom {zoom}")
+
+    def test_playing_draws_the_same_blocks_as_paused(self):
+        """Playing decodes the shown region at its own pixels and the view draws the blocks, as when paused."""
+        upscaled = gradient(*self.output_size)
+        for zoom in (1.5, 2.75, 3.3):
+            geometry = compute_geometry((300, 200), self.output_size, zoom, (301, 151))
+            crop, size, _ = decode_request(geometry)
+            self.assertEqual((crop, size), (geometry.region, geometry.region[2:]))
+            x0, y0, width, height = crop
+            decoded = upscaled[y0:y0 + height, x0:x0 + width]
+            paused = upscaled_view(upscaled, geometry)
+            right = block_view(decoded, geometry.scale, 113, geometry.shown[2] - 113, geometry.shown[3])
+            np.testing.assert_array_equal(right, paused[:, 113:], f"zoom {zoom}")
+
+    def test_wheel_stops_at_whole_zooms(self):
+        stops = [0.3, 0.5, 1.0, 2.0, 4.0, 8.0]
+        scale, seen = 0.3, []
+        for _ in range(30):
+            scale = step_zoom(scale, 1, stops, 0.3, 8.0)
+            seen.append(scale)
+        for stop in stops[1:]:
+            self.assertTrue(any(abs(value - stop) < 1e-9 for value in seen), f"stops at {stop}")
+        self.assertEqual(seen[-1], 8.0)
+        self.assertAlmostEqual(step_zoom(1.0, -1, stops, 0.3, 8.0), 2 ** -0.25)
+        self.assertEqual(step_zoom(1.9, 1, stops, 0.3, 8.0), 2.0)
+        self.assertEqual(step_zoom(0.32, -2, stops, 0.3, 8.0), 0.3)
 
 
 class CompositingTest(unittest.TestCase):

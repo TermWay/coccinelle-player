@@ -178,6 +178,22 @@ class Timeline:
             return prefix
 
 
+def intersect_ranges(first: list[tuple[int, int]], second: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """The frames in both lists of sorted, disjoint (start, end) ranges."""
+    ranges = []
+    index = other = 0
+    while index < len(first) and other < len(second):
+        start = max(first[index][0], second[other][0])
+        end = min(first[index][1], second[other][1])
+        if start < end:
+            ranges.append((start, end))
+        if first[index][1] < second[other][1]:
+            index += 1
+        else:
+            other += 1
+    return ranges
+
+
 def next_start(timeline: Timeline, target: int, batch: bool, low_water: int) -> int | None:
     """Where an idle renderer should start, or None when nothing is needed now."""
     missing = timeline.next_missing(target)

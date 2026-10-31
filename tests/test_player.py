@@ -85,8 +85,8 @@ class FrameStreamTest(unittest.TestCase):
 
 
 class SkippingStreamTest(unittest.TestCase):
-    def test_before_version_jumps_its_gaps(self):
-        """The version with the previous settings has holes; its stream jumps them instead of waiting."""
+    def test_a_version_not_being_upscaled_jumps_its_gaps(self):
+        """A preset shown during a whole-file upscale has holes; its stream jumps them instead of waiting."""
         pieces = [(0, 2), (5, 7)]
 
         def segments(start: int):
@@ -98,7 +98,7 @@ class SkippingStreamTest(unittest.TestCase):
         def skip(frame: int):
             return next((first for first, end in pieces if end > frame), None)
 
-        stream = FrameStream(segments, 0, 4, 2, "before", strict=True, skip=skip)
+        stream = FrameStream(segments, 0, 4, 2, "preset", strict=True, skip=skip)
         try:
             self.assertEqual([int(stream.take(frame, 2.0)[0, 0, 0]) for frame in (0, 1)], [0, 1])
             self.assertIsNone(stream.take(3, timeout=0.5), "no picture in the gap")

@@ -35,19 +35,30 @@ sub-pixel camera jitter every frame. A video file has none of those, so this too
   it is slower than the video (1080p60 to 4K runs at about 44 fps), playback waits with a spinner, like a
   streaming site, then plays on. The seek bar shows what is upscaled (lighter) and where the upscaler works
   (a tick); the filmstrip above it shows the video, bright where it is upscaled.
-- **Compare anything:** the divider splits the picture, and the label in each top corner is a menu for what
-  that side shows: the upscale with the current settings, the version made with the previous settings (kept
-  when you change one, so two FSR settings, two sizes or FSR 4 against FSR 3.1 sit side by side), or the source
-  enlarged by a classic filter: Original pixels (each source pixel as a block), Bilinear (what most players
-  do), Bicubic, or Lanczos. Going back to the previous settings swaps the two versions at once, nothing to redo.
+- **Compare anything:** the divider splits the picture; the Left and Right dropdowns above it (or a click on
+  the label in either top corner) choose what each side shows: the upscale with the current settings, any
+  preset, or the source enlarged by a classic filter: Original pixels (each source pixel as a block), Bilinear
+  (what most players do), Bicubic, or Lanczos. A preset shown is upscaled too, so two FSR settings, or FSR 4
+  against FSR 3.1, sit side by side, paused or playing (two versions share the GPU, so playing them waits
+  more).
+- **Presets** hold how the video is upscaled: the upscaler, the motion vectors and the sharpening (the size and
+  the encoder stay the file's). Six are built in (FSR 4, sharpened, best motion, no motion, FSR 3.1, FSR 2.3);
+  + saves the current settings as your own (kept in `%APPDATA%\FSR4 Upscaler\presets.json`), the bin deletes
+  one, and choosing one in the Preset dropdown loads it into the settings.
 - **Zoom:** Fit shows the whole picture; Original size shows the source at its own pixel size (the upscaled
-  side shrunk to match); 100% to 800% show upscaled pixels 1:1 or enlarged. All of it works while playing.
-  Drag the divider; the wheel zooms around the pointer; right-drag or the minimap moves the visible area;
-  double-click switches between Fit and 100%.
-- **Upscale** (Ctrl+Enter) does the rest of the file, starting at the playhead, and saves it: the pieces are
-  joined without re-encoding and the source's audio is added. Stop (Esc) keeps what is done while the file stays
-  open, and Upscale carries on from there. Changing a setting starts a new version from the playhead.
-- **Full screen** (F11, F or the button) keeps the video and its controls, which hide while it plays.
+  side shrunk to match); 100% to 800% show upscaled pixels 1:1 or enlarged, and the slider beside them goes
+  anywhere from Fit to 800%, sticking a little at those steps. From 100% up every pixel is drawn as a block,
+  exactly as the file holds it. All of it works while playing. Drag the divider; the wheel zooms around the
+  pointer in finer steps (four per doubling); right-drag or the minimap moves the visible area; double-click
+  switches between Fit and 100%.
+- **Upscale** (Ctrl+Enter) does the rest of the file with the current settings, starting at the playhead, and
+  saves it: the pieces are joined without re-encoding and the source's audio is added. Stop (Esc) keeps what is
+  done while the file stays open, and Upscale carries on from there. Changing a setting starts a new version
+  from the playhead; the earlier ones are kept, so going back to them is instant.
+- **Images** are upscaled as soon as they open, with every version shown, so presets can be compared before
+  Upscale saves the picture.
+- **Full screen** (F11, F or the button) keeps the video. Its controls come up when the mouse moves near the
+  bottom of the screen, and hide, with the pointer, once the mouse rests, wherever it is.
   The button at the far left of the header (Ctrl+B) folds the settings away. **Processor** in the settings
   sets how many threads upscaling may use (1 to all) and its priority (Normal, Low, Background).
 - When it is saved, Open plays the file and Show in folder selects it. Show log (Ctrl+L) has the details;
@@ -123,13 +134,20 @@ round-trips a sample of each family. What the tool does to make them come out ri
 The window never waits for a whole file. `fsr4/render.py` upscales into pieces (0.5 s at first after a seek so
 playback can start soon, growing to 8 s): each piece is one encoder run, and a few frames before each new
 stretch are upscaled but not kept so FSR's history and the optical flow are warm. `fsr4/timeline.py` keeps the
-pieces and decides where to work: ahead of the playhead in preview mode (from when less than 10 s is ready to
+pieces and decides where to work: ahead of the playhead in preview mode (from when less than 12 s is ready to
 30 s ahead), or everything, starting at the playhead, after Upscale. Saving joins the pieces with ffmpeg's
 concat demuxer (stream copy) and adds the audio; `tests/test_render.py` checks that a joined video matches a
 single pass frame for frame, with the audio in sync and the colour tags kept.
 
-`fsr4/player.py` plays the ready pieces: one decoder for the upscaled pieces (cropped and scaled to the view by
-ffmpeg), one for the source (the left side), the sound card's clock (waveOut, `fsr4/audio.py`) deciding which
+Each set of settings shown (the current one, presets) is a version with its own pieces. In preview mode the
+renderer upscales every version shown, taking turns: the one with the least ready ahead of the playhead goes
+first, and a run yields once it is ahead of another by as much as that one has (half a second at first, so
+both show their frame soon after a seek, then up to 2 s). Two versions of 1080p60 at 4K share the renderer's
+40 fps, about 20 each: after a seek the first shows its frame in 1.3 s and the second in 2.1 s, and playing
+both waits more often. Versions no longer shown are kept (the four most recent) so switching back is instant.
+
+`fsr4/player.py` plays the ready pieces: one decoder per upscaled version shown (cropped and scaled to the view
+by ffmpeg), one for the source (the filters), the sound card's clock (waveOut, `fsr4/audio.py`) deciding which
 frame is due. `fsr4/ui_video.py` draws everything with GDI: Tk's image path takes 20 ms for a 1600×900 frame and
 120 ms at 4K, a GDI blit 0.5 to 2 ms, so video plays smoothly in the window and full screen.
 
@@ -205,9 +223,10 @@ recordings the FSR output is a touch crisper than Lanczos on text, with no visib
 - `fsr4/media.py`: ffmpeg frame reader and writer. `fsr4/flow.py`: motion vectors. `fsr4/pipeline.py`: a frame.
 - `fsr4/job.py`: one pass over a file with progress and cancel, used by `fsr4/cli.py` (command line) and for
   images in the window; `fsr4/pipeline.py`'s `upscale_stream` is the frame loop both it and the renderer use.
-- `fsr4/render.py` (pieces around the playhead, saving), `fsr4/timeline.py` (pieces and scheduling),
-  `fsr4/player.py` (real-time playback), `fsr4/audio.py` (waveOut sound), `fsr4/usage.py` (processor threads
-  and priority).
+- `fsr4/render.py` (versions upscaled into pieces around the playhead, saving), `fsr4/timeline.py` (pieces
+  and scheduling), `fsr4/player.py` (real-time playback), `fsr4/audio.py` (waveOut sound), `fsr4/usage.py`
+  (processor threads and priority), `fsr4/presets.py` (built-in and saved presets), `fsr4/image_preview.py`
+  (an image upscaled with every version shown).
 - The window: `fsr4/ui.py` (layout and wiring), `fsr4/ui_video.py` (the GDI-drawn preview and comparison),
   `fsr4/ui_transport.py` (filmstrip, seek bar, playback buttons), `fsr4/ui_tooltip.py`, `fsr4/ui_theme.py`
   (palette, fonts, ttk styles made of anti-aliased images, dark title bar and dialogs), `fsr4/ui_art.py` (numpy
@@ -216,9 +235,11 @@ recordings the FSR output is a touch crisper than Lanczos on text, with no visib
 - `tools/gen_vk_types.py`: regenerates the Vulkan structs from `third_party/vulkan_core.h`.
 - `tools/fetch_sdk.py`: downloads the FSR DLLs. `tools/lab_quality.py`: the PSNR lab.
 - `tools/ui_smoke.py`: drives the window through every state (drop, first upscaled frame, tooltip, dropdown,
-  file dialog, playback, buffering after a seek, zoom with original pixels, full screen with and without its
-  controls, folded sidebar, whole-file save, image, error, minimum size) and screenshots each with
-  `tools/window_capture.py`.
+  file dialog, playback, buffering after a seek, zoom with original pixels, the zoom slider and wheel, a side's
+  dropdown opened from its label, a preset saved and two presets side by side paused and playing, full screen
+  with its controls showing near the bottom and hiding at rest, folded sidebar, whole-file save, an image
+  compared with a preset, error, minimum size) and screenshots each with `tools/window_capture.py`. Its
+  presets go to a scratch file, never yours.
 - `tests/`: `python -m unittest discover -s tests`.
 
 ## Limits

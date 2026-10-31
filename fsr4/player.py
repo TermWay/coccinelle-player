@@ -1,10 +1,12 @@
 """Plays the upscaled video in the video view in real time, with sound, while it is being upscaled.
 
 Paused, the view shows a still: the full-resolution source and upscaled frames, so zoom, pan and the divider
-respond at once. Playing, two decoders stream the source (for the left of the divider) and the finished
-upscaled pieces (already cropped and scaled to the view by ffmpeg), and the sound card's clock decides which
-frame is due; late frames are dropped. When the next frame is not upscaled yet the player buffers like a
-streaming site: sound and clock stop, a spinner turns, and playback resumes once enough is ready ahead.
+respond at once. Playing, decoders stream the source (for the filters) and the finished pieces of each upscaled
+layer shown (already cropped and scaled to the view by ffmpeg), and the sound card's clock decides which frame
+is due; late frames are dropped. Layers are versions of the upscale (settings or presets). When the next frame
+of a layer being upscaled is not ready yet the player buffers like a streaming site: sound and clock stop, a
+spinner turns, and playback resumes once enough is ready ahead in every such layer. A layer that is not being
+upscaled (a preset shown during a whole-file upscale) shows what it has and never holds playback up.
 
 Everything runs on the player's own thread; the window sends commands and receives events through
 `on_event(kind, *values)`: "position" (frame shown), "state" (playing, buffering), "ended", "notice"
@@ -36,8 +38,9 @@ BUFFER_MIN_SECONDS = 2.0
 BUFFER_MAX_SECONDS = 10.0
 BUFFER_HORIZON_SECONDS = 15.0
 AUDIO_STALL_SECONDS = 0.25
+RESTART_SETTLE_SECONDS = 0.15
 FIRST_FRAME_TIMEOUT = 10.0
-BEFORE_FIRST_FRAME_TIMEOUT = 1.0
+LENIENT_FIRST_FRAME_TIMEOUT = 1.0
 PIECE_CONTAINER = "mov,mp4,m4a,3gp,3g2,mj2"
 
 Segment = tuple[Callable[[], FrameReader], int]
@@ -193,8 +196,7 @@ class Player:
         self.rate = float(info.frame_rate)
         self.timeline: Timeline | None = None
         self.output_size = (info.width, info.height)
-        self.before_timeline: Timeline | None = None
-        self.before_size: tuple[int, int] | None = None
+        self.layers: dict[str, tuple[Timeline, bool]] = {}
         self.position = 0
         self.playing = False
         self.buffering = False
@@ -222,8 +224,11 @@ class Player:
         self._last_position_event = 0.0
         self._last_spinner = 0.0
         self._showing_unready = False
+        self._missing_layers: set[str] = set()
+        self._target_key: tuple | None = None
+        self._target_since = 0.0
         self._caught_up = False
-        self._decoders = ThreadPoolExecutor(max_workers=2, thread_name_prefix="still")
+        self._decoders = ThreadPoolExecutor(max_workers=3, thread_name_prefix="still")
         self._thread = threading.Thread(target=self._main, name="player", daemon=True)
         self._thread.start()
 
@@ -234,13 +239,11 @@ class Player:
         return self.timeline.total if self.timeline is not None else (self.info.frame_count or 1)
 
     def attach(self, timeline: Timeline | None, output_size: tuple[int, int],
-               before: tuple[Timeline, tuple[int, int]] | None = None) -> None:
-        """A new renderer (or new settings): the current timeline and output size, and the "before" version's."""
-        self._commands.put(("attach", timeline, output_size, before))
-
-    def layers_changed(self) -> None:
-        """A side of the view shows another layer: decode what it needs now."""
-        self._commands.put(("layers",))
+               layers: dict[str, tuple[Timeline, bool]] | None = None) -> None:
+        """A new renderer, new settings or a new choice of what the view shows: the current version's timeline
+        (it sets the video's length), the output size, and for each upscaled layer the view can show, its
+        timeline and whether playback waits for it (a version being upscaled) or shows what it has."""
+        self._commands.put(("attach", timeline, output_size, dict(layers or {})))
 
     def play(self) -> None:
         self._commands.put(("play",))
@@ -298,7 +301,7 @@ class Player:
     def _main(self) -> None:
         try:
             while True:
-                if self.playing and not self.buffering or self._still_wanted is not None:
+                if (self.playing and not self.buffering) or (not self.playing and self._still_wanted is not None):
                     timeout = 0.0
                 elif self.buffering or (self._showing_unready and self.render_active):
                     timeout = SPINNER_INTERVAL
@@ -338,14 +341,8 @@ class Player:
     def _handle(self, command: tuple) -> None:
         kind = command[0]
         if kind == "attach":
-            _, self.timeline, self.output_size, before = command
-            self.before_timeline, self.before_size = before if before is not None else (None, None)
+            _, self.timeline, self.output_size, self.layers = command
             self.position = min(self.position, self.total - 1)
-            if self.playing:
-                self._restart(self.position)
-            else:
-                self._still_wanted = self.position
-        elif kind == "layers":
             if self.playing:
                 self._restart(self.position)
             else:
@@ -374,23 +371,29 @@ class Player:
             _, self.volume, self.muted = command
             self._sound(lambda audio: audio.set_volume(0.0 if self.muted else self.volume))
         elif kind == "refresh":
-            if not self.playing and self.timeline is not None and self._showing_unready:
-                if self.timeline.piece_at(self.position, ready_only=True) is not None:
-                    self._still_wanted = self.position
+            if not self.playing and self._missing_layers:
+                for layer in self._missing_layers:
+                    timeline = self.layers.get(layer, (None, False))[0]
+                    if timeline is not None and timeline.piece_at(self.position, ready_only=True) is not None:
+                        self._still_wanted = self.position
         elif kind == "live":
             _, frame, source_rgba, upscaled_rgba = command
             if self.follow_live and not self.playing:
                 import cv2
                 self.position = frame
-                self.view.show_still(cv2.cvtColor(source_rgba, cv2.COLOR_RGBA2BGRA),
-                                     {"current": cv2.cvtColor(upscaled_rgba, cv2.COLOR_RGBA2BGRA)})
+                upscaled = cv2.cvtColor(upscaled_rgba, cv2.COLOR_RGBA2BGRA)
+                # The renderer's frames are the current version's: every layer showing that version gets them.
+                layers = {layer: upscaled for layer, (timeline, _) in self.layers.items() if timeline is self.timeline}
+                self.view.show_still(cv2.cvtColor(source_rgba, cv2.COLOR_RGBA2BGRA), layers)
                 self._showing_unready = False
+                self._missing_layers = set()
                 self._position_event(force=True)
 
     # ---- playback -------------------------------------------------------------------------------
 
     def _restart(self, frame: int) -> None:
         """(Re)start playing at `frame`: buffering first when it is not upscaled yet."""
+        self._still_wanted = None  # a still asked for before Play: playing shows the frame instead
         self._caught_up = False
         self._stop_streams()
         self._release_held()
@@ -404,17 +407,23 @@ class Player:
             source = read_frame(self.source, self.info, frame, self.keyframes.get(), "bgra")
             self.view.show_still(source, {}, "upscaling…", spinner=True)
 
+    def _paced(self, layers) -> list[str]:
+        """The layers among `layers` that playback waits for."""
+        return [layer for layer in layers if self.layers.get(layer, (None, False))[1]]
+
     def _try_resume(self) -> bool:
-        """Start the decoders, show the first frame and start the clock once enough is upscaled ahead (when the
-        current upscale is shown; the source and the "before" version never wait)."""
+        """Start the decoders, show the first frame and start the clock once enough is upscaled ahead in every
+        layer shown that is being upscaled (the source and the other layers never wait)."""
         if self.timeline is None:
             return False
         frame = self._resume_frame
         layers = self.view.needed_layers()
-        if "current" in layers:
-            ready_end = self.timeline.ready_until(frame)
-            to_the_end = self.timeline.exact and ready_end >= self.total
-            if ready_end <= frame or (not to_the_end and ready_end - frame < self._buffer_needed()):
+        paced = self._paced(layers)
+        for layer in paced:
+            timeline = self.layers[layer][0]
+            ready_end = timeline.ready_until(frame)
+            to_the_end = timeline.exact and ready_end >= timeline.total
+            if ready_end <= frame or (not to_the_end and ready_end - frame < self._buffer_needed(len(paced))):
                 return False
         self._start_streams(frame, layers)
         source_stream = self._streams["source"]
@@ -425,9 +434,9 @@ class Player:
         shown = {}
         for layer in layers:
             stream = self._streams.get(layer)
-            image = stream.take(frame, FIRST_FRAME_TIMEOUT if layer == "current" else BEFORE_FIRST_FRAME_TIMEOUT) \
-                if stream is not None else None
-            if image is None and layer == "current":
+            timeout = FIRST_FRAME_TIMEOUT if layer in paced else LENIENT_FIRST_FRAME_TIMEOUT
+            image = stream.take(frame, timeout) if stream is not None else None
+            if image is None and layer in paced:
                 raise RuntimeError(f"could not decode frame {frame} for playback")
             shown[layer] = None if image is None else (image, self._stream_keys[layer])
             if image is not None:
@@ -441,12 +450,13 @@ class Player:
         self._position_event(force=True)
         return True
 
-    def _buffer_needed(self) -> int:
+    def _buffer_needed(self, versions: int) -> int:
         """Frames to have ready ahead before playing: a short wait to start, and after playback caught up with a
-        renderer slower than real time, enough to play about BUFFER_HORIZON_SECONDS before the next wait."""
+        renderer slower than real time, enough to play about BUFFER_HORIZON_SECONDS before the next wait. The
+        renderer shares its speed among the `versions` being upscaled."""
         seconds = BUFFER_MIN_SECONDS
         if self._caught_up and self.render_speed > 0 and self.rate:
-            ratio = self.render_speed / self.rate
+            ratio = self.render_speed / max(1, versions) / self.rate
             seconds = min(BUFFER_MAX_SECONDS, max(BUFFER_MIN_SECONDS, (1 - ratio) * BUFFER_HORIZON_SECONDS))
         return max(1, int(round(seconds * self.rate)))
 
@@ -470,13 +480,11 @@ class Player:
 
     def _start_layer_stream(self, layer: str, frame: int) -> None:
         """Decode `layer`'s ready pieces from `frame`, cropped and scaled to the view by ffmpeg."""
-        if layer == "current":
-            timeline, output_size = self.timeline, self.output_size
-        else:
-            timeline, output_size = self.before_timeline, self.before_size
+        timeline, paced = self.layers.get(layer, (None, False))
         if timeline is None:
             return
-        key, crop, size, flags = self.view.decode_target(layer)
+        output_size = self.output_size
+        key, crop, size, flags = self.view.decode_target()
         rate = self.info.frame_rate
 
         def segment(start: int) -> Segment | None:
@@ -488,8 +496,8 @@ class Player:
             return (lambda: FrameReader(piece.path, info, start_frame=start - piece.start, crop=crop, size=size,
                                         scale_flags=flags, pixel_format="bgra"), piece.end)
 
-        skip = None if layer == "current" else timeline.next_ready_start
-        self._streams[layer] = FrameStream(segment, frame, size[0], size[1], f"{layer} upscale", strict=True, skip=skip)
+        skip = None if paced else timeline.next_ready_start
+        self._streams[layer] = FrameStream(segment, frame, size[0], size[1], "upscaled pieces", strict=True, skip=skip)
         self._stream_keys[layer] = key
 
     def _stop_streams(self) -> None:
@@ -576,13 +584,14 @@ class Player:
         due = int(math.floor(self._clock_frame() + 1e-6))
         due = max(due, self._clock_frame0)
         timeline = self.timeline
-        paced = "current" in self._stream_layers
+        paced = self._paced(self._stream_layers)
         if timeline.exact and due >= timeline.total:
             self._finish()
             return
-        if paced and timeline.ready_until(self._resume_frame) <= due:
-            # The next frames are not upscaled yet: wait for the renderer.
-            self._resume_frame = timeline.ready_until(self._resume_frame)
+        ready_ends = [self.layers[layer][0].ready_until(self._resume_frame) for layer in paced]
+        if ready_ends and min(ready_ends) <= due:
+            # The next frames are not upscaled yet in every layer shown: wait for the renderer.
+            self._resume_frame = min(ready_ends)
             if timeline.exact and self._resume_frame >= timeline.total:
                 self._finish()
                 return
@@ -590,25 +599,29 @@ class Player:
             self._release_held()
             self._sound(lambda audio: audio.pause())
             self._caught_up = True
+            self._position_event(force=True)  # the renderer works from the playhead, not from a late one
             self._set_buffering(True)
             return
         frame_time = 1 / self.rate
         source_stream = self._streams["source"]
         held, shown = [], {}
-        current_stream = self._streams.get("current")
-        if paced:
-            # The current upscale first: if its decoder is late, skip this tick without consuming the source.
-            image = current_stream.take(due, frame_time)
+        for layer in paced:
+            # The upscaled layers first: if a decoder is late, skip this tick without consuming the source.
+            stream = self._streams[layer]
+            image = stream.take(due, frame_time)
             if image is None:
-                if current_stream.ended:
+                for owner, buffer in held:
+                    owner.release(buffer)
+                if stream.ended:
                     self._resume_frame = due
                     self._stop_streams()
                     self._release_held()
                     self._sound(lambda audio: audio.pause())
+                    self._position_event(force=True)
                     self._set_buffering(True)
                 return
-            held.append((current_stream, image))
-            shown["current"] = (image, self._stream_keys["current"])
+            held.append((stream, image))
+            shown[layer] = (image, self._stream_keys[layer])
         source = source_stream.take(due, frame_time)
         if source is None:
             for stream, buffer in held:
@@ -617,7 +630,7 @@ class Player:
                 self._finish()
             return
         held.append((source_stream, source))
-        for layer in self._stream_layers - {"current"}:
+        for layer in self._stream_layers - set(paced):
             stream = self._streams.get(layer)
             image = stream.take(due, frame_time / 2) if stream is not None else None
             shown[layer] = None if image is None else (image, self._stream_keys[layer])
@@ -629,9 +642,14 @@ class Player:
         self.position = due
         self._resume_frame = due + 1
         self._position_event()
+        # Zoomed or panned: decode at the new geometry once it has settled (the view stretches the old meanwhile).
+        target, now = self.view.decode_target()[0], time.perf_counter()
+        if target != self._target_key:
+            self._target_key, self._target_since = target, now
         for layer in self._stream_layers:
             stream = self._streams.get(layer)
-            if stream is not None and self.view.decode_target(layer)[0] != self._stream_keys.get(layer):
+            if (stream is not None and target != self._stream_keys.get(layer)
+                    and now - self._target_since >= RESTART_SETTLE_SECONDS):
                 stream.stop()
                 self._held = [(owner, buffer) for owner, buffer in self._held if owner is not stream]
                 self._start_layer_stream(layer, due + 1)
@@ -674,11 +692,9 @@ class Player:
         self._still_wanted = None
         source_future = self._decoders.submit(read_frame, self.source, self.info, frame, self.keyframes.get(), "bgra")
         futures = {}
+        size = self.output_size
         for layer in self.view.needed_layers():
-            if layer == "current":
-                timeline, size = self.timeline, self.output_size
-            else:
-                timeline, size = self.before_timeline, self.before_size
+            timeline = self.layers.get(layer, (None, False))[0]
             piece = timeline.piece_at(frame, ready_only=True) if timeline is not None else None
             if piece is None:
                 futures[layer] = None
@@ -690,6 +706,7 @@ class Player:
         layers = {layer: future.result() if future is not None else None for layer, future in futures.items()}
         if self._still_wanted is not None or self.playing:
             return  # a newer request arrived while decoding
-        self._showing_unready = "current" in layers and layers["current"] is None
+        self._missing_layers = {layer for layer, image in layers.items() if image is None}
+        self._showing_unready = bool(self._paced(self._missing_layers))
         busy = self._showing_unready and self.render_active
         self.view.show_still(source, layers, "upscaling…" if busy else "", spinner=busy)

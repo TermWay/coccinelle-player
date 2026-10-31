@@ -23,7 +23,8 @@ Radeon RX 9000 card, through Vulkan. The shared rules in `..\CLAUDE.md` apply; t
 - Performance figures go in the README table with the command that produced them.
 - The window is checked with `python tools/ui_smoke.py --video <clip> --image <png> --out out/ui`: it drives
   every state through the real widgets (a real WM_DROPFILES drop, tooltip, dropdown, file dialog, playback,
-  buffering, full screen, save) and saves PrintWindow screenshots to look at. The window pops up on the desktop
+  buffering, presets side by side, zoom slider, full screen, save) and saves PrintWindow screenshots to look at.
+  Its presets go to a scratch file in `--out`, never the user's `%APPDATA%` one. The window pops up on the desktop
   while it runs; `out/ui/sample.wmv` (1080p60 WMV with WMA audio) is the usual clip.
 - `tests/test_render.py` (GPU) checks that pieces rendered around seeks join into exactly the single-pass video;
   `tests/test_audio.py` needs a sound device and skips without one.
@@ -44,10 +45,18 @@ Radeon RX 9000 card, through Vulkan. The shared rules in `..\CLAUDE.md` apply; t
 - Videos in the window: `Renderer` (one thread, owns the GPU) writes pieces, `Timeline` (pure, tested) decides
   where to work, `Player` (its own thread) plays ready pieces with the waveOut clock, `VideoView` draws. They talk
   through the window's queue; only `VideoView.present/show_still/set_spinner` may be called off the Tk thread.
-- A settings change starts a new `Version` (settings + timeline); the previous one is kept as `before` (if it has
-  a second or more) for the comparison layers, and settings equal to it swap the two back. Each side of the
-  view shows a layer: "current", "before" or a filter of the source; the player decodes only the layers shown,
-  and only "current" paces playback (buffering).
+- Every distinct `RenderSettings` is a `Version` (settings + timeline). The current settings' version is what
+  Upscale saves; `Renderer.show()` names the versions the view shows (the current settings or presets, see
+  `fsr4/presets.py`), which preview mode upscales in turns (fewest ready ahead first, yield after
+  `SWITCH_SECONDS`); batch mode does only the current one. Versions not shown are kept up to `KEPT_VERSIONS`.
+  A preset holds only upscaler, motion and sharpening: size and encoder always come from the current settings.
+- Each side of the view shows a filter of the source or an upscaled layer (keyed by its settings, so two sides
+  showing the same version share it). The player decodes only the layers shown; layers being upscaled pace
+  playback (buffering), the others (a preset during a whole-file upscale) show what they have. Images get an
+  `ImagePreviewer` (own GPU device) for the layers shown; saving an image runs the job.
+- The side dropdowns, the Preset dropdown and every other choice are the same themed ttk Combobox; no native
+  `tk.Menu` (it cannot be styled to match). A label on the picture opens its side's dropdown on release (on
+  press, the release would land in the list and pick an entry).
 - FSR 4 ignores the SDK's upscale tuning keys (verified bit-identical); `ffx.Upscaler(provider=...)` selects the
   DLL's FSR 3.1.6 or 2.3.4 through `ffxOverrideVersion` for comparisons. The frame count from the probe is an
   estimate until a read reaches the end (`Timeline.exact`); never stop rendering at the estimate.

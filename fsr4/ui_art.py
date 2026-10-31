@@ -153,12 +153,12 @@ def app_icon(size: int) -> np.ndarray:
     return sketch.rgba()
 
 
-ICON_NAMES = ("play", "pause", "volume", "mute", "fullscreen", "windowed", "sidebar")
+ICON_NAMES = ("play", "pause", "volume", "mute", "fullscreen", "windowed", "sidebar", "add", "delete")
 
 
 def icon(name: str, size: int, color: str) -> np.ndarray:
     """A small control icon (straight RGBA) drawn on a 24-unit grid: play, pause, volume, mute, fullscreen,
-    windowed (leave full screen) or sidebar."""
+    windowed (leave full screen), sidebar, add (a plus) or delete (a bin)."""
     sketch = Sketch(size, size)
     unit = size / 24
     stroke = max(1.2, 1.9 * unit)
@@ -198,6 +198,17 @@ def icon(name: str, size: int, color: str) -> np.ndarray:
                                     max(0.0, 2.5 * unit - stroke))
         sketch.fill(np.clip(outer - inner, 0, 1), color)
         sketch.fill(sketch.rounded_rect(3 * unit, 4.5 * unit, 9.5 * unit, 19.5 * unit, 2.5 * unit), color, opacity=0.9)
+    elif name == "add":
+        sketch.fill(np.maximum(sketch.segment(12 * unit, 5.5 * unit, 12 * unit, 18.5 * unit, stroke),
+                               sketch.segment(5.5 * unit, 12 * unit, 18.5 * unit, 12 * unit, stroke)), color)
+    elif name == "delete":
+        lines = [[(5, 7), (19, 7)], [(9.5, 7), (9.5, 4.5), (14.5, 4.5), (14.5, 7)],
+                 [(6.8, 7), (7.8, 19.5), (16.2, 19.5), (17.2, 7)], [(10.5, 10.5), (10.5, 16.5)],
+                 [(13.5, 10.5), (13.5, 16.5)]]
+        mask = np.zeros((size, size), np.float32)
+        for points in lines:
+            mask = np.maximum(mask, sketch.polyline([(x * unit, y * unit) for x, y in points], stroke * 0.85))
+        sketch.fill(mask, color)
     else:
         raise ValueError(f"unknown icon {name}; choose from {', '.join(ICON_NAMES)}")
     return sketch.rgba()

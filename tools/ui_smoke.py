@@ -4,14 +4,17 @@
 
 Steps: empty window, a video dropped on it (a real WM_DROPFILES message), its first upscaled frame, a tooltip,
 a dropdown, the file dialog, playback, a seek into frames not upscaled yet (buffering), a paused zoom with the
-original pixels on the left, full screen with and without its controls, the folded sidebar, the whole-file
-upscale and save, an image, the error banner for a bad file, and the minimum window size. Screenshots go
-through PrintWindow, so the window may be covered; it does pop up on the desktop.
+original pixels on the left, the zoom slider and wheel, a side's dropdown opened from its label, a preset saved
+and two presets upscaled side by side (paused and playing), full screen with its controls showing near the
+bottom and hiding at rest, the folded sidebar, the whole-file upscale and save, an image compared with a preset,
+the error banner for a bad file, and the minimum window size. Presets go to a scratch file in `--out`, not the
+user's. Screenshots go through PrintWindow, so the window may be covered; it does pop up on the desktop.
 """
 from __future__ import annotations
 
 import argparse
 import ctypes
+import math
 import sys
 import threading
 import time
@@ -24,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import window_capture  # noqa: E402
 from fsr4 import media, ui, ui_theme, usage  # noqa: E402
+from fsr4.presets import PresetStore  # noqa: E402
 
 WM_DROPFILES = 0x0233
 GMEM_MOVEABLE_ZEROINIT = 0x0042
@@ -93,6 +97,10 @@ def main() -> int:
     root = tk.Tk()
     root.withdraw()
     app = ui.App(root)
+    presets_file = args.out / "presets_check.json"
+    presets_file.unlink(missing_ok=True)
+    app.presets = PresetStore(presets_file)
+    app._update_preset_lists()
     ui_theme.style_title_bar(root)
     root.deiconify()
     failures: list[str] = []
@@ -107,6 +115,25 @@ def main() -> int:
         window_capture.save(root, args.out / f"{name}.png")
         print(f"{time.monotonic() - started:6.1f}s       screenshot {name}.png", flush=True)
 
+    def choose(side: str, choice: str) -> None:
+        """Pick an entry of a side's dropdown, as a click does."""
+        app.side_boxes[side].current([value for _, value in app._side_entries()].index(choice))
+        app._side_chosen(side)
+
+    def side_ready(side: str) -> bool:
+        """Whether the paused picture has the upscaled version that `side` shows."""
+        still = app.view._still
+        return still is not None and still[1].get(app.view.sides[side]) is not None
+
+    def move_pointer(height_fraction: float) -> None:
+        """A pointer motion over the picture (the real cursor stays where it is)."""
+        view = app.view
+        x, y = view.winfo_width() // 2, int(view.winfo_height() * height_fraction)
+        view.event_generate("<Motion>", x=x, y=y, rootx=view.winfo_rootx() + x, rooty=view.winfo_rooty() + y)
+
+    def center() -> tuple[int, int]:
+        return app.view.winfo_width() // 2, app.view.winfo_height() // 2
+
     def steps():
         yield lambda: app.gpu_ready is not None
         check(app.gpu_ready is True, f"GPU check: {app.gpu_label.cget('text')}")
@@ -117,7 +144,7 @@ def main() -> int:
         check(app.info is not None and app.input_path.name == args.video.name, "dropped video loaded")
         check(app.choose_button.cget("text") == "Choose another file…", "button reads Choose another file…")
         loaded = time.monotonic()
-        yield lambda: app.view.comparing and app.view._still is not None             and app.view._still[1].get("current") is not None
+        yield lambda: app.view.comparing and side_ready("right")
         check(time.monotonic() - loaded < 6, f"first upscaled frame shown {time.monotonic() - loaded:.1f} s after load")
         check(app.transport.winfo_ismapped(), "playback controls shown for a video")
         yield 0.5
@@ -159,37 +186,83 @@ def main() -> int:
         app.toggle_play()
         yield lambda: not app.player.playing
         yield 0.8
-        app._choose_layer("left", "nearest")
-        app.view.set_zoom(2, anchor=(app.view.winfo_width() // 2, app.view.winfo_height() // 2))
+        choose("left", "nearest")
+        app.view.set_zoom(2, anchor=center())
         yield 0.6
         check(app.zoom_var.get() == "2", "zoom chip follows the view")
         check(app.view.sides["left"] == "nearest", "left side shows the original pixels")
         shot("05_paused_zoom_original")
-        app.zoom_var.set("source")
+        app.zoom_slider_var.set(math.log2(1.5))
+        app._zoom_slid()
+        yield 0.6
+        check(abs(app.view.zoom_scale(app.view.zoom) - 1.5) < 0.01 and app.zoom_var.get() == "",
+              f"the slider zooms to {app.zoom_label.cget('text')}")
+        shot("05a_zoom_slider")
+        app.zoom_slider_var.set(math.log2(1.02))
+        app._zoom_slid()
+        check(app.view.zoom == 1 and app.zoom_var.get() == "1", "the slider sticks to 100%")
+        app.view.set_zoom("fit")
+        app.view.set_zoom(app.view.zoom_step(1))
+        check(app.view.fit_scale() < app.view.zoom_scale(app.view.zoom) < app.view.fit_scale() * 1.2,
+              f"a wheel notch zooms in a quarter octave ({app.zoom_label.cget('text')})")
         app.view.set_zoom("source")
         yield 0.6
+        check(app.zoom_var.get() == "source", "Original size chip follows the view")
         shot("05b_original_size")
         app.view.set_zoom("fit")
-        app._choose_layer("left", "cubic")
-        # two settings side by side: sharpening on, the version without it kept as "before"
+        choose("left", "cubic")
+        left, top, right, bottom = app.view._pill_boxes["right"]
+        for sequence in ("<ButtonPress-1>", "<ButtonRelease-1>"):
+            app.view.event_generate(sequence, x=(left + right) // 2, y=(top + bottom) // 2)
+        yield 0.5
+        popdown = root.tk.call("ttk::combobox::PopdownWindow", app.side_boxes["right"])
+        check(root.tk.call("winfo", "ismapped", popdown) == 1 and app.side_choices["right"] == "current",
+              "a click on the label on the picture opens its side's dropdown")
+        window_capture.save_handle(int(root.tk.call("wm", "frame", popdown), 16), args.out / "05c_side_dropdown.png")
+        print("      screenshot 05c_side_dropdown.png", flush=True)
+        root.tk.call("ttk::combobox::Unpost", app.side_boxes["right"])
+        # a preset of one's own, compared with FSR 3.1
         app.sharpen_var.set(True)
         app.sharpness_var.set(0.8)
         app._settings_changed()
-        yield lambda: app.renderer.before is not None
-        yield lambda: app.renderer.timeline.ready_until(app.player.position) > app.player.position
-        app._choose_layer("left", "before")
-        yield lambda: app.view._still is not None and app.view._still[1].get("before") is not None             and app.view._still[1].get("current") is not None
-        app.view.set_zoom(2, anchor=(app.view.winfo_width() // 2, app.view.winfo_height() // 2))
+        app._begin_save_preset()
+        yield 0.3
+        shot("05d_naming_a_preset")
+        app.preset_name_var.set("Smoke sharp")
+        app._finish_save_preset()
+        check(app.presets.find("Smoke sharp") is not None and app.preset_choice.get() == "Smoke sharp",
+              "a preset is saved and named in the settings")
         yield 0.8
-        check("Before" in app.view.layer_labels.get("before", ""), "previous settings available as a layer")
-        shot("05c_before_and_after_settings")
+        choose("left", "preset:FSR 3.1")
+        yield lambda: side_ready("left") and side_ready("right")
+        app.view.set_zoom(2, anchor=center())
+        yield 0.8
+        check(app.view.side_labels == {"left": "FSR 3.1", "right": "Smoke sharp"},
+              f"labels name the presets: {app.view.side_labels}")
+        shot("05e_presets_side_by_side")
         app.view.set_zoom("fit")
-        app._choose_layer("left", "cubic")
-        app.sharpen_var.set(False)
-        app._settings_changed()
+        app.seek_to(int(app._total() * 0.6), True)  # the last 40%: a stall and the end, in seconds
+        app.toggle_play()
+        yield lambda: app.player.playing and not app.player.buffering and app.player.position > 0
+        first = app.player.position
+        yield 2.0
+        check(app.player.position - first >= 60, f"plays two upscaled versions ({app.player.position - first} "
+                                                 f"frames in 2 s)")
+        shot("05f_presets_playing")
+        give_up = time.monotonic() + 90
+        yield lambda: not app.player.playing or time.monotonic() > give_up
+        check(not app.player.playing and app.player.position >= app._total() - 2,
+              f"two versions play to the end, waiting for the upscaler on the way ({app.player.position} of {app._total()})")
+        app.preset_choice.set("FSR 4")
+        app._preset_chosen()
+        check(not app.sharpen_var.get() and app.preset_choice.get() == "FSR 4", "choosing a preset loads it")
+        app.preset_choice.set("Smoke sharp")
+        app._preset_chosen()
+        app._delete_preset()
+        check(app.presets.find("Smoke sharp") is None and app.preset_choice.get() != "Smoke sharp",
+              "a preset of one's own is deleted")
+        choose("left", "cubic")
         yield 1.0
-        check(app.renderer.settings.sharpness is None and app.renderer.before is not None,
-              "switching back reuses the earlier version")
         app.seek_to(0, True)
         app.toggle_fullscreen()
         yield 1.0
@@ -198,9 +271,22 @@ def main() -> int:
         app.toggle_play()
         yield 3.5
         check(app.player.playing, "still playing after 3.5 s in full screen")
-        check(not app.transport.winfo_ismapped(), "controls hide while playing full screen")
+        check(not app.transport.winfo_ismapped(), "controls hide once the pointer rests")
         shot("06b_fullscreen_playing")
+        move_pointer(0.97)
+        yield 0.3
+        check(app.transport.winfo_ismapped(), "moving the pointer near the bottom shows the controls")
+        shot("06c_fullscreen_controls")
+        yield 3.2
+        check(not app.transport.winfo_ismapped(), "they hide when the pointer rests, even at the bottom")
+        move_pointer(0.4)
+        yield 0.3
+        check(not app.transport.winfo_ismapped(), "moving in the middle of the picture leaves them hidden")
         app.toggle_play()
+        yield 0.4
+        check(app.transport.winfo_ismapped(), "pausing shows them")
+        yield 3.2
+        check(not app.transport.winfo_ismapped(), "they hide at rest while paused too")
         app.toggle_fullscreen()
         yield 0.8
         app.toggle_sidebar()
@@ -219,11 +305,18 @@ def main() -> int:
         shot("08_saved")
         app.load(args.image)
         yield lambda: app.info is not None
+        yield lambda: side_ready("right")
+        check(True, "the image is upscaled as soon as it opens")
+        choose("left", "preset:FSR 2.3")
+        yield lambda: side_ready("left")
+        yield 0.5
+        shot("09_image_presets")
         app.start()
         yield lambda: not app.busy and app.last_saved is not None
         check(app.last_saved.exists(), "image job finished")
+        choose("left", "cubic")
         yield 0.5
-        shot("09_image")
+        shot("09b_image_saved")
         app.load(bad_file)
         yield lambda: app.banner.winfo_ismapped()
         yield 0.3

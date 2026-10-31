@@ -2,7 +2,8 @@
 import unittest
 from pathlib import Path
 
-from fsr4.timeline import Piece, Timeline, keep_going, next_start, piece_lengths
+from fsr4 import player, render
+from fsr4.timeline import Piece, Timeline, intersect_ranges, keep_going, next_start, piece_lengths
 
 
 def piece(start: int, end: int, ready: bool = True) -> Piece:
@@ -54,6 +55,11 @@ class TimelineTest(unittest.TestCase):
         self.assertEqual(self.timeline.ready_ranges(), [(0, 130), (400, 500)])
         self.assertEqual([p.start for p in self.timeline.ready_prefix()], [0, 100])
         self.assertEqual(self.timeline.ready_frames(), 230)
+
+    def test_ranges_ready_in_two_versions(self):
+        other = [(0, 50), (90, 120), (450, 700)]
+        self.assertEqual(intersect_ranges(self.timeline.ready_ranges(), other), [(0, 50), (90, 120), (450, 500)])
+        self.assertEqual(intersect_ranges([], other), [])
 
     def test_total_follows_the_real_end(self):
         self.timeline.add(piece(990, 1020))
@@ -129,6 +135,18 @@ class SchedulingTest(unittest.TestCase):
     def test_batch_run_from_the_start_after_the_tail_is_done(self):
         self.timeline.add(piece(1300, 10_000))
         self.assertTrue(keep_going(self.timeline, 5000, True, 600, busy=(0, 40), position=40))
+
+    def test_a_waiting_player_never_leaves_the_renderer_idle(self):
+        """The player may wait for BUFFER_MAX_SECONDS ready past the frame after the playhead (and the playhead it
+        last reported can be a little behind): a version one frame short of that must still get work."""
+        for rate in (24, 30, 60):
+            needed = int(round(player.BUFFER_MAX_SECONDS * rate))
+            playhead = 1000
+            timeline = Timeline(100_000)
+            timeline.add(piece(0, playhead + needed))  # needed - 1 frames from playhead + 1: the player waits
+            target = playhead - int(round(0.5 * rate))
+            self.assertIsNotNone(next_start(timeline, target, False, int(round(render.PREVIEW_LOW_SECONDS * rate))),
+                                 f"{rate} fps")
 
     def test_piece_lengths_grow(self):
         lengths = piece_lengths(30)

@@ -6,16 +6,19 @@ every state (drop target, message, comparison of a still frame or of playing vid
 BGRA canvas with numpy (picture, divider, labels, minimap, spinner) and blitted. Composition runs on
 whichever thread presents (the Tk thread for interaction, the player thread for playback) under one lock.
 
-Each side of the divider shows a layer: the current upscale, the version made with the previous settings
-("before"), or the source enlarged by a filter (original pixels, bilinear, bicubic or Lanczos), all at the same
-geometry; clicking a side's label asks the window for a menu to change it. Zoom is Fit, Original size
-(one screen pixel per source pixel, the upscaled side shrunk to match) or 1x/2x/4x/8x output pixels; the right
-or middle button pans, the wheel zooms around the cursor, double-click switches between Fit and 100%, and the
-minimap moves the visible area.
+Each side of the divider shows a layer: an upscaled version (the window names them: current settings,
+presets) or the source enlarged by a filter (original pixels, bilinear, bicubic or Lanczos), all at the same
+geometry; clicking a side's label tells the window, which opens that side's dropdown. Zoom is Fit, Original
+size (one screen pixel per source pixel, the upscaled side shrunk to match) or any scale from Fit to 800%; from
+100% up every output pixel is a block of screen pixels (nearest neighbour), so what is drawn is what the file
+holds. The right or middle button pans, the wheel zooms around the cursor in quarter octaves (stopping at
+Fit, Original size and 100% to 800%), double-click switches between Fit and 100%, and the minimap moves the
+visible area.
 """
 from __future__ import annotations
 
 import ctypes
+import functools
 import math
 import threading
 import tkinter as tk
@@ -31,6 +34,9 @@ from .ui_art import Sketch
 from .ui_theme import Theme
 
 ZOOM_LEVELS: tuple = ("fit", "source", 1, 2, 4, 8)
+MAX_ZOOM = 8.0
+WHEEL_STEP = 2 ** 0.25
+SNAP_TOLERANCE = 0.005
 REFERENCE_FILTERS = {
     "nearest": ("Original pixels", cv2.INTER_NEAREST),
     "linear": ("Bilinear", cv2.INTER_LINEAR),
@@ -40,7 +46,6 @@ REFERENCE_FILTERS = {
 MINIMAP_WIDTH = 180
 SPINNER_FRAMES = 24
 DIVIDER_COLOR = (0xf5, 0xf4, 0xf4)
-UPSCALED_LAYERS = ("current", "before")
 PLACEHOLDER_DIM = 0.45
 
 
@@ -200,7 +205,7 @@ def tinted(coverage: np.ndarray, color: tuple[int, int, int], opacity: float = 1
 class Geometry:
     """Where the output picture sits in the view. `region` is the part of the output picture shown, in output
     pixels; `shown` is the view rectangle it covers (left, top, width, height); `scale` is view pixels per
-    output pixel (an integer when zoomed)."""
+    output pixel."""
     view_size: tuple[int, int]
     output_size: tuple[int, int]
     fit: bool
@@ -215,8 +220,8 @@ class Geometry:
 
 def compute_geometry(view_size: tuple[int, int], output_size: tuple[int, int], zoom,
                      center: tuple[float, float] | None, source_size: tuple[int, int] | None = None) -> Geometry:
-    """Fit the whole picture, show it at the source's own size ("source"), or show `zoom` view pixels per
-    output pixel, around `center` (output pixels)."""
+    """Fit the whole picture, show it at the source's own size ("source"), or show `zoom` (any positive number)
+    view pixels per output pixel, around `center` (output pixels)."""
     view_width, view_height = view_size
     out_width, out_height = output_size
     if zoom == "source":
@@ -244,15 +249,53 @@ def compute_geometry(view_size: tuple[int, int], output_size: tuple[int, int], z
     center_x, center_y = center or (out_width / 2, out_height / 2)
     x0 = int(round(min(max(center_x - region_width / 2, 0), out_width - region_width)))
     y0 = int(round(min(max(center_y - region_height / 2, 0), out_height - region_height)))
-    shown_width = min(view_width, region_width * zoom)
-    shown_height = min(view_height, region_height * zoom)
+    shown_width = min(view_width, int(round(region_width * zoom)))
+    shown_height = min(view_height, int(round(region_height * zoom)))
     return Geometry(view_size, output_size, False, float(zoom), (x0, y0, region_width, region_height),
                     ((view_width - shown_width) // 2, (view_height - shown_height) // 2, shown_width, shown_height))
+
+
+def step_zoom(scale: float, steps: int, stops: list[float], low: float, high: float) -> float:
+    """The scale `steps` wheel notches from `scale` (positive zooms in): quarter octaves, stopping at any of
+    `stops` on the way, kept within `low`..`high`."""
+    for _ in range(abs(steps)):
+        if steps > 0:
+            target = scale * WHEEL_STEP
+            passed = [stop for stop in stops if scale * (1 + SNAP_TOLERANCE) < stop <= target]
+            scale = min(passed) if passed else target
+        else:
+            target = scale / WHEEL_STEP
+            passed = [stop for stop in stops if target <= stop < scale * (1 - SNAP_TOLERANCE)]
+            scale = max(passed) if passed else target
+        scale = min(high, max(low, scale))
+    return scale
 
 
 def reference_shrinks(geometry: Geometry, source_size: tuple[int, int]) -> bool:
     """True when the source is shown smaller than its own pixels (the filter choice does not apply)."""
     return geometry.fit and geometry.shown[2] <= source_size[0] and geometry.shown[3] <= source_size[1]
+
+
+@functools.lru_cache(maxsize=6)
+def block_maps(scale: float, first: int, columns: int, rows: int) -> tuple[np.ndarray, int, tuple[int, int]]:
+    """A cv2.remap table (int16 pairs, 4 bytes per view pixel) that draws output pixels as blocks of view pixels
+    at `scale` (1 or more): view column `first + j` shows output column floor((first + j + 0.5) / scale) of the
+    region, view row i output row floor((i + 0.5) / scale). Returns (table, first output column, output
+    (columns, rows) used); the table counts columns from that first one. Shared: never write to it."""
+    column_index = np.floor((np.arange(first, first + columns) + 0.5) / scale).astype(np.int16)
+    start = int(column_index[0])
+    row_index = np.floor((np.arange(rows) + 0.5) / scale).astype(np.int16)
+    table = np.empty((rows, columns, 2), np.int16)
+    table[..., 0] = column_index - start
+    table[..., 1] = row_index[:, None]
+    return table, start, (int(column_index[-1]) - start + 1, int(row_index[-1]) + 1)
+
+
+def block_view(region: np.ndarray, scale: float, first: int, columns: int, rows: int) -> np.ndarray:
+    """View columns `first`..`first + columns` (and `rows` rows) of `region`, output pixels from the shown
+    region's top-left corner, each drawn as a block at `scale` (1 or more)."""
+    table, start, _ = block_maps(scale, first, columns, rows)
+    return cv2.remap(region[:, start:], table, None, cv2.INTER_NEAREST)
 
 
 def reference_view(source: np.ndarray, geometry: Geometry, interpolation: int, columns: int,
@@ -285,17 +328,14 @@ def reference_view(source: np.ndarray, geometry: Geometry, interpolation: int, c
                            [0, step_y, y0 * source_height / out_height + 0.5 * step_y - 0.5]], np.float32)
         return cv2.warpAffine(source, matrix, (columns, shown_height), flags=interpolation | cv2.WARP_INVERSE_MAP,
                               borderMode=cv2.BORDER_REPLICATE)
-    zoom = int(geometry.scale)
-    start, phase = divmod(first, zoom)
+    # 100% and more: the output pixels the view needs, through the filter, then each one as a block.
+    table, start, needed = block_maps(geometry.scale, first, columns, shown_height)
     step_x, step_y = source_width / out_width, source_height / out_height
     matrix = np.array([[step_x, 0, (x0 + start + 0.5) * step_x - 0.5], [0, step_y, (y0 + 0.5) * step_y - 0.5]],
                       np.float32)
-    needed = math.ceil((phase + columns) / zoom)
-    region = cv2.warpAffine(source, matrix, (needed, region_height), flags=interpolation | cv2.WARP_INVERSE_MAP,
+    region = cv2.warpAffine(source, matrix, needed, flags=interpolation | cv2.WARP_INVERSE_MAP,
                             borderMode=cv2.BORDER_REPLICATE)
-    if zoom > 1:
-        region = cv2.resize(region, (needed * zoom, region_height * zoom), interpolation=cv2.INTER_NEAREST)
-    return region[:shown_height, phase:phase + columns]
+    return cv2.remap(region, table, None, cv2.INTER_NEAREST)
 
 
 def upscaled_view(upscaled: np.ndarray, geometry: Geometry) -> np.ndarray:
@@ -308,34 +348,20 @@ def upscaled_view(upscaled: np.ndarray, geometry: Geometry) -> np.ndarray:
     region = upscaled[y0:y0 + region_height, x0:x0 + region_width]
     if geometry.scale < 1:
         return cv2.resize(region, (shown_width, shown_height), interpolation=cv2.INTER_AREA)
-    zoom = int(geometry.scale)
-    if zoom > 1:
-        region = cv2.resize(region, (region_width * zoom, region_height * zoom), interpolation=cv2.INTER_NEAREST)
-    return region[:shown_height, :shown_width]
+    return block_view(region, geometry.scale, 0, shown_width, shown_height)
 
 
-def decode_request(geometry: Geometry, layer_size: tuple[int, int] | None = None
-                   ) -> tuple[tuple[int, int, int, int] | None, tuple[int, int], str]:
-    """What the playback decoder should crop and scale an upscaled video to for `geometry`. `layer_size` is
-    that video's size when it differs from the geometry's output size (a version made at another size)."""
+def decode_request(geometry: Geometry) -> tuple[tuple[int, int, int, int] | None, tuple[int, int], str]:
+    """What the playback decoder should crop and scale an upscaled video to for `geometry` (crop, size, scale
+    flags). From 100% up it decodes the region at its own pixels, which the view draws as blocks exactly as
+    when paused."""
     _, _, shown_width, shown_height = geometry.shown
-    if layer_size is not None and layer_size != geometry.output_size:
-        scale_x, scale_y = layer_size[0] / geometry.output_size[0], layer_size[1] / geometry.output_size[1]
-        x0, y0, region_width, region_height = geometry.region
-        crop = None if geometry.fit else (int(round(x0 * scale_x)), int(round(y0 * scale_y)),
-                                          max(2, int(round(region_width * scale_x))),
-                                          max(2, int(round(region_height * scale_y))))
-        size = (shown_width, shown_height) if geometry.fit or geometry.scale < 1 else (
-            region_width * int(geometry.scale), region_height * int(geometry.scale))
-        decoded = (crop[2], crop[3]) if crop else layer_size
-        return crop, size, "area" if decoded[0] > size[0] else "bicubic"
     if geometry.fit:
         return None, (shown_width, shown_height), "area" if geometry.scale < 1 else "bicubic"
     x0, y0, region_width, region_height = geometry.region
     if geometry.scale < 1:
         return (x0, y0, region_width, region_height), (shown_width, shown_height), "area"
-    zoom = int(geometry.scale)
-    return (x0, y0, region_width, region_height), (region_width * zoom, region_height * zoom), "neighbor"
+    return (x0, y0, region_width, region_height), (region_width, region_height), "neighbor"
 
 
 # ---- the view ------------------------------------------------------------------------------------------
@@ -345,13 +371,12 @@ class VideoView(tk.Frame):
     """See the module docstring. Methods marked thread-safe may be called from the player thread."""
 
     def __init__(self, master: tk.Misc, theme: Theme, on_browse: Callable[[], None],
-                 on_zoom_changed: Callable[[object], None],
-                 on_side_menu: Callable[[str, int, int], None] | None = None):
+                 on_zoom_changed: Callable[[object], None], on_side_click: Callable[[str], None] | None = None):
         super().__init__(master, background="", highlightthickness=0, borderwidth=0)
         self.theme = theme
         self.on_browse = on_browse
         self.on_zoom_changed = on_zoom_changed
-        self.on_side_menu = on_side_menu
+        self.on_side_click = on_side_click
         palette, px = theme.palette, theme.px
         self.colors = {name: hex_to_bgr(getattr(palette, name)) for name in
                        ("background", "view", "border", "border_hover", "text", "text_secondary", "text_faint",
@@ -366,14 +391,13 @@ class VideoView(tk.Frame):
         self.center: tuple[float, float] | None = None
         self.split = 0.5
         self.sides = {"left": "cubic", "right": "current"}
-        self.layer_labels = {"current": "FSR 4", "before": "Before"}
+        self.side_labels: dict[str, str] = {}
         self.fullscreen = False
         self.hover = False
         self.spinner = False
         self.status = ""
         self.source_size = (1, 1)
         self.output_size = (1, 1)
-        self.before_size: tuple[int, int] | None = None
         self._still: tuple[np.ndarray, dict] | None = None
         self._stream: tuple[np.ndarray, dict] | None = None
         self._pill_boxes: dict[str, tuple[int, int, int, int]] = {}
@@ -381,6 +405,7 @@ class VideoView(tk.Frame):
         self._geometry: Geometry | None = None
         self._minimap_box: tuple[int, int, int, int] | None = None
         self._drag: str | None = None
+        self._pill_pressed: str | None = None
         self._pan_origin: tuple[int, int, float, float] | None = None
         self._blit_failed = False
         self._text_cache: dict[tuple, np.ndarray] = {}
@@ -432,9 +457,8 @@ class VideoView(tk.Frame):
 
     def show_still(self, source: np.ndarray, layers: dict[str, np.ndarray | None], status: str = "",
                    spinner: bool = False) -> None:
-        """A paused frame: the source (BGRA, its own size) and the full upscaled frames by layer ("current",
-        "before"; None where that frame is not upscaled), with a status for missing ones and an optional
-        spinner. Thread-safe."""
+        """A paused frame: the source (BGRA, its own size) and the full upscaled frames by layer (None where
+        that frame is not upscaled), with a status for missing ones and an optional spinner. Thread-safe."""
         with self._lock:
             self.mode = "compare"
             self._still, self._stream = (source, layers), None
@@ -466,39 +490,29 @@ class VideoView(tk.Frame):
             self.status = status
         self.redraw()
 
-    def set_side(self, side: str, layer: str) -> None:
-        """What `side` ("left", "right") shows: "current", "before" or a REFERENCE_FILTERS name."""
-        if layer not in UPSCALED_LAYERS and layer not in REFERENCE_FILTERS:
-            raise ValueError(f"unknown layer {layer}")
+    def set_sides(self, sides: dict[str, str], labels: dict[str, str]) -> None:
+        """What each side ("left", "right") shows: a REFERENCE_FILTERS name or an upscaled layer's key (two sides
+        showing the same version share one), and the label of each side that shows an upscaled layer."""
         with self._lock:
-            self.sides[side] = layer
-        self.redraw()
-
-    def set_layer_labels(self, labels: dict[str, str], before_size: tuple[int, int] | None) -> None:
-        """Names of the upscaled layers, and the size of the "before" version (None when there is none)."""
-        with self._lock:
-            self.layer_labels = dict(labels)
-            self.before_size = before_size
-            self._cache.clear()
+            self.sides.update(sides)
+            self.side_labels = dict(labels)
         self.redraw()
 
     def needed_layers(self) -> set[str]:
         """The upscaled layers some side shows (the player decodes only those). Thread-safe."""
         with self._lock:
-            return {layer for layer in self.sides.values() if layer in UPSCALED_LAYERS}
+            return {layer for layer in self.sides.values() if layer not in REFERENCE_FILTERS}
 
     def set_fullscreen(self, fullscreen: bool) -> None:
         with self._lock:
             self.fullscreen = fullscreen
         self.redraw()
 
-    def decode_target(self, layer: str = "current") -> tuple[tuple, tuple[int, int, int, int] | None,
-                                                             tuple[int, int], str]:
-        """(geometry key, crop, size, scale flags) for decoding `layer`'s pieces to the current view. Thread-safe."""
+    def decode_target(self) -> tuple[tuple, tuple[int, int, int, int] | None, tuple[int, int], str]:
+        """(geometry key, crop, size, scale flags) for decoding upscaled pieces to the current view. Thread-safe."""
         with self._lock:
             geometry = self._compute_geometry()
-            layer_size = self.before_size if layer == "before" else None
-            return (geometry.key,) + decode_request(geometry, layer_size)
+            return (geometry.key,) + decode_request(geometry)
 
     @property
     def comparing(self) -> bool:
@@ -516,7 +530,8 @@ class VideoView(tk.Frame):
     # ---- zoom and position (Tk thread) ----------------------------------------------------------
 
     def set_zoom(self, zoom, anchor: tuple[int, int] | None = None) -> None:
-        """Change the zoom level, keeping the output pixel under `anchor` (view coordinates) in place."""
+        """Change the zoom ("fit", "source" or view pixels per output pixel), keeping the output pixel under
+        `anchor` (view coordinates) in place."""
         with self._lock:
             if zoom == self.zoom:
                 return
@@ -524,16 +539,45 @@ class VideoView(tk.Frame):
             if anchor is not None and geometry is not None and zoom != "fit":
                 pixel_x, pixel_y = self._output_point(geometry, *anchor)
                 view_width, view_height = self._view_size
-                scale = self._zoom_scale(zoom)
+                scale = self.zoom_scale(zoom)
                 self.center = (pixel_x + (view_width / 2 - anchor[0]) / scale,
                                pixel_y + (view_height / 2 - anchor[1]) / scale)
             self.zoom = zoom
         self.on_zoom_changed(zoom)
         self.redraw()
 
-    def _zoom_scale(self, zoom) -> float:
-        """View pixels per output pixel at a (non-Fit) zoom level."""
-        return self.source_size[0] / self.output_size[0] if zoom == "source" else float(zoom)
+    def fit_scale(self) -> float:
+        """View pixels per output pixel when the whole picture fits."""
+        view_width, view_height = self._view_size
+        return min(view_width / self.output_size[0], view_height / self.output_size[1])
+
+    def zoom_scale(self, zoom) -> float:
+        """View pixels per output pixel at a zoom level."""
+        if zoom == "fit":
+            return self.fit_scale()
+        if zoom == "source":
+            return self.source_size[0] / self.output_size[0]
+        return float(zoom)
+
+    def zoom_range(self) -> tuple[float, float]:
+        """The smallest and largest scale the slider and the wheel go to: Fit (or 100% for small pictures)
+        to MAX_ZOOM."""
+        return min(self.fit_scale(), 1.0), MAX_ZOOM
+
+    def zoom_named(self, scale: float):
+        """The zoom level for `scale`: "fit", "source" or a whole number when it is (nearly) one of those."""
+        for name in ("fit", "source"):
+            if abs(scale / self.zoom_scale(name) - 1) < SNAP_TOLERANCE:
+                return name
+        if abs(scale - round(scale)) < SNAP_TOLERANCE * scale and round(scale) >= 1:
+            return int(round(scale))
+        return scale
+
+    def zoom_step(self, steps: int):
+        """The zoom `steps` wheel notches away (positive zooms in), stopping at Fit, Original size and whole
+        zooms on the way."""
+        stops = [self.fit_scale(), self.zoom_scale("source"), 1.0, 2.0, 4.0, 8.0]
+        return self.zoom_named(step_zoom(self.zoom_scale(self.zoom), steps, stops, *self.zoom_range()))
 
     @staticmethod
     def _output_point(geometry: Geometry, x: float, y: float) -> tuple[float, float]:
@@ -622,6 +666,8 @@ class VideoView(tk.Frame):
             if key != geometry.key:
                 # The decoder still runs at the previous zoom or size: stretch until it restarts.
                 image = cv2.resize(image, (shown_width, shown_height), interpolation=cv2.INTER_LINEAR)
+            elif not geometry.fit and geometry.scale >= 1:
+                return block_view(image, geometry.scale, first, count, shown_height)
             return image[:, first:first + count]
 
         def make() -> np.ndarray:
@@ -645,7 +691,7 @@ class VideoView(tk.Frame):
             if reference_shrinks(geometry, (source.shape[1], source.shape[0])):
                 return "Source"
             return REFERENCE_FILTERS[layer][0]
-        label = self.layer_labels.get(layer, layer)
+        label = self.side_labels.get(side, "Upscaled")
         return f"{label} · {self.status or 'not upscaled here'}" if missing else label
 
     def _draw_overlays(self, canvas: np.ndarray, geometry: Geometry, source: np.ndarray, split: int,
@@ -658,14 +704,15 @@ class VideoView(tk.Frame):
         blend(canvas, self._handle, x - self._handle.shape[1] // 2, top + shown_height // 2 - self._handle.shape[0] // 2)
         margin = px(10)
         boxes = {}
+        arrow = "" if self.fullscreen or self.on_side_click is None else "  ▾"
         for side in ("left", "right"):
-            pill = self._pill(self._side_label(side, geometry, source, side in missing) + "  ▾")
+            pill = self._pill(self._side_label(side, geometry, source, side in missing) + arrow)
             pill_left = left + margin if side == "left" else left + shown_width - margin - pill.shape[1]
             blend(canvas, pill, pill_left, top + margin)
             boxes[side] = (pill_left, top + margin, pill_left + pill.shape[1], top + margin + pill.shape[0])
         self._pill_boxes = boxes
         if not geometry.fit:
-            pill = self._pill("Original size" if self.zoom == "source" else f"{int(geometry.scale) * 100}%")
+            pill = self._pill("Original size" if self.zoom == "source" else f"{geometry.scale * 100:.0f}%")
             blend(canvas, pill, left + margin, top + shown_height - margin - pill.shape[0])
             x0, y0, region_width, region_height = geometry.region
             out_width, out_height = geometry.output_size
@@ -852,9 +899,8 @@ class VideoView(tk.Frame):
         if not self.comparing:
             return
         side = self._pill_at(event.x, event.y)
-        if side is not None:
-            if self.on_side_menu is not None:
-                self.on_side_menu(side, event.x_root, event.y_root)
+        if side is not None and self.on_side_click is not None and not self.fullscreen:
+            self._pill_pressed = side  # opened on release, or the release would land on the list and pick
             return
         if self._in_minimap(event.x, event.y):
             self._drag = "minimap"
@@ -869,10 +915,13 @@ class VideoView(tk.Frame):
         elif self._drag == "divider":
             self._move_divider(event.x)
 
-    def _release(self, _event: tk.Event) -> None:
+    def _release(self, event: tk.Event) -> None:
+        side, self._pill_pressed = self._pill_pressed, None
         self._drag = None
         self._pan_origin = None
-        self._motion(_event)
+        self._motion(event)
+        if side is not None and self._pill_at(event.x, event.y) == side:
+            self.on_side_click(side)
 
     def _move_divider(self, x: int) -> None:
         geometry = self._geometry
@@ -899,17 +948,14 @@ class VideoView(tk.Frame):
         if self._pan_origin is None:
             return
         start_x, start_y, center_x, center_y = self._pan_origin
-        scale = self._zoom_scale(self.zoom)
+        scale = self.zoom_scale(self.zoom)
         with self._lock:
             self.center = (center_x - (event.x - start_x) / scale, center_y - (event.y - start_y) / scale)
         self.redraw()
 
     def _wheel(self, event: tk.Event) -> None:
-        if not self.comparing:
-            return
-        index = ZOOM_LEVELS.index(self.zoom)
-        index = min(len(ZOOM_LEVELS) - 1, index + 1) if event.delta > 0 else max(0, index - 1)
-        self.set_zoom(ZOOM_LEVELS[index], anchor=(event.x, event.y))
+        if self.comparing:
+            self.set_zoom(self.zoom_step(1 if event.delta > 0 else -1), anchor=(event.x, event.y))
 
     def _double_click(self, event: tk.Event) -> None:
         if self.comparing:
@@ -920,7 +966,8 @@ class VideoView(tk.Frame):
             cursor = "hand2"
         elif not self.comparing:
             cursor = ""
-        elif self._in_minimap(event.x, event.y) or self._pill_at(event.x, event.y) is not None:
+        elif self._in_minimap(event.x, event.y) or (self._pill_at(event.x, event.y) is not None
+                                                     and self.on_side_click is not None and not self.fullscreen):
             cursor = "hand2"
         else:
             cursor = "sb_h_double_arrow"
