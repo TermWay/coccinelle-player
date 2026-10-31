@@ -1,5 +1,6 @@
 """Playback controls under the video: a filmstrip, the seek bar, frame steps, play/pause, time, volume, speed
-and full screen.
+and full screen. The time keeps a fixed width, so nothing after it moves as it plays; the volume is a filled
+slider with its percentage (click, drag, the wheel, or up and down).
 
 The filmstrip shows the video as tiles in time order: upscaled tiles at full brightness, parts not upscaled
 yet dimmed (from the source). The seek bar marks what is upscaled (lighter track), what has played (accent),
@@ -9,6 +10,7 @@ backwards to 4x forwards in SPEEDS steps (clicking its value goes back to 1x).
 """
 from __future__ import annotations
 
+import math
 import tkinter as tk
 from tkinter import ttk
 from typing import Callable
@@ -26,6 +28,10 @@ DIM = 0.35
 SPEEDS = (-1.0, -0.5, -0.25, -0.1, 0.1, 0.25, 0.5, 1.0, 1.5, 2.0, 4.0)
 REPEAT_DELAY_MS = 400
 REPEAT_INTERVAL_MS = 70
+VOLUME_WIDTH = 84
+VOLUME_WHEEL_STEP = 0.05
+KNOB_INSET = 8  # 96 DPI pixels between a slider's end and its track, for the knob
+BUTTON1_MASK = 0x100
 
 
 def format_time(seconds: float) -> str:
@@ -83,8 +89,9 @@ class Transport(ttk.Frame):
         self.playing = False
         self.buffering = False
         self.fullscreen = False
-        self.volume = tk.DoubleVar(value=0.8)
+        self.volume = 0.8
         self.muted = False
+        self._volume_active = False  # pointer over the volume slider or dragging it: a bigger knob
         self.upscaled_thumbnails: dict[int, np.ndarray] = {}
         self.source_thumbnails: dict[int, np.ndarray] = {}
         self._tiles: dict[int, tuple] = {}
@@ -103,9 +110,9 @@ class Transport(ttk.Frame):
         self.bar = tk.Canvas(self, height=px(BAR_HEIGHT), background=palette.background, highlightthickness=0,
                              borderwidth=0, cursor="hand2")
         self.bar.grid(row=1, column=0, sticky="ew")
-        controls = ttk.Frame(self)
+        controls = self.controls = ttk.Frame(self)
         controls.grid(row=2, column=0, sticky="ew")
-        controls.columnconfigure(6, weight=1)
+        controls.columnconfigure(7, weight=1)
         self.frame_back_button = ttk.Button(controls, image=self.icons["frame_back"], style="Icon.TButton",
                                             takefocus=False)
         self.frame_back_button.grid(row=0, column=0)
@@ -119,26 +126,42 @@ class Transport(ttk.Frame):
             button.bind("<ButtonPress-1>", lambda _, frames=frames: self._start_repeat(frames), add="+")
             button.bind("<ButtonRelease-1>", lambda _: self._stop_repeat(), add="+")
             button.bind("<Leave>", lambda _: self._stop_repeat(), add="+")
-        self.time_label = ttk.Label(controls, text="", style="Small.TLabel")
-        self.time_label.grid(row=0, column=3, padx=(px(6), px(14)))
+        # The time sits in a column as wide as its longest text for this video (`_fit_time_column`), in a
+        # monospace font: what follows stays in place and the digits do not shift as they change.
+        self.time_label = ttk.Label(controls, text="", style="Time.TLabel")
+        self.time_label.grid(row=0, column=3, sticky="w", padx=(px(6), px(14)))
         self.volume_button = ttk.Button(controls, image=self.icons["volume"], style="Icon.TButton", takefocus=False,
                                         command=self.toggle_mute)
         self.volume_button.grid(row=0, column=4)
-        self.volume_scale = ttk.Scale(controls, from_=0.0, to=1.0, variable=self.volume, length=px(84),
-                                      takefocus=False, command=lambda _: self._volume_changed())
-        self.volume_scale.grid(row=0, column=5, padx=(px(2), px(12)))
+        self.volume_bar = tk.Canvas(controls, width=px(VOLUME_WIDTH), height=px(BAR_HEIGHT), highlightthickness=0,
+                                    background=palette.background, borderwidth=0, cursor="hand2")
+        self.volume_bar.grid(row=0, column=5, padx=(px(2), px(6)))
+        self.volume_label = ttk.Label(controls, text="", style="Small.TLabel")
+        self.volume_label.grid(row=0, column=6, sticky="w", padx=(0, px(12)))
+        controls.columnconfigure(6, minsize=theme.fonts["small"].measure("100%") + px(12))
         self.state_label = ttk.Label(controls, text="", style="Faint.TLabel")
-        self.state_label.grid(row=0, column=6, sticky="w")
+        self.state_label.grid(row=0, column=7, sticky="w")
         self.speed_scale = ttk.Scale(controls, from_=0, to=len(SPEEDS) - 1, variable=self.speed_index,
                                      length=px(96), takefocus=False, command=lambda _: self._speed_moved())
-        self.speed_scale.grid(row=0, column=7, padx=(px(8), px(4)))
+        self.speed_scale.grid(row=0, column=8, padx=(px(8), px(4)))
         self.speed_label = ttk.Label(controls, text=format_speed(1.0), style="Small.TLabel", width=6, anchor="w",
                                      cursor="hand2")
-        self.speed_label.grid(row=0, column=8, padx=(0, px(8)))
+        self.speed_label.grid(row=0, column=9, padx=(0, px(8)))
         self.speed_label.bind("<ButtonRelease-1>", lambda _: self.set_speed(1.0, notify=True))
         self.fullscreen_button = ttk.Button(controls, image=self.icons["fullscreen"], style="Icon.TButton",
                                             takefocus=False, command=self.on_fullscreen)
-        self.fullscreen_button.grid(row=0, column=9)
+        self.fullscreen_button.grid(row=0, column=10)
+        bar = self.volume_bar
+        bar.bind("<Configure>", lambda _: self._draw_volume())
+        bar.bind("<ButtonPress-1>", self._volume_dragged)
+        bar.bind("<B1-Motion>", self._volume_dragged)
+        bar.bind("<ButtonRelease-1>", lambda event: self._volume_hovered(0 <= event.x < bar.winfo_width()
+                                                                         and 0 <= event.y < bar.winfo_height()))
+        bar.bind("<Enter>", lambda _: self._volume_hovered(True))
+        bar.bind("<Leave>", lambda event: self._volume_hovered(bool(event.state & BUTTON1_MASK)))
+        bar.bind("<MouseWheel>", lambda event: self.change_volume(VOLUME_WHEEL_STEP if event.delta > 0
+                                                                  else -VOLUME_WHEEL_STEP))
+        self._show_volume()
         for canvas in (self.strip, self.bar):
             canvas.bind("<Configure>", lambda _: self.request_redraw())
             canvas.bind("<ButtonPress-1>", self._press)
@@ -161,11 +184,13 @@ class Transport(ttk.Frame):
         self.ready_ranges, self.render_position = [], None
         self.upscaled_thumbnails, self.source_thumbnails = {}, {}
         self._tiles.clear()
+        self._fit_time_column()
         self._update_time()
         self.request_redraw()
 
     def set_total(self, total: int) -> None:
         self.total = max(1, total)
+        self._fit_time_column()
         self._update_time()
         self.request_redraw()
 
@@ -234,23 +259,53 @@ class Transport(ttk.Frame):
 
     def toggle_mute(self) -> None:
         self.muted = not self.muted
-        self.volume_button.configure(image=self.icons["mute" if self.muted else "volume"])
-        self.on_volume(float(self.volume.get()), self.muted)
+        self._show_volume()
+        self.on_volume(self.volume, self.muted)
 
     def change_volume(self, step: float) -> None:
-        self.volume.set(min(1.0, max(0.0, float(self.volume.get()) + step)))
-        self._volume_changed()
+        """Up or down to the next multiple of `step` (from 83% by 10%: 90% up, 80% down)."""
+        size = abs(step)
+        steps = self.volume / size
+        target = math.floor(steps + 1e-6) + 1 if step > 0 else math.ceil(steps - 1e-6) - 1
+        self.set_volume(target * size)
 
-    def _volume_changed(self) -> None:
-        if self.muted and self.volume.get() > 0:
+    def set_volume(self, volume: float) -> None:
+        """The volume from 0 to 1; moving it while muted turns the sound back on, as players do."""
+        self.volume = min(1.0, max(0.0, volume))
+        if self.muted and self.volume > 0:
             self.muted = False
-            self.volume_button.configure(image=self.icons["volume"])
-        self.on_volume(float(self.volume.get()), self.muted)
+        self._show_volume()
+        self.on_volume(self.volume, self.muted)
+
+    def _show_volume(self) -> None:
+        self.volume_button.configure(image=self.icons["mute" if self.muted else "volume"])
+        self.volume_label.configure(text=f"{round(self.volume * 100)}%",
+                                    style="Faint.TLabel" if self.muted else "Small.TLabel")
+        self._draw_volume()
+
+    def _volume_hovered(self, active: bool) -> None:
+        if active != self._volume_active:
+            self._volume_active = active
+            self._draw_volume()
+
+    def _volume_dragged(self, event: tk.Event) -> None:
+        self._volume_active = True
+        inset = self.theme.px(KNOB_INSET)
+        self.set_volume((event.x - inset) / max(1, self.volume_bar.winfo_width() - 2 * inset))
+
+    def _time_text(self, frame: int) -> str:
+        rate = self.rate or 30.0
+        return f"{format_precise(frame / rate)} / {format_time(self.total / rate)} · frame {frame}"
+
+    def _fit_time_column(self) -> None:
+        """The time's column as wide as its text at the last frame, the longest this video shows (the font is
+        monospace), so the controls after it stay in place while it plays."""
+        self.time_label.configure(text=self._time_text(self.total - 1))
+        width = self.time_label.winfo_reqwidth() + self.theme.px(6) + self.theme.px(14)
+        self.controls.columnconfigure(3, minsize=width)
 
     def _update_time(self) -> None:
-        rate = self.rate or 30.0
-        self.time_label.configure(text=f"{format_precise(self.position / rate)} / {format_time(self.total / rate)}"
-                                       f" · frame {self.position}")
+        self.time_label.configure(text=self._time_text(self.position))
 
     # ---- drawing --------------------------------------------------------------------------------
 
@@ -260,12 +315,12 @@ class Transport(ttk.Frame):
             self.after_idle(self._redraw)
 
     def _frame_at(self, x: float, width: int) -> int:
-        inset = self.theme.px(8)
+        inset = self.theme.px(KNOB_INSET)
         fraction = (x - inset) / max(1, width - 2 * inset)
         return int(min(self.total - 1, max(0, round(fraction * (self.total - 1)))))
 
     def _x_of(self, frame: float, width: int) -> float:
-        inset = self.theme.px(8)
+        inset = self.theme.px(KNOB_INSET)
         return inset + (width - 2 * inset) * frame / max(1, self.total - 1)
 
     def _redraw(self) -> None:
@@ -295,6 +350,24 @@ class Transport(ttk.Frame):
         radius = px(7) if self._hover_x is not None or self.dragging else px(5.5)
         canvas.create_oval(position - radius, middle - radius, position + radius, middle + radius,
                            fill=palette.accent, outline="")
+
+    def _draw_volume(self) -> None:
+        """The volume slider, drawn like the seek bar: the track filled up to the knob (grey while muted)."""
+        palette, px = self.theme.palette, self.theme.px
+        canvas = self.volume_bar
+        canvas.delete("all")
+        width, height = canvas.winfo_width(), canvas.winfo_height()
+        inset = px(KNOB_INSET)
+        if width <= 2 * inset:
+            return
+        middle, thickness = height // 2, px(4)
+        x = inset + (width - 2 * inset) * self.volume
+        color = palette.text_faint if self.muted else palette.accent
+        canvas.create_line(inset, middle, width - inset, middle, fill=palette.field_hover, width=thickness,
+                           capstyle="round")
+        canvas.create_line(inset, middle, x, middle, fill=color, width=thickness, capstyle="round")
+        radius = px(7) if self._volume_active else px(5.5)
+        canvas.create_oval(x - radius, middle - radius, x + radius, middle + radius, fill=color, outline="")
 
     def _draw_strip(self) -> None:
         palette, px = self.theme.palette, self.theme.px

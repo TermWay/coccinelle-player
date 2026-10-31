@@ -36,7 +36,8 @@ sub-pixel camera jitter every frame. A video file has none of those, so this too
   streaming site, then plays on. The seek bar shows what is upscaled (lighter) and where the upscaler works
   (a tick), and hovering it gives the frame number and its time to the millisecond; the filmstrip above it
   shows the video, bright where it is upscaled. The buttons around Play step one frame back or forward (hold
-  to keep stepping); the time shows the current frame's number.
+  to keep stepping); the time shows the current frame's number and keeps one width, so the volume after it
+  stays put. The volume slider fills up to its knob and shows its percentage (click, drag, the wheel, ↑ ↓).
 - **Speed:** the slider at the right of the controls plays from 1× backwards to 4× forwards (0.1×, 0.25×,
   0.5×, 1.5× and 2× on the way; [ and ] step it, Backspace or a click on the speed goes back to 1×). The sound
   plays from 0.25× to 2× at its own pitch and is silent otherwise. Faster than 2× and backwards every frame is

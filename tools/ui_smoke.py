@@ -214,6 +214,26 @@ def main() -> int:
               f"hovering the seek bar shows the frame and its time to the millisecond: {texts}")
         shot("03b_seek_bar_hover")
         bar.event_generate("<Leave>")
+        transport = app.transport
+        positions = []
+        for frame in (5, app._total() - 1):
+            transport.set_position(frame)
+            root.update_idletasks()
+            positions.append(transport.volume_bar.winfo_x())
+        check(positions[0] == positions[1], f"the volume stays in place as the time grows: x {positions}")
+        volume_bar = transport.volume_bar
+        inset = app.theme.px(8)
+        volume_bar.event_generate("<ButtonPress-1>", x=inset + (volume_bar.winfo_width() - 2 * inset) // 4,
+                                  y=volume_bar.winfo_height() // 2)
+        volume_bar.event_generate("<ButtonRelease-1>", x=0, y=0)
+        percent = int(transport.volume_label.cget("text").rstrip("%"))
+        check(abs(percent - 25) <= 2, f"a click a quarter along the volume slider sets about 25%: {percent}%")
+        transport.change_volume(0.1)
+        check(transport.volume_label.cget("text") == "30%", "up steps the volume to the next 10%")
+        transport.toggle_mute()
+        check(transport.volume_label.cget("style") == "Faint.TLabel", "muted, the percentage greys out")
+        transport.toggle_mute()
+        transport.set_volume(0.8)
         total = app._total()
         app.seek_to(int(total * 0.8), True)
         yield 0.4

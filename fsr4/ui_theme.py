@@ -219,6 +219,7 @@ class Theme:
         style.configure("Strong.TLabel", font=self.fonts["strong"])
         style.configure("Title.TLabel", font=self.fonts["title"])
         style.configure("Status.TLabel", foreground=p.text_secondary)
+        style.configure("Time.TLabel", foreground=p.text_secondary, font=self.fonts["mono"])
         style.configure("Banner.TFrame", background=p.error_soft)
         style.configure("Banner.TLabel", background=p.error_soft, foreground=p.error_text)
         style.configure("TSeparator", background=p.border)

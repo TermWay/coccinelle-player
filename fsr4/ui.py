@@ -628,6 +628,7 @@ class App:
                                               "about 40 frames a second at 4K, so fast speeds wait more.")
         self._tip(self.transport.speed_label, "Click to play at normal speed again (Backspace).")
         self._tip(self.transport.volume_button, "Mute (M). ↑ and ↓ change the volume.")
+        self._tip(self.transport.volume_bar, "The volume: click or drag it; the wheel, ↑ and ↓ change it too.")
         self._tip(self.transport.fullscreen_button, "Full screen (F11 or F). Esc leaves it.")
         self._tip(self.transport.bar, "Click or drag to jump. The lighter bar is what is upscaled; the small tick is "
                                       "where the upscaler works.")
@@ -1199,6 +1200,7 @@ class App:
         self.view.set_media((info.width, info.height), output_size)
         self.player = Player(self.view, path, info, self.keyframes,
                              lambda kind, *values: self.queue.put(("player", kind, values)))
+        self.player.set_volume(self.transport.volume, self.transport.muted)  # the slider's, kept between files
         if settings is not None and self.gpu_ready is not False:
             self.renderer = Renderer(path, info, settings, find_sdk_dir(None),
                                      lambda kind, *values: self.queue.put(("render", kind, values)), self.keyframes)
