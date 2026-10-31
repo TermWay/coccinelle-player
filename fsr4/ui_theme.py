@@ -3,6 +3,11 @@
 ttk's `clam` theme is the base; buttons, fields, chips, switches, sliders, scrollbars and the progress bar are
 replaced by image elements (9-slice scaled) rendered by `ui_art`, so corners are rounded and edges smooth.
 Every size goes through `Theme.px`, which follows the display's DPI.
+
+Tk redraws a widget's image element as many tiles, one GDI call each, and an image with partly transparent
+pixels costs a read back and a blend per tile: a field took 30 ms, the whole window half a second. So the images
+are opaque over the colour of the element's container wherever nothing else shows through, and 9-slice images
+have a middle `SLICE_LENGTH` long (the elements keep their small requested size): a field now takes 1 ms.
 """
 from __future__ import annotations
 
@@ -14,7 +19,7 @@ from dataclasses import dataclass
 from tkinter import ttk
 
 from . import log
-from .ui_art import Sketch, app_icon, png_base64
+from .ui_art import Sketch, app_icon, png_base64, stretch_middle
 
 
 @dataclass(frozen=True)
@@ -44,6 +49,9 @@ class Palette:
 
 
 PALETTE = Palette()
+BOX_SIZE = 24  # 96 DPI pixels: the rounded boxes as drawn, and the smallest size their elements ask for
+SLICE_LENGTH = 320  # 96 DPI pixels: the middle of 9-slice images is repeated to this length (see above)
+SLICE_HEIGHT = 64  # the same across, for boxes: buttons and fields are less tall than this
 
 FONT_CHOICES = {
     "body": (("Segoe UI Variable Text", "Segoe UI"), 10),
@@ -130,15 +138,21 @@ class Theme:
         """Device pixels for a size given at 96 DPI."""
         return int(round(value * self.scale))
 
-    def photo(self, sketch: Sketch) -> tk.PhotoImage:
-        image = tk.PhotoImage(master=self.root, data=sketch.png_base64())
+    def photo(self, sketch: Sketch, container: str | None = None,
+              stretch: tuple[float, float] = (0, 0)) -> tk.PhotoImage:
+        """A Tk image of `sketch`, opaque over `container` (the colour around the element) when given, its
+        middle repeated to `stretch` (96 DPI pixels across and down, 0 to keep) for 9-slice elements."""
+        rgba = sketch.rgba() if container is None else sketch.opaque(container)
+        rgba = stretch_middle(rgba, self.px(stretch[0]), self.px(stretch[1]))
+        image = tk.PhotoImage(master=self.root, data=png_base64(rgba))
         self._images.append(image)
         return image
 
-    def box(self, fill: str, border: str | None = None, radius: float = 6, size: float = 24,
-            border_width: float = 1, opacity: float = 1.0) -> tk.PhotoImage:
-        """A rounded rectangle image for 9-slice elements."""
-        side = self.px(size)
+    def box(self, fill: str, border: str | None = None, radius: float = 6, border_width: float = 1,
+            opacity: float = 1.0, container: str | None = None) -> tk.PhotoImage:
+        """A rounded rectangle image for 9-slice elements (give them `box_extent()`), opaque over `container`
+        (the background by default)."""
+        side = self.px(BOX_SIZE)
         corner = self.px(radius)
         sketch = Sketch(side, side)
         outer = sketch.rounded_rect(0, 0, side, side, corner)
@@ -149,7 +163,11 @@ class Theme:
             sketch.fill(outer, border, opacity)
             sketch.fill(sketch.rounded_rect(width, width, side - width, side - width, max(corner - width, 0)),
                         fill, opacity)
-        return self.photo(sketch)
+        return self.photo(sketch, container or self.palette.background, (SLICE_LENGTH, SLICE_HEIGHT))
+
+    def box_extent(self) -> dict[str, int]:
+        """Element options for a `box` image: ask for the box's drawn size, not its stretched one."""
+        return {"width": self.px(BOX_SIZE), "height": self.px(BOX_SIZE)}
 
     def slice_border(self, radius: float = 6) -> int:
         return self.px(radius) + 2
@@ -210,15 +228,15 @@ class Theme:
                       disabled_foreground: str, padding: tuple[int, int], container: str | None = None) -> None:
         container = container or self.palette.background
         radius = 6
-        normal = self.box(fill, border, radius)
+        normal = self.box(fill, border, radius, container=container)
         element = f"{name}.border"
         self.style.element_create(
             element, "image", normal,
-            ("disabled", self.box(disabled_fill, disabled_border, radius)),
-            ("pressed", self.box(pressed, border, radius)),
-            ("active", self.box(hover, border and self.palette.border_hover, radius)),
-            ("focus", self.box(fill, self.palette.accent, radius)),
-            border=self.slice_border(radius), padding=0, sticky="nsew")
+            ("disabled", self.box(disabled_fill, disabled_border, radius, container=container)),
+            ("pressed", self.box(pressed, border, radius, container=container)),
+            ("active", self.box(hover, border and self.palette.border_hover, radius, container=container)),
+            ("focus", self.box(fill, self.palette.accent, radius, container=container)),
+            border=self.slice_border(radius), padding=0, sticky="nsew", **self.box_extent())
         self.style.layout(f"{name}.TButton", [(element, {"sticky": "nsew", "children": [
             ("Button.padding", {"sticky": "nsew", "children": [("Button.label", {"sticky": "nsew"})]})]})])
         self.style.configure(f"{name}.TButton", foreground=foreground, font=self.fonts[font],
@@ -249,7 +267,7 @@ class Theme:
         disabled = self.box(p.background, p.border, radius)
         border = self.slice_border(radius)
         self.style.element_create("Dark.Entry.field", "image", field, ("disabled", disabled), ("focus", focus),
-                                  ("hover", hover), border=border, padding=0, sticky="nsew")
+                                  ("hover", hover), border=border, padding=0, sticky="nsew", **self.box_extent())
         self.style.layout("TEntry", [("Dark.Entry.field", {"sticky": "nsew", "children": [
             ("Entry.padding", {"sticky": "nsew", "children": [("Entry.textarea", {"sticky": "nsew"})]})]})])
         self.style.configure("TEntry", padding=(self.px(10), self.px(6)), foreground=p.text,
@@ -259,7 +277,7 @@ class Theme:
         combo_hover = self.box(p.field_hover, p.border_hover, radius)
         self.style.element_create("Dark.Combobox.field", "image", field, ("disabled", disabled),
                                   ("pressed", focus), ("focus", focus), ("hover", combo_hover),
-                                  border=border, padding=0, sticky="nsew")
+                                  border=border, padding=0, sticky="nsew", **self.box_extent())
         chevron = self._chevron(p.text_secondary)
         self.style.element_create("Dark.Combobox.arrow", "image", chevron,
                                   ("disabled", self._chevron(p.text_faint)), sticky="")
@@ -292,7 +310,7 @@ class Theme:
             ("disabled", self.box(p.background, "#24262b", radius)),
             ("selected", self.box(p.accent_soft, p.accent, radius)),
             ("active", self.box(p.field_hover, p.border_hover, radius)),
-            border=border, padding=0, sticky="nsew")
+            border=border, padding=0, sticky="nsew", **self.box_extent())
         self.style.layout("Segment.TRadiobutton", [("Segment.border", {"sticky": "nsew", "children": [
             ("Radiobutton.padding", {"sticky": "nsew", "children": [("Radiobutton.label", {"sticky": "nsew"})]})]})])
         self.style.configure("Segment.TRadiobutton", padding=(self.px(10), self.px(5)), anchor="center",
@@ -312,7 +330,7 @@ class Theme:
             radius = switch_height / 2 - self.px(3.5)
             center_x = switch_width - switch_height / 2 if on else switch_height / 2
             sketch.fill(sketch.circle(center_x, switch_height / 2, radius), knob)
-            return self.photo(sketch)
+            return self.photo(sketch, p.background)
 
         self.style.element_create(
             "Switch.indicator", "image", switch(p.field, p.text_secondary, False, p.border_hover),
@@ -342,8 +360,9 @@ class Theme:
         track_height = self.px(4)
         top = (knob_size - track_height) / 2
         track.fill(track.rounded_rect(0, top, track_width, top + track_height, track_height / 2), p.border_hover)
-        self.style.element_create("Dark.Scale.trough", "image", self.photo(track),
-                                  border=(self.px(4), 0, self.px(4), 0), sticky="ew")
+        # The knob keeps its transparent corners: it is drawn over the track.
+        self.style.element_create("Dark.Scale.trough", "image", self.photo(track, p.background, (SLICE_LENGTH, 0)),
+                                  border=(self.px(4), 0, self.px(4), 0), sticky="ew", width=track_width)
         self.style.element_create("Dark.Scale.slider", "image", knob(p.on_accent, p.accent),
                                   ("disabled", knob(p.background, p.text_faint)),
                                   ("pressed", knob(p.on_accent, p.accent_pressed)),
@@ -356,16 +375,17 @@ class Theme:
         height = self.px(6)
         width = self.px(16)
 
-        def bar(color: str) -> tk.PhotoImage:
+        def bar(color: str, container: str | None) -> tk.PhotoImage:
             sketch = Sketch(width, height)
             sketch.fill(sketch.rounded_rect(0, 0, width, height, height / 2), color)
-            return self.photo(sketch)
+            return self.photo(sketch, container, (SLICE_LENGTH, 0))
 
         border = (height // 2 + 1, 0, height // 2 + 1, 0)
-        self.style.element_create("Thin.Progressbar.trough", "image", bar(p.field), border=border, padding=0,
-                                  sticky="nsew")
-        self.style.element_create("Thin.Progressbar.pbar", "image", bar(p.accent), border=border, padding=0,
-                                  sticky="nsew")
+        self.style.element_create("Thin.Progressbar.trough", "image", bar(p.field, p.background), border=border,
+                                  padding=0, sticky="nsew", width=width)
+        # The bar keeps its transparent ends: it is drawn over the trough.
+        self.style.element_create("Thin.Progressbar.pbar", "image", bar(p.accent, None), border=border, padding=0,
+                                  sticky="nsew", width=width)
         self.style.layout("Thin.Horizontal.TProgressbar", [("Thin.Progressbar.trough", {"sticky": "nsew", "children": [
             ("Thin.Progressbar.pbar", {"side": "left", "sticky": "ns"})]})])
         self.style.configure("Thin.Horizontal.TProgressbar", thickness=height, background=p.background,
@@ -379,12 +399,12 @@ class Theme:
             inset = self.px(2)
             sketch.fill(sketch.rounded_rect(inset, inset, thumb_width - inset, thumb_height - inset,
                                             (thumb_width - 2 * inset) / 2), color)
-            return self.photo(sketch)
+            return self.photo(sketch, p.field, (0, SLICE_LENGTH))  # over the trough, which is field coloured
 
         slice_ = thumb_width // 2
         self.style.element_create("Dark.Scrollbar.thumb", "image", thumb(p.scroll_thumb),
                                   ("pressed", thumb(p.text_faint)), ("active", thumb(p.scroll_thumb_hover)),
-                                  border=(slice_, slice_ + 1, slice_, slice_ + 1), sticky="nsew")
+                                  border=(slice_, slice_ + 1, slice_, slice_ + 1), sticky="nsew", height=thumb_height)
         self.style.layout("Vertical.TScrollbar", [("Vertical.Scrollbar.trough", {"sticky": "ns", "children": [
             ("Dark.Scrollbar.thumb", {"expand": "1", "sticky": "nsew"})]})])
         self.style.configure("Vertical.TScrollbar", troughcolor=p.field, bordercolor=p.field,

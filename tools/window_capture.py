@@ -90,7 +90,8 @@ def capture_screen(window, settle: bool = True) -> np.ndarray:
     """RGBA pixels of the screen where a Tk toplevel is: what is really displayed, unlike PrintWindow, which
     asks the window to draw itself and so hides areas that were never repainted. The window must be on top.
     `settle` lets Tk handle its pending events first; without it, the capture shows what is on screen this
-    instant (paints Tk has not done yet included)."""
+    instant (paints Tk has not done yet included). Never during Windows' maximize or restore animation: the
+    window is already in place for the check, but the screen there shows the animation and what is behind."""
     if settle:
         window.update()
     handle = int(window.wm_frame(), 16)

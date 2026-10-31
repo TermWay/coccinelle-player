@@ -35,6 +35,21 @@ def png_base64(rgba: np.ndarray) -> str:
     return base64.b64encode(png_bytes(rgba)).decode("ascii")
 
 
+def stretch_middle(rgba: np.ndarray, width: int, height: int) -> np.ndarray:
+    """A 9-slice image grown to at least `width` x `height` by repeating its middle column and row: the same
+    picture at any widget size, but ttk covers a widget with a few long middle pieces instead of many short ones."""
+    rows, columns = rgba.shape[:2]
+    if width > columns:
+        middle = columns // 2
+        rgba = np.concatenate([rgba[:, :middle], np.repeat(rgba[:, middle:middle + 1], width - columns + 1, axis=1),
+                               rgba[:, middle + 1:]], axis=1)
+    if height > rows:
+        middle = rows // 2
+        rgba = np.concatenate([rgba[:middle], np.repeat(rgba[middle:middle + 1], height - rows + 1, axis=0),
+                               rgba[middle + 1:]], axis=0)
+    return rgba
+
+
 def ppm_bytes(rgb_pixels: np.ndarray) -> bytes:
     """Encode an (height, width, 3) uint8 array as binary PPM, the fastest format Tk photo images load."""
     height, width = rgb_pixels.shape[:2]
@@ -120,6 +135,13 @@ class Sketch:
         alpha = self.premultiplied[..., 3:]
         color = np.where(alpha > 0, self.premultiplied[..., :3] / np.maximum(alpha, 1e-6), 0)
         return (np.concatenate([color, alpha], axis=2) * 255 + 0.5).clip(0, 255).astype(np.uint8)
+
+    def opaque(self, color: str) -> np.ndarray:
+        """RGBA uint8 of the sketch over a solid `color`: every pixel fully opaque."""
+        alpha = self.premultiplied[..., 3:]
+        rgba = np.full((self.height, self.width, 4), 255, np.uint8)
+        rgba[..., :3] = ((self.premultiplied[..., :3] + rgb(color) * (1 - alpha)) * 255 + 0.5).clip(0, 255)
+        return rgba
 
     def png_base64(self) -> str:
         return png_base64(self.rgba())

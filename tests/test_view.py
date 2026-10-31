@@ -5,8 +5,9 @@ import cv2
 import numpy as np
 
 from fsr4.ui_transport import format_precise, format_speed, format_time
-from fsr4.ui_video import (blend, block_view, compute_geometry, decode_request, over, reference_view, reframe,
-                           step_zoom, upscaled_view)
+from fsr4.ui_art import Sketch
+from fsr4.ui_video import (VideoView, blend, blend_outline, block_view, compute_geometry, decode_request, over,
+                           reference_view, reframe, step_zoom, upscaled_view)
 
 
 def gradient(width: int, height: int) -> np.ndarray:
@@ -207,6 +208,17 @@ class CompositingTest(unittest.TestCase):
         sprite[...] = (255, 255, 255, 255)
         over(target, sprite, 0, 0)
         self.assertEqual(target[0, 0].tolist(), [255, 255, 255, 255])
+
+    def test_outline_from_a_small_piece_matches_one_drawn_full_size(self):
+        width, height, radius = 300, 120, 12
+        full = Sketch(width, height)
+        full.fill(np.clip(full.rounded_rect(0, 0, width, height, radius)
+                          - full.rounded_rect(1.5, 1.5, width - 1.5, height - 1.5, radius - 1.5), 0, 1), "#ff6a3d")
+        expected = np.full((height + 20, width + 20, 4), 30, np.uint8)
+        blend(expected, full.premultiplied_bgra(), 10, 10)
+        canvas = np.full_like(expected, 30)
+        blend_outline(canvas, VideoView._make_outline(radius, "#ff6a3d"), 10, 10, width, height)
+        self.assertLessEqual(int(np.abs(canvas.astype(int) - expected.astype(int)).max()), 1)
 
     def test_format_time(self):
         self.assertEqual(format_time(0), "0:00")

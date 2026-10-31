@@ -174,6 +174,24 @@ def blend(canvas: np.ndarray, sprite: np.ndarray, x: int, y: int) -> None:
     target[...] = (source[..., :3] + (target.astype(np.uint16) * inverse + 127) // 255).astype(np.uint8)
 
 
+def blend_outline(canvas: np.ndarray, piece: np.ndarray, x: int, y: int, width: int, height: int) -> None:
+    """Draw a rounded rectangle outline from `piece`, a premultiplied BGRA (2k+1)-pixel square outline: its
+    corners as they are, its middle row and column repeated along the edges; the inside is left untouched."""
+    corner = piece.shape[0] // 2
+    if width <= 2 * corner or height <= 2 * corner:
+        return
+    right, bottom = x + width - corner, y + height - corner
+    blend(canvas, piece[:corner, :corner], x, y)
+    blend(canvas, piece[:corner, corner + 1:], right, y)
+    blend(canvas, piece[corner + 1:, :corner], x, bottom)
+    blend(canvas, piece[corner + 1:, corner + 1:], right, bottom)
+    across, down = width - 2 * corner, height - 2 * corner
+    blend(canvas, np.broadcast_to(piece[:corner, corner:corner + 1], (corner, across, 4)), x + corner, y)
+    blend(canvas, np.broadcast_to(piece[corner + 1:, corner:corner + 1], (corner, across, 4)), x + corner, bottom)
+    blend(canvas, np.broadcast_to(piece[corner:corner + 1, :corner], (down, corner, 4)), x, y + corner)
+    blend(canvas, np.broadcast_to(piece[corner:corner + 1, corner + 1:], (down, corner, 4)), right, y + corner)
+
+
 def over(target: np.ndarray, sprite: np.ndarray, x: int, y: int) -> None:
     """Composite a premultiplied BGRA sprite over a premultiplied BGRA sprite (alpha included)."""
     height, width = sprite.shape[:2]
@@ -432,6 +450,8 @@ class VideoView(tk.Frame):
         self._spinner_index = 0
         self._icon = {False: self._make_drop_icon(px(44), palette.text_faint),
                       True: self._make_drop_icon(px(44), palette.accent)}
+        self._outline = {False: self._make_outline(px(12), palette.border_hover),
+                         True: self._make_outline(px(12), palette.accent)}
         self.bind("<Configure>", self._configured)
         self.bind("<Expose>", lambda _: self.redraw())
         self.bind("<ButtonPress-1>", self._press)
@@ -786,11 +806,7 @@ class VideoView(tk.Frame):
         px = self.theme.px
         width, height = self._view_size
         margin = px(18)
-        outline = self._cached("outline", (width, height, self.hover),
-                               lambda: self._make_outline(width - 2 * margin, height - 2 * margin, px(12),
-                                                          self.theme.palette.accent if self.hover
-                                                          else self.theme.palette.border_hover))
-        blend(canvas, outline, margin, margin)
+        blend_outline(canvas, self._outline[self.hover], margin, margin, width - 2 * margin, height - 2 * margin)
         middle = height // 2
         icon = self._icon[self.hover]
         blend(canvas, icon, (width - icon.shape[1]) // 2, middle - px(58) - icon.shape[0] // 2)
@@ -883,10 +899,14 @@ class VideoView(tk.Frame):
         sketch.fill(np.maximum(np.maximum(tray, arrow), head), color)
         return sketch.premultiplied_bgra()
 
-    def _make_outline(self, width: int, height: int, radius: int, color: str) -> np.ndarray:
-        sketch = Sketch(max(1, width), max(1, height))
-        outer = sketch.rounded_rect(0, 0, width, height, radius)
-        inner = sketch.rounded_rect(1.5, 1.5, width - 1.5, height - 1.5, radius - 1.5)
+    @staticmethod
+    def _make_outline(radius: int, color: str) -> np.ndarray:
+        """The drop zone's outline as a small square for `blend_outline` (one at full size took 0.3 s to make
+        at 4K)."""
+        side = 2 * (radius + 2) + 1
+        sketch = Sketch(side, side)
+        outer = sketch.rounded_rect(0, 0, side, side, radius)
+        inner = sketch.rounded_rect(1.5, 1.5, side - 1.5, side - 1.5, radius - 1.5)
         sketch.fill(np.clip(outer - inner, 0, 1), color)
         return sketch.premultiplied_bgra()
 
@@ -905,7 +925,7 @@ class VideoView(tk.Frame):
     def _configured(self, event: tk.Event) -> None:
         with self._lock:
             self._view_size = (max(1, event.width), max(1, event.height))
-            for name in [name for name in self._cache if name.startswith(("layer:", "filter:")) or name == "outline"]:
+            for name in [name for name in self._cache if name.startswith(("layer:", "filter:"))]:
                 del self._cache[name]
         self.redraw()
 

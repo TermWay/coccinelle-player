@@ -69,8 +69,10 @@ Radeon RX 9000 card, through Vulkan. The shared rules in `..\CLAUDE.md` apply; t
   and the window sets the renderer's target just behind the ready stretch behind the playhead.
 - After a big layout change (sidebar folded or unfolded, full screen, log, the window moved or resized) the
   window repaints every widget through Windows (`ui_window.repaint`) and through Tk (an Expose each), now and
-  again `REPAINT_SETTLE_MS` later: the user saw widgets left black after unfolding the sidebar (not reproduced
-  here), so never rely on Tk's own Expose alone there.
+  again `REPAINT_SETTLE_MS` later. Maximizing loses what the widgets had drawn (black until redrawn), and with
+  slow element redraws (see the theme note) they stayed black 1 to 2 s; a whole repaint now takes about 20 ms
+  (70 ms at 3440 wide). Measure repaints with a probe that counts black pixels on screen from another thread
+  (keep no frames: Windows' maximize animation draws other things there).
 - While playing, a layer whose decoder still works at the previous zoom or position is drawn with `reframe`
   (its picture resampled to where it belongs), never stretched: both sides of the divider must move together.
 - `tools/window_capture.py` can capture what the screen shows (`screen=True`; `settle=False` to see paints Tk
@@ -90,6 +92,11 @@ Radeon RX 9000 card, through Vulkan. The shared rules in `..\CLAUDE.md` apply; t
   are 9-slice image elements drawn by `fsr4/ui_art.py`. Image elements composite over the style's background,
   so every style sets `background` (and maps it for disabled/active/pressed) to its container's colour, and
   sets the element `padding=0` so the style padding alone sizes it. Sizes go through `Theme.px` (DPI).
+  Tk draws an image element as tiles, one GDI call each, plus a read back and a blend each when the image has
+  partly transparent pixels: so images are opaque over their container's colour (`box`/`photo` take it) and
+  9-slice middles are repeated to `SLICE_LENGTH`, the element keeping its small requested size (`box_extent`,
+  `width=`). Only pieces drawn over another element (scale knob, progress bar, combobox arrow) stay
+  transparent. A field went from 30 ms to 1.5 ms per redraw; keep new elements that way.
 - All package output goes through `fsr4/log.py` so the window can show it.
 - Background work (renderer, its ffmpeg processes, thumbnails) runs at the `fsr4/usage.py` level's priority and
   thread caps; playback never does. x265 takes its thread cap through `-x265-params pools=`, not `-threads`.
