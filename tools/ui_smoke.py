@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 import math
+import os
 import sys
 import threading
 import time
@@ -43,16 +44,39 @@ kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
 ctypes.windll.user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
 
 
-def close_dialog_later(title: str, screenshot: Path, found: list) -> threading.Thread:
-    """Wait for a native dialog with `title`, screenshot it, then close it (it blocks the Tk thread)."""
+def own_window(title: str) -> int | None:
+    """The top-level window titled `title` that belongs to this process. Never look a window up by its title
+    alone: the user may have the app open with the same dialog, and it would be captured and closed."""
     user32 = ctypes.windll.user32
-    user32.FindWindowW.restype = wintypes.HWND
-    user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+    visit_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    user32.EnumWindows.argtypes = [visit_type, wintypes.LPARAM]
+    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    matches = []
+
+    def visit(handle, _parameter):
+        owner = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(handle, ctypes.byref(owner))
+        if owner.value == os.getpid():
+            text = ctypes.create_unicode_buffer(256)
+            user32.GetWindowTextW(handle, text, 256)
+            if text.value == title:
+                matches.append(handle)
+        return True
+
+    user32.EnumWindows(visit_type(visit), 0)
+    return matches[0] if matches else None
+
+
+def close_dialog_later(title: str, screenshot: Path, found: list) -> threading.Thread:
+    """Wait for this process's native dialog with `title`, screenshot it, then close it (it blocks the Tk
+    thread)."""
+    user32 = ctypes.windll.user32
 
     def watch():
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
-            handle = user32.FindWindowW(None, title)
+            handle = own_window(title)
             if handle:
                 time.sleep(1.0)
                 window_capture.save_handle(handle, screenshot)
@@ -175,10 +199,11 @@ def main() -> int:
         check(bool(found), "file dialog opened and closed")
         app.toggle_play()
         yield lambda: app.player.playing and not app.player.buffering and app.player.position > 0
+        rate = float(app.info.frame_rate)  # the speed checks below ask for half the real speed
         first = app.player.position
         yield 2.0
         played = app.player.position - first
-        check(played >= 60 or app.player.buffering, f"playback advanced {played} frames in 2 s")
+        check(played >= rate or app.player.buffering, f"playback advanced {played} frames in 2 s")
         shot("03_playing")
         bar = app.transport.bar
         bar.event_generate("<Motion>", x=bar.winfo_width() // 3, y=bar.winfo_height() // 2)
@@ -259,8 +284,8 @@ def main() -> int:
         yield lambda: app.player.playing and not app.player.buffering and app.player.position > 0
         first = app.player.position
         yield 2.0
-        check(app.player.position - first >= 60, f"plays two upscaled versions ({app.player.position - first} "
-                                                 f"frames in 2 s)")
+        check(app.player.position - first >= rate, f"plays two upscaled versions ({app.player.position - first} "
+                                                   f"frames in 2 s)")
         shot("05f_presets_playing")
         give_up = time.monotonic() + 90
         yield lambda: not app.player.playing or time.monotonic() > give_up
@@ -287,8 +312,8 @@ def main() -> int:
         yield lambda: app.player.playing and not app.player.buffering
         first = app.player.position
         yield 2.0
-        check(first - app.player.position >= 15, f"plays backwards at a quarter speed ({first - app.player.position} "
-                                                 f"frames back in 2 s)")
+        back = first - app.player.position
+        check(back >= rate / 4, f"plays backwards at a quarter speed ({back} frames back in 2 s)")
         shot("05g_backwards")
         app.player.pause()
         yield lambda: not app.player.playing
@@ -363,7 +388,8 @@ def main() -> int:
         if app.last_saved is not None and app.last_saved.exists():
             saved = media.probe(app.last_saved)
             check(abs((saved.frame_count or 0) - total) <= 1, f"saved {saved.frame_count} of {total} frames")
-            check([track.codec for track in saved.audio] == ["aac"], "WMA audio converted to AAC")
+            check([track.codec for track in saved.audio] == ["aac"],
+                  f"{'/'.join(track.codec for track in app.info.audio)} audio saved as AAC")
         yield 0.5
         shot("08_saved")
         app.load(args.image)

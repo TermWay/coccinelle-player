@@ -813,8 +813,8 @@ class VideoView(tk.Frame):
         for text, font, color, offset in (
                 ("Drop a video or an image here", "display", "text", 0),
                 ("or click to browse", "body", "text_secondary", px(32)),
-                ("MP4 · MKV · MOV · AVI · WMV · WebM · MPEG · FLV · TS · PNG · JPG · WebP", "small", "text_faint",
-                 px(64))):
+                ("MP4 · MKV · MOV · AVI · WMV · WebM · MPEG · FLV · TS · Ogg · PNG · JPG · WebP", "small",
+                 "text_faint", px(64))):
             sprite = self._text(text, font, self.colors[color])
             blend(canvas, sprite, (width - sprite.shape[1]) // 2, middle + offset - sprite.shape[0] // 2)
 

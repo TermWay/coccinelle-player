@@ -121,9 +121,10 @@ to compare. Measured on the panning fractal clip (PSNR against the original afte
 | FSR 3.1.6 | 25.92 dB (25.08 with velocity factor 0) | 2.5 ms |
 
 ## Files
-Anything ffmpeg decodes: MP4, MKV, MOV, AVI, WMV/ASF, WebM, MPEG-1/2 (MPG, VOB, TS, M2TS), FLV, 3GP, OGV, MXF,
-DV, RealMedia, Y4M; images PNG, JPEG, BMP, TIFF, WebP, EXR, GIF (first frame). `tests/test_formats.py`
-round-trips a sample of each family. What the tool does to make them come out right:
+Anything ffmpeg decodes: MP4, MKV, MOV, AVI, WMV/ASF, WebM, MPEG-1/2 (MPG, VOB, TS, M2TS), FLV, 3GP, Ogg
+(OGG, OGV, OGM: Theora or VP8 with Vorbis or Opus), MXF, DV, RealMedia, Y4M; images PNG, JPEG, BMP, TIFF, WebP,
+EXR, GIF (first frame). `tests/test_formats.py` round-trips a sample of each family. An .ogg with only sound
+(music) is refused with that reason. What the tool does to make them come out right:
 - **The real video stream** is upscaled, never a cover picture (WMV files from Windows Movie Maker and many
   MP4/MKV files carry a JPEG thumbnail as a video stream).
 - **Audio**: every track is kept. AAC, MP3, AC-3, E-AC-3 and ALAC are copied into the MP4; WMA, PCM, Vorbis,
@@ -136,11 +137,13 @@ round-trips a sample of each family. What the tool does to make them come out ri
   starts at the file's start, so the video stays in sync with the audio (a video that starts after its audio is
   padded at the start, as players show it).
 - **Exact frames**: a read that starts in the middle of a file returns exactly the frames a read from the start
-  numbers there, in every container (`tests/test_formats.py` checks MP4, WMV, MKV, MPEG-PS, MPEG-TS and
+  numbers there, in every container (`tests/test_formats.py` checks MP4, WMV, MKV, MPEG-PS, MPEG-TS, Ogg and
   variable-rate files). MPEG-TS, MPEG-PS, FLV and Ogg files cannot seek reliably on their own, so their
   keyframes are indexed first. This is what lets pieces upscaled at different times join without a skipped or
   doubled frame.
 - **Rotation**: portrait phone videos are turned upright, with the output size swapped accordingly.
+- **Damaged files**: pictures ffmpeg cannot decode are said in the log (once per file); the picture before each
+  one stands in for it, as players do.
 
 ## How playback works
 The window never waits for a whole file. `fsr4/render.py` upscales into pieces (0.5 s at first after a seek so

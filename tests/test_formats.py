@@ -11,9 +11,13 @@ from pathlib import Path
 
 import numpy as np
 
-from fsr4 import media
+from fsr4 import log, media
 
 WIDTH, HEIGHT, FRAMES, RATE = 96, 64, 20, 10
+# Ogg samples carry VP8: the libtheora in ffmpeg 2025-07 writes frames its own Theora decoder rejects
+# ("error in unpack_block_qpis", "Coefficient index overflow"), whatever the settings, while Theora files made
+# elsewhere decode cleanly (a 1080p game intro was checked by hand, seeks included).
+OGG_VIDEO = ["-c:v", "libvpx", "-b:v", "300k"]
 
 
 def ffmpeg(*arguments: str) -> None:
@@ -131,6 +135,36 @@ class FormatTest(unittest.TestCase):
         _, mkv_streams = self.roundtrip(source, "out.mkv")
         self.assertEqual(self.audio_codecs(mkv_streams), ["opus", "vorbis"], "MKV output copies any audio")
 
+    def test_ogg_with_vorbis_audio(self):
+        source = self.root / "sample.ogg"
+        ffmpeg(*video_source(), *audio_source(), "-t", str(FRAMES / RATE), *OGG_VIDEO, "-c:a", "libvorbis",
+               str(source))
+        info, streams = self.roundtrip(source)
+        self.assertEqual((info.codec, [track.codec for track in info.audio]), ("vp8", ["vorbis"]))
+        self.assertEqual(self.audio_codecs(streams), ["aac"])
+        self.assert_in_sync(streams)
+
+    def test_pictures_ffmpeg_cannot_decode_are_reported(self):
+        source = self.root / "damaged.avi"
+        ffmpeg(*video_source(), "-t", "2", "-c:v", "mpeg4", "-g", "100", str(source))
+        data = bytearray(source.read_bytes())
+        data[len(data) // 2:len(data) // 2 + 200] = bytes(range(200))
+        source.write_bytes(data)
+        lines = []
+        log.set_sink(lines.append)
+        try:
+            for _ in media.FrameReader(source, media.probe(source)):
+                pass
+        finally:
+            log.set_sink(None)
+        self.assertTrue(any("could not decode some pictures of damaged.avi" in line for line in lines), lines)
+
+    def test_ogg_with_only_sound_is_refused_clearly(self):
+        source = self.root / "music.ogg"
+        ffmpeg(*audio_source(), "-t", "1", "-c:a", "libvorbis", str(source))
+        with self.assertRaisesRegex(RuntimeError, r"no video stream .*\(only sound\)"):
+            media.probe(source)
+
     def test_mpeg2_program_stream(self):
         source = self.root / "sample.mpg"
         ffmpeg(*video_source(), *audio_source(), "-t", str(FRAMES / RATE), "-c:v", "mpeg2video", "-r", "25",
@@ -244,6 +278,11 @@ class SeekTest(unittest.TestCase):
 
     def test_mpeg_ps(self):
         self.assert_seeks_exact(self.long_sample("seek.mpg", "-c:v", "mpeg2video", "-g", "25", "-c:a", "mp2"))
+
+    def test_ogg_uses_the_keyframe_index(self):
+        source = self.long_sample("seek.ogv", *OGG_VIDEO, "-g", "25", "-c:a", "libopus")
+        self.assertFalse(media.probe(source).seeks_by_index)
+        self.assert_seeks_exact(source)
 
     def test_variable_frame_rate(self):
         source = self.root / "seek_vfr.mkv"

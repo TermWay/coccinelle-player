@@ -29,7 +29,8 @@ Radeon RX 9000 card, through Vulkan. The shared rules in `..\CLAUDE.md` apply; t
 - `tests/test_render.py` (GPU) checks that pieces rendered around seeks join into exactly the single-pass video;
   `tests/test_audio.py` needs a sound device and skips without one.
 - `tests/test_formats.py` builds one small file per container/codec family with ffmpeg and round-trips it;
-  add a case there when a new kind of file misbehaves.
+  add a case there when a new kind of file misbehaves. Never make Theora samples with this ffmpeg: its
+  libtheora writes frames its own decoder rejects (Ogg samples carry VP8; real Theora files decode cleanly).
 
 ## Design notes
 - FSR wants jittered, motion-vectored, depth-tested renders. For video the tool substitutes: depth is a
@@ -104,5 +105,8 @@ Radeon RX 9000 card, through Vulkan. The shared rules in `..\CLAUDE.md` apply; t
   HD as BT.709; read video at a constant rate; encode with BT.709 tags via `setparams` (ffmpeg takes encoder
   tags from the frames); copy only MP4-safe audio (`MP4_AUDIO_COPY`), re-encode the rest to AAC; drain
   ffmpeg's stderr on a thread. GPU encoders have frame size limits (`ENCODER_LIMITS`, checked when planning).
+  ffmpeg skips pictures it cannot decode and still succeeds (the timeline repeats the one before): readers run
+  it with `-v level+...` and log the video decoder's first error once per file, for reads from the start
+  (after a seek, the pictures before the keyframe fail by design).
 - Resource states told to FSR must match the Vulkan layouts the images are really in (inputs
   `SHADER_READ_ONLY_OPTIMAL`, output `GENERAL`); `Gpu` tracks layouts, use its `cmd_*` helpers.

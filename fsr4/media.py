@@ -27,12 +27,12 @@ from pathlib import Path
 
 import numpy as np
 
-from . import usage
+from . import log, usage
 
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp", ".exr", ".gif")
 VIDEO_SUFFIXES = (".mp4", ".m4v", ".mov", ".mkv", ".webm", ".avi", ".wmv", ".asf", ".flv", ".f4v", ".mpg", ".mpeg",
-                  ".m2v", ".vob", ".ts", ".m2ts", ".mts", ".3gp", ".3g2", ".ogv", ".mxf", ".dv", ".rm", ".rmvb",
-                  ".divx", ".y4m")
+                  ".m2v", ".vob", ".ts", ".m2ts", ".mts", ".3gp", ".3g2", ".ogg", ".ogv", ".ogm", ".mxf", ".dv",
+                  ".rm", ".rmvb", ".divx", ".y4m")
 
 ENCODERS = {
     "amf": ["-c:v", "hevc_amf", "-quality", "quality", "-rc", "cqp", "-qp_i", "18", "-qp_p", "20", "-tag:v", "hvc1"],
@@ -66,6 +66,9 @@ SEEK_ATTEMPTS = 3
 FIRST_FRAME_TIMEOUT = 20.0
 _CREATE_NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 _SHOWINFO_TIME = re.compile(r"Parsed_showinfo.*\bn:\s*0\b.*\bpts_time:\s*(-?[\d.]+)")
+_decode_errors_reported: set[Path] = set()
+# ffmpeg logs a decoder's messages under the decoder's name: the codec's name except for these.
+DECODER_NAMES = {"av1": "libdav1d"}
 
 
 def tool_path(name: str) -> str:
@@ -185,7 +188,10 @@ def parse_probe(data: dict, path: Path) -> MediaInfo:
     videos = [stream for stream in streams if stream.get("codec_type") == "video"]
     video = next((stream for stream in videos if not stream.get("disposition", {}).get("attached_pic")), None)
     if video is None:
-        raise RuntimeError(f"no video stream in {path}" + (" (only a cover picture)" if videos else ""))
+        # An .ogg is often music only: say so rather than leave the file looking broken.
+        sound = any(stream.get("codec_type") == "audio" for stream in streams)
+        raise RuntimeError(f"no video stream in {path}" + (" (only a cover picture)" if videos
+                                                           else " (only sound)" if sound else ""))
     frame_rate = guess_frame_rate(_parse_rate(video.get("r_frame_rate")), _parse_rate(video.get("avg_frame_rate")))
     duration_text = video.get("duration") or data.get("format", {}).get("duration")
     duration = float(duration_text) if duration_text else None
@@ -227,10 +233,14 @@ class _StderrTail:
     """Drains a process's stderr on a thread (a full pipe would block ffmpeg) and keeps the last lines.
 
     With `watch_first_time`, it also picks the first decoded frame's time out of the showinfo filter's lines.
+    `first_error` is the first message ffmpeg tagged as an error (it tags them with `-v level+...`) on a line
+    starting with `errors_from` ("[theora @ ": the video decoder, not the audio ffmpeg decodes while opening).
     """
 
-    def __init__(self, stream, watch_first_time: bool = False):
+    def __init__(self, stream, watch_first_time: bool = False, errors_from: str = ""):
         self.lines: deque[str] = deque(maxlen=STDERR_LINES)
+        self.first_error: str | None = None
+        self.errors_from = errors_from
         self.first_time: float | None = None
         self.first_time_seen = threading.Event()
         self.watch_first_time = watch_first_time
@@ -247,6 +257,8 @@ class _StderrTail:
                         self.first_time = float(match.group(1))
                         self.first_time_seen.set()
                 continue
+            if self.first_error is None and "[error] " in line and line.startswith(self.errors_from):
+                self.first_error = line.split("[error] ", 1)[1]
             self.lines.append(line)
         stream.close()
         self.first_time_seen.set()
@@ -377,7 +389,7 @@ class FrameReader:
     def command(self, seek: float | None) -> list[str]:
         info = self.info
         command = [tool_path("ffmpeg"), "-hide_banner", "-nostats", "-nostdin",
-                   "-v", "info" if seek is not None else "error"]
+                   "-v", "level+info" if seek is not None else "level+error"]
         if self.hardware:
             command += ["-hwaccel", "auto"]
         threads = usage.current().ffmpeg_threads if self.background else None
@@ -418,9 +430,13 @@ class FrameReader:
         seek = seek_position(self.info, self.start_frame, self.keyframes, margin) if self.timeline else None
         self._margin = margin
         self._verify = seek is not None
+        # After a seek, the pictures decoded before the first keyframe fail by design: only a read from the
+        # start tells a damaged file.
+        self._judge_errors = seek is None
         self.process = _popen(self.command(seek), background=self.background, stdout=subprocess.PIPE,
                               stderr=subprocess.PIPE)
-        self._stderr = _StderrTail(self.process.stderr, watch_first_time=self._verify)
+        decoder = DECODER_NAMES.get(self.info.codec, self.info.codec)
+        self._stderr = _StderrTail(self.process.stderr, watch_first_time=self._verify, errors_from=f"[{decoder} @ ")
 
     def __iter__(self):
         while True:
@@ -479,6 +495,7 @@ class FrameReader:
         stderr = self._stderr.text()
         if code != 0:
             raise RuntimeError(f"ffmpeg decode failed ({code}): {stderr.strip()}")
+        self._report_decode_errors()
 
     def stop(self) -> None:
         """Kill the decoder before the end of the file (cancel, seek) and release its pipes."""
@@ -486,6 +503,16 @@ class FrameReader:
         self.process.stdout.close()
         self.process.wait()
         self._stderr.text()
+        self._report_decode_errors()
+
+    def _report_decode_errors(self) -> None:
+        """ffmpeg leaves out the pictures it cannot decode and still succeeds, and the timeline repeats the
+        picture before each: say so, once per file, so a damaged file does not pass for a good one."""
+        error = self._stderr.first_error
+        if self._judge_errors and error is not None and self.path not in _decode_errors_reported:
+            _decode_errors_reported.add(self.path)
+            log.emit(f"[media] ffmpeg could not decode some pictures of {self.path.name} ({error}): the picture "
+                     f"before each one is shown in its place")
 
 
 def audio_arguments(audio: list[AudioStream], output: Path) -> list[str]:
