@@ -16,11 +16,13 @@ no longer shown are kept (up to KEPT_VERSIONS, the most recently used) so going 
 Events reach the window through `on_event(kind, *values)`, called from the renderer's threads:
 "piece" (a Piece of any version became playable), "live" (frame, source RGBA, upscaled RGBA of the current
 version; twice a second while `want_live`), "status" (frame being rendered or None when idle, frames per
-second), "total" (the real frame count), "complete" (every frame of the current version is ready), "error"
-(an exception; rendering stops until the settings or what is shown change, or a batch starts).
+second), "total" (the real frame count, found by a read that reached the end or given by `set_total`),
+"complete" (every frame of the current version is ready), "error" (an exception; rendering stops until the
+settings or what is shown change, or a batch starts; after a lost graphics device, the next run starts a new one).
 """
 from __future__ import annotations
 
+import os
 import shutil
 import tempfile
 import threading
@@ -34,7 +36,7 @@ import numpy as np
 
 from . import log, usage
 from .flow import create_flow
-from .media import FrameReader, FrameWriter, KeyframeIndex, MediaInfo, join_pieces
+from .media import FrameReader, FrameWriter, IndexClosed, KeyframeIndex, MediaInfo, join_pieces, last_frame_before
 from .timeline import Piece, Timeline, keep_going, next_start, piece_lengths
 
 PREROLL_FRAMES = 8
@@ -51,7 +53,9 @@ GOP_SECONDS = 2.0
 THUMBNAIL_HEIGHT = 108
 MAX_THUMBNAILS = 240
 DIRECTORY_PREFIX = "fsr4-"
-STALE_DIRECTORY_SECONDS = 24 * 3600
+# Every piece folder holds this file, open for the whole session: it marks the folder as this tool's, and
+# Windows refuses to delete an open file, which tells a live session's folder from an abandoned one.
+SESSION_MARKER = "fsr4-session.lock"
 MIN_FREE_BYTES = 2 * 1024 ** 3
 
 EventCallback = Callable[..., None]
@@ -95,14 +99,39 @@ class Version:
 
 
 def clean_stale_directories() -> list[Path]:
-    """Delete piece folders left by sessions that ended without cleaning up (older than a day)."""
+    """Delete the piece folders of sessions that ended without cleaning up (a crash, a killed process): only
+    folders holding SESSION_MARKER, and only when the marker can be deleted (a running session keeps it open).
+    Each folder is handled on its own; one that cannot be emptied is logged and gets its marker back."""
     removed = []
-    cutoff = time.time() - STALE_DIRECTORY_SECONDS
     for directory in Path(tempfile.gettempdir()).glob(f"{DIRECTORY_PREFIX}*"):
-        if directory.is_dir() and directory.stat().st_mtime < cutoff:
-            shutil.rmtree(directory)
-            removed.append(directory)
+        marker = directory / SESSION_MARKER
+        if not marker.is_file():
+            continue  # not made by this tool (or by a version before the marker): never touched
+        try:
+            marker.unlink()
+        except PermissionError:
+            continue  # a running window's folder
+        try:
+            remove_directory(directory)
+        except OSError as error:
+            log.emit(f"[render] could not delete {directory}: {error}")
+            try:
+                marker.touch()  # still ours: the next start tries again
+            except OSError as touch_error:
+                log.emit(f"[render] could not mark {directory} for a later cleanup: {touch_error}")
+            continue
+        removed.append(directory)
     return removed
+
+
+def remove_directory(directory: Path) -> None:
+    """Delete a piece folder (it holds only files), its marker last: a folder that cannot be emptied now (a
+    file still open elsewhere) stays marked, so a later start deletes it."""
+    for path in directory.iterdir():
+        if path.name != SESSION_MARKER:
+            path.unlink()
+    (directory / SESSION_MARKER).unlink(missing_ok=True)
+    directory.rmdir()
 
 
 class Renderer:
@@ -116,9 +145,13 @@ class Renderer:
         self.info = info
         self.sdk_dir = sdk_dir
         self.on_event = on_event
+        self._owns_keyframes = keyframes is None
         self.keyframes = keyframes or KeyframeIndex(source, info)
         self.rate = float(info.frame_rate)
         self.directory = Path(tempfile.mkdtemp(prefix=DIRECTORY_PREFIX))
+        self._marker = open(self.directory / SESSION_MARKER, "w", encoding="utf-8")
+        self._marker.write(f"pieces of {source.name}, process {os.getpid()}\n")
+        self._marker.flush()
         self._known_total: int | None = None
         self._condition = threading.Condition()
         self._generation = 0
@@ -249,6 +282,8 @@ class Renderer:
                 path.unlink(missing_ok=True)
             except PermissionError:
                 kept.append(path)  # a playback decoder still reads it; Windows refuses until it closes
+            except OSError as error:
+                log.emit(f"[render] could not delete {path}: {error}")
         with self._condition:
             self._stale_files.extend(kept)
 
@@ -256,12 +291,15 @@ class Renderer:
         with self._condition:
             self._closing = True
             self._condition.notify_all()
+        if self._owns_keyframes:
+            self.keyframes.close()  # a run waiting for the index stops now (the window closes the index it shares)
         self._thread.join()
         self._closer.shutdown(wait=True)
+        self._marker.close()
         try:
-            shutil.rmtree(self.directory)
+            remove_directory(self.directory)
         except OSError as error:
-            # A file still open elsewhere (a save in progress): the folder is removed a day later.
+            # A file still open elsewhere: the folder keeps its marker and a later start deletes it.
             log.emit(f"[render] could not delete {self.directory} now: {error}")
 
     # ---- saving ---------------------------------------------------------------------------------
@@ -295,22 +333,37 @@ class Renderer:
                         break
                     version, start = job
                     needed = {self._pipeline_key(active.settings) for active in self._active()}
+                if self._gpu is None:
+                    self._gpu = Gpu(verbose=False)  # the previous one was lost
                 try:
                     pipeline = self._pipeline_for(version.settings, needed)
                     self._run(start, version, pipeline)
+                except IndexClosed:
+                    break  # the file is being closed (close() follows)
                 except Exception as error:  # noqa: BLE001 - reported, then the renderer waits for a change
                     with self._condition:
                         self._failed = True
                     log.emit(f"[render] error: {error}")
+                    if self._gpu.is_lost():
+                        log.emit("[render] the graphics device was lost (a driver reset?); the next run starts a "
+                                 "new one")
+                        self._release_gpu()
                     self.on_event("error", error)
         except Exception as error:  # noqa: BLE001 - the GPU could not start
             log.emit(f"[render] error: {error}")
             self.on_event("error", error)
         finally:
-            for pipeline in self._pipelines.values():
-                pipeline.destroy()
-            if self._gpu is not None:
-                self._gpu.destroy()
+            self._release_gpu()
+
+    def _release_gpu(self) -> None:
+        """Free the pipelines and the device (each logs what it cannot free and goes on)."""
+        for pipeline in self._pipelines.values():
+            pipeline.destroy()
+        self._pipelines.clear()
+        self._pipeline_flows.clear()
+        if self._gpu is not None:
+            self._gpu.destroy()
+            self._gpu = None
 
     def _active(self) -> list[Version]:
         """The versions to upscale: the current one in batch mode (it is what gets saved), else the ones the
@@ -456,28 +509,34 @@ class Renderer:
             reader.stop()
             if writer is not None:
                 writer.abort()
-                writer.path.unlink(missing_ok=True)
             raise
         if not exhausted:
             reader.stop()
         if writer is not None:
             if self._closing:
                 writer.abort()  # the window is closing: the piece would be deleted right away
-                writer.path.unlink(missing_ok=True)
             else:
                 self._finish_piece(writer, piece_start, position, version)
         if exhausted:
-            self._reached_end(start, position, timeline)
+            self._reached_end(preroll_start, position)
 
-    def _reached_end(self, start: int, position: int, timeline: Timeline) -> None:
-        """The decoder ran out of frames: that is the real end of the video (the probe's count is an estimate)."""
-        if position == start and start > 0 and start < timeline.total - self._frames(1.0):
-            raise RuntimeError(f"cannot read {self.source.name} from frame {start}")
+    def _reached_end(self, first: int, position: int) -> None:
+        """The decoder of a run that started at frame `first` ran out of frames at `position`: the real end of the
+        video (the probe's count is an estimate). A run that decoded nothing started past the end, which is then
+        found by reading back."""
+        if position == first:
+            position = last_frame_before(self.source, self.info, first, self.keyframes.get()) + 1
+            log.emit(f"[render] {self.source.name} ends at frame {position}, earlier than its length announced")
+        self.set_total(position)
+
+    def set_total(self, total: int) -> None:
+        """The real frame count (any thread): a read reached the end of the video, here or in the player."""
         with self._condition:
-            self._known_total = position
+            self._known_total = total
             versions = list(self._versions.values())
+            self._condition.notify_all()
         for version in versions:
-            version.timeline.set_total(position)
+            version.timeline.set_total(total)
         self.on_event("total", self.timeline.total)
         if self.timeline.complete():
             self.on_event("complete")
@@ -509,11 +568,11 @@ class Renderer:
             self.on_event("total", version.timeline.total)
         if not alive:
             writer.abort()
-            writer.path.unlink(missing_ok=True)
             return
         self._closer.submit(self._close_piece, writer, piece, version)
 
     def _close_piece(self, writer: FrameWriter, piece: Piece, version: Version) -> None:
+        """Runs on the closer thread, whose results nobody reads: errors are logged and reported here."""
         try:
             writer.close()
         except Exception as error:  # noqa: BLE001 - reported to the window
@@ -521,7 +580,6 @@ class Renderer:
                 if self._alive(version):
                     version.timeline.remove(piece)
                     self._failed = True
-            writer.path.unlink(missing_ok=True)
             log.emit(f"[render] error: {error}")
             self.on_event("error", error)
             return
@@ -533,7 +591,7 @@ class Renderer:
             stale, self._stale_files = self._stale_files, []
         self._delete(stale)
         if not alive:
-            writer.path.unlink(missing_ok=True)
+            self._delete([writer.path])
             return
         self.on_event("piece", piece)
         if version is self._current and version.timeline.complete():

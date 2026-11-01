@@ -17,22 +17,27 @@ sub-pixel camera jitter every frame. A video file has none of those, so this too
 | Exposure       | FSR's auto exposure                                                      |
 
 ## Requirements
-- Windows, a Radeon RX 9000 (FSR 4 FP8 model) or RX 7000/6000 (INT8 model) with a current Adrenalin driver.
-- ffmpeg and ffprobe on PATH (or next to `fsr4.exe`). All decoding and encoding goes through them.
-- For the exe: nothing else. For the source: Python 3.12 with numpy, `opencv-python` for optical flow
-  (without it, `--flow zero` still works), and the FSR SDK DLLs in `bin/` (`python tools/fetch_sdk.py`
-  downloads them from AMD's GitHub, tag v2.4.0, hashes pinned).
+- Windows and a Radeon RX 9000 card (FSR 4's FP8 model) with a current Adrenalin driver. AMD's requirements
+  also name the RX 7000 series (FSR 4's INT8 model; the RX 6000 series appears only in AMD's timings): untested
+  here.
+- ffmpeg 5.1 or later (6.0 or later for the AV1 GPU encoder), with ffprobe, on PATH or next to `fsr4.exe`. All
+  decoding and encoding goes through it, and it is not included (see License). One way to install it:
+  `winget install Gyan.FFmpeg.Essentials`, then open a new window.
+- For the exe: nothing else. For the source: Python 3.12 and `python -m pip install -r requirements.txt` (numpy,
+  and `opencv-python` for the window and the optical flow; without OpenCV the command line still runs with
+  `--flow zero`), plus the FSR DLLs in `bin/`: `python tools/fetch_sdk.py` downloads them from AMD's GitHub
+  (tag v2.4.0) and checks their pinned SHA-256.
 
 ## Platforms
-- **Windows:** supported. Tested on Windows 11 with an RX 9070 XT; the RX 7000 and RX 6000 series run FSR 4's
-  INT8 model according to AMD, not tested here.
+- **Windows:** supported. Tested on Windows 11 with an RX 9070 XT; AMD's requirements also name the RX 7000
+  series (FSR 4's INT8 model), not tested here.
 - **Linux:** not supported yet. AMD ships FSR 4 only as signed Windows DLLs, and the window draws, plays sound,
   takes dropped files and goes full screen through Win32. The Windows build may run under Wine or Proton;
   untested.
 - **macOS:** not supported. AMD ships FSR 4 for Windows only, and Apple silicon Macs have no Radeon.
 
 ## Use
-**Window:** double-click `FSR4 Upscaler.exe` (or `start.bat`, the Play button), or drop a file on its icon.
+**Window:** double-click `FSR4 Upscaler.exe` (or `start.bat` in the source tree), or drop a file on its icon.
 - Drop a video or an image anywhere on the window, click the empty preview, or use Choose file (Ctrl+O).
   Every setting explains itself when the pointer rests on it.
 - **Size:** 1.5×, 2×, 3×, 1440p or 4K (the short side; chips that would leave FSR's 1×–3× range are disabled),
@@ -93,7 +98,10 @@ sub-pixel camera jitter every frame. A video file has none of those, so this too
 | [ ] | slower / faster (backwards below 0.1×) | Backspace | normal speed |
 | Ctrl+B | settings sidebar | Ctrl+O, Ctrl+Enter, Ctrl+L | open, upscale, log |
 
-**Drag and drop on a script:** drop a file on `upscale.bat` for a 2x upscale with no questions asked.
+**Drag and drop on a script:** drop one or more files on `upscale.bat`: each is upscaled 2x with no questions
+asked. Other settings go through `fsr4 upscale` (below). Windows hands a dropped name to a script unquoted when
+it has no space, so cmd cuts one holding `&`, `^`, `,`, `;` or `=`: open those in the window or with
+`fsr4 upscale`.
 
 **Command line:**
 ```
@@ -106,9 +114,12 @@ fsr4 info                                   # GPU, extensions, FSR versions offe
 fsr4 selftest --validate                    # Vulkan round trip under the validation layer
 ```
 From the source tree, `python -m fsr4 ...` is the same (`python -m fsr4 ui` for the window). `start.bat` and
-`upscale.bat` use the executables in `dist\fsr4\` when they exist, else Python. `build_exe.bat` builds them
-with PyInstaller from `fsr4.spec`: `FSR4 Upscaler.exe` (window, no console) and `fsr4.exe` (command line)
-share one folder of about 210 MB, mostly OpenCV and numpy; the FSR DLLs are copied into `bin\`.
+`upscale.bat` use the executables in `dist\fsr4\` when they exist, else Python. `build_exe.bat` (after
+`python -m pip install -r requirements-build.txt`) checks the FSR DLLs against their pinned hashes and builds
+the executables with PyInstaller from `fsr4.spec`: `FSR4 Upscaler.exe` (window, no console) and `fsr4.exe`
+(command line) share one folder of about 170 MB (85 MB zipped), mostly OpenCV and numpy, with the FSR DLLs and
+AMD's license in `bin\` and the third-party notices in `licenses\`. Its two optional arguments build elsewhere:
+the folder that receives `fsr4\` and PyInstaller's work folder.
 
 Scale is 1x to 3x (FSR's limit); the modes are native 1x, quality 1.5x, balanced 1.7x, performance 2x,
 ultra 3x. `--sharpness 0..1` enables FSR's RCAS pass. Video encoders: `amf` (HEVC on the GPU, default),
@@ -118,8 +129,8 @@ ultra 3x. `--sharpness 0..1` enables FSR's RCAS pass. Video encoders: `amf` (HEV
 colour image, depth, motion vectors, camera jitter, exposure and a reset flag. Depth, jitter and exposure have
 no meaning for a video, so they are fixed (table above); the motion vectors are the one input worth a choice
 (optical flow presets or off). The SDK's five tuning keys (velocity factor, reactiveness, shading change,
-accumulation per frame, minimum disocclusion accumulation) change nothing in FSR 4: its output stays identical
-to the bit; they only act on FSR 3.1. The DLL also holds FSR 3.1.6 and 2.3.4, offered as the Upscaler setting
+accumulation per frame, minimum disocclusion accumulation) change nothing in FSR 4: its output stayed identical
+to the bit when they were tried here; they only act on FSR 3.1. The DLL also holds FSR 3.1.6 and 2.3.4, offered as the Upscaler setting
 to compare. Measured on the panning fractal clip (PSNR against the original after a 2x downscale, DIS fast):
 
 | Upscaler | PSNR | GPU time per frame (1600x900 to 3200x1800) |
@@ -151,6 +162,9 @@ EXR, GIF (first frame). `tests/test_formats.py` round-trips a sample of each fam
   keyframes are indexed first. This is what lets pieces upscaled at different times join without a skipped or
   doubled frame.
 - **Rotation**: portrait phone videos are turned upright, with the output size swapped accordingly.
+- **Anamorphic video** (DVD, DV, HDV: pixels stored wider or narrower than square) comes out at the shape players
+  show, with square pixels: a 16:9 DVD's 720 × 480 at 2x gives 1706 × 960, FSR scaling each side on its own.
+  Images are taken as square.
 - **Damaged files**: pictures ffmpeg cannot decode are said in the log (once per file); the picture before each
   one stands in for it, as players do.
 
@@ -180,7 +194,9 @@ so 8 frames of 1080p and 11 of an upscale shown in a 1600 × 900 view. `fsr4/ui_
 120 ms at 4K, a GDI blit 0.5 to 2 ms, so video plays smoothly in the window and full screen.
 
 ## Measured on an RX 9070 XT
-End to end (decode, flow, upscale, encode), `--flow dis` with the default `fast` preset, HEVC AMF output:
+Measured on the development PC (an RX 9070 XT and a 16-core processor) with clips that are not in the
+repository: the commands repeat them on yours. End to end (decode, flow, upscale, encode), `--flow dis` with the
+default `fast` preset, HEVC AMF output:
 
 | Input                              | Output     | fps  | main thread per frame | flow (worker thread) |
 |------------------------------------|------------|------|-----------------------|----------------------|
@@ -195,8 +211,7 @@ CPU is what limits the rate. So 1080p30 content upscales in real time, 1080p60 a
 In the window (`python tools/ui_smoke.py`, 1080p60 WMV to 4K): the first upscaled frame shows 1.6 s after the
 file is opened, playback starts about 0.3 s after Play once a few seconds are ready, and plays at 60 fps.
 
-**Encoders** (a natural-footage clip downscaled to 1440×1080 and a 1080p60 screen
-recording; upscaled 2×, then the same FSR frames encoded by each; frames taken per second, bitrate, PSNR against
+**Encoders** (a natural-footage clip downscaled to 1440×1080 and a 1080p60 screen recording; upscaled 2×, then the same FSR frames encoded by each; frames taken per second, bitrate, PSNR against
 the lossless FSR output):
 
 | Encoder | Natural 2880×2160 | Screen recording 3840×2160 | Plays on |
@@ -263,7 +278,9 @@ recordings the FSR output is a touch crisper than Lanczos on text, with no visib
   drawing, icons, PNG/PPM/ICO encoding), `fsr4/ui_dnd.py` (files dropped from Explorer). Plain tkinter and
   ctypes, no extra package. `run_fsr4.py`: the entry point of both executables.
 - `tools/gen_vk_types.py`: regenerates the Vulkan structs from `third_party/vulkan_core.h`.
-- `tools/fetch_sdk.py`: downloads the FSR DLLs. `tools/lab_quality.py`: the PSNR lab.
+- `tools/fetch_sdk.py`: downloads the FSR DLLs and checks their pinned hashes (`--check` only checks).
+  `tools/collect_licenses.py`: the packaged app's third-party notices (run by `build_exe.bat`).
+  `tools/lab_quality.py`: the PSNR lab.
 - `tools/ui_smoke.py`: drives the window through every state (drop, first upscaled frame, tooltip, dropdown,
   file dialog, playback, the seek bar's hover label, buffering after a seek, zoom with original pixels, the
   zoom slider and wheel, a side's dropdown opened from its label, a preset saved and two presets side by side
@@ -271,23 +288,31 @@ recordings the FSR output is a touch crisper than Lanczos on text, with no visib
   monitor (the second one when there is one) with its controls showing near the bottom and hiding at rest,
   then back where it was, folded sidebar, whole-file save, an image compared with a preset, error, minimum
   size) and screenshots each with `tools/window_capture.py`. Its presets go to a scratch file, never yours.
-- `tests/`: `python -m unittest discover -s tests`.
+- `tests/`: `python -m unittest discover -s tests`. Tests that need ffmpeg, OpenCV or FSR 4 itself (the card
+  and the DLLs in `bin/`) skip without it, saying why; `tests/test_audio.py` also needs a sound device.
 
 ## Limits
 - No jitter and no real depth means FSR 4 works mostly as a very good spatial upscaler with temporal
   stabilisation; it cannot reconstruct the sub-pixel detail it recovers in games.
 - Input is processed as 8-bit sRGB; HDR video is not handled, and interlaced video is not deinterlaced.
 - The player plays the first audio track; the saved file keeps every track. Pieces live in a temporary folder
-  (about 10 MB per second of 4K) until the file is closed; folders left by a crash are removed a day later.
+  (about 10 MB per second of 4K) until the file is closed; folders left by a crash are removed the next time
+  the window opens.
 
 ## License
-MIT (`LICENSE`) for this project. What it builds on keeps its own license:
-- `third_party/ffx/`: AMD's FSR API headers, MIT. `third_party/vulkan_core.h`: Khronos, Apache-2.0 or MIT.
-- The FSR DLLs (downloaded into `bin/`, not in the repository): AMD's signed binaries under the FSR SDK license
+MIT (`LICENSE`) for this project's code. What it builds on keeps its own license:
+- `third_party/ffx/`: AMD's FSR API headers, MIT; `fsr4/ffx.py` transcribes them. `third_party/vulkan_core.h`:
+  Khronos, Apache-2.0 or MIT, used here under MIT (`third_party/LICENSE-Khronos.txt`); `fsr4/vk_types.py` is
+  generated from it.
+- The FSR DLLs (downloaded into `bin/`, not in the repository): AMD's signed binaries under AMD's FSR SDK license
   (`bin/license.md`), redistributable in binary form with that notice, which the exe ships next to them.
-- ffmpeg is not included: it runs as a separate program under its own license.
+- The packaged app also holds Python, Tcl/Tk, numpy and OpenCV with the libraries they bundle, frozen by
+  PyInstaller: their notices are in its `licenses\` folder.
+- ffmpeg is not included: it runs as a separate program under its own license (GPL for the common builds).
+- The executables are not code-signed: check a download against the SHA-256 published with it.
 
-Not affiliated with AMD. AMD, Radeon and FidelityFX are trademarks of Advanced Micro Devices, Inc.
+Not affiliated with AMD or the Khronos Group. AMD, Radeon and FidelityFX are trademarks of Advanced Micro
+Devices, Inc.; Vulkan is a registered trademark of the Khronos Group Inc.
 
 ## Credits
 Written by Claude (Anthropic's AI model) in Claude Code: the code, the tests and this README. Directed and tested

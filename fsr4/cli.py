@@ -109,7 +109,7 @@ def run_upscale(args) -> int:
     except ValueError as error:
         print(f"fsr4: {error}", file=sys.stderr)
         return 2
-    except (RuntimeError, FileNotFoundError) as error:
+    except (RuntimeError, OSError) as error:
         print(f"fsr4: {error}", file=sys.stderr)
         return 1
     finally:
@@ -121,15 +121,19 @@ def run_upscale(args) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if args.command == "selftest":
-        from .selftest import run
-        return run(validate=args.validate)
-    if args.command == "info":
-        return run_info(args)
     if args.command == "ui":
         from .ui import run_ui
         return run_ui(args.input)
-    return run_upscale(args)
+    if args.command == "upscale":
+        return run_upscale(args)
+    try:
+        if args.command == "selftest":
+            from .selftest import run
+            return run(validate=args.validate)
+        return run_info(args)
+    except (RuntimeError, OSError) as error:  # no Vulkan driver, no GPU, no FSR DLLs: said in one line
+        print(f"fsr4: {error}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

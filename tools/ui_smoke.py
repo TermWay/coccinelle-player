@@ -1,6 +1,6 @@
 """Drive the window through every state and screenshot each one; exit 0 when every step worked.
 
-    python tools/ui_smoke.py --video out/ui/sample.wmv --image out/lab/in.png --out out/ui
+    python tools/ui_smoke.py --video clip.wmv --image picture.png --out out/ui
 
 Steps: empty window, a video dropped on it (a real WM_DROPFILES message), its first upscaled frame, a tooltip,
 a dropdown, the file dialog, playback, a seek into frames not upscaled yet (buffering), a paused zoom with the
@@ -33,7 +33,10 @@ from fsr4 import media, ui, ui_theme, ui_window, usage  # noqa: E402
 from fsr4.presets import PresetStore  # noqa: E402
 
 WM_DROPFILES = 0x0233
+WM_CLOSE = 0x0010
 GMEM_MOVEABLE_ZEROINIT = 0x0042
+DIALOG_CLASS = "#32770"
+DIALOG_SECONDS = 30
 
 kernel32 = ctypes.windll.kernel32
 kernel32.GlobalAlloc.restype = ctypes.c_void_p
@@ -44,45 +47,47 @@ kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
 ctypes.windll.user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
 
 
-def own_window(title: str) -> int | None:
-    """The top-level window titled `title` that belongs to this process. Never look a window up by its title
+def own_windows() -> list[tuple[int, str, str]]:
+    """This process's top-level windows as (handle, title, class name). Never look a window up by its title
     alone: the user may have the app open with the same dialog, and it would be captured and closed."""
-    user32 = ctypes.windll.user32
-    visit_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
-    user32.EnumWindows.argtypes = [visit_type, wintypes.LPARAM]
-    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    user32 = window_capture.user32
     user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
-    matches = []
+    windows = []
 
     def visit(handle, _parameter):
-        owner = wintypes.DWORD()
-        user32.GetWindowThreadProcessId(handle, ctypes.byref(owner))
-        if owner.value == os.getpid():
-            text = ctypes.create_unicode_buffer(256)
-            user32.GetWindowTextW(handle, text, 256)
-            if text.value == title:
-                matches.append(handle)
+        if window_capture.window_process(handle) == os.getpid():
+            title, kind = ctypes.create_unicode_buffer(256), ctypes.create_unicode_buffer(256)
+            user32.GetWindowTextW(handle, title, 256)
+            user32.GetClassNameW(handle, kind, 256)
+            windows.append((handle, title.value, kind.value))
         return True
 
-    user32.EnumWindows(visit_type(visit), 0)
-    return matches[0] if matches else None
+    user32.EnumWindows(window_capture.WNDENUMPROC(visit), 0)
+    return windows
 
 
-def close_dialog_later(title: str, screenshot: Path, found: list) -> threading.Thread:
-    """Wait for this process's native dialog with `title`, screenshot it, then close it (it blocks the Tk
-    thread)."""
+def close_dialog(title: str, screenshot: Path, found: list, done: threading.Event) -> threading.Thread:
+    """Wait for this process's native dialog with `title`, screenshot it, then close it: it blocks the Tk thread
+    until closed. Past `DIALOG_SECONDS` without it, any dialog of this process is closed until `done` is set, so
+    the run fails instead of hanging."""
     user32 = ctypes.windll.user32
 
     def watch():
-        deadline = time.monotonic() + 15
-        while time.monotonic() < deadline:
-            handle = own_window(title)
-            if handle:
+        deadline = time.monotonic() + DIALOG_SECONDS
+        while not done.is_set():
+            windows = own_windows()
+            handle = next((handle for handle, text, _ in windows if text == title), None)
+            if handle and not found:
                 time.sleep(1.0)
-                window_capture.save_handle(handle, screenshot)
-                found.append(handle)
-                user32.PostMessageW(handle, 0x0010, 0, 0)  # WM_CLOSE
-                return
+                try:
+                    window_capture.save_handle(handle, screenshot)
+                    found.append(handle)
+                finally:
+                    user32.PostMessageW(handle, WM_CLOSE, 0, 0)
+            elif time.monotonic() > deadline:
+                for other, _, kind in windows:
+                    if kind == DIALOG_CLASS:
+                        user32.PostMessageW(other, WM_CLOSE, 0, 0)
             time.sleep(0.1)
 
     thread = threading.Thread(target=watch, daemon=True)
@@ -193,8 +198,12 @@ def main() -> int:
         print("      screenshot 02b_dropdown.png", flush=True)
         root.tk.call("ttk::combobox::Unpost", app.encoder_choice)
         found: list = []
-        watcher = close_dialog_later("Choose a video or an image", args.out / "02c_file_dialog.png", found)
-        app.browse()
+        dialog_done = threading.Event()
+        watcher = close_dialog("Choose a video or an image", args.out / "02c_file_dialog.png", found, dialog_done)
+        try:
+            app.browse()
+        finally:
+            dialog_done.set()
         watcher.join(timeout=5)
         check(bool(found), "file dialog opened and closed")
         app.toggle_play()
@@ -412,6 +421,8 @@ def main() -> int:
                   f"{'/'.join(track.codec for track in app.info.audio)} audio saved as AAC")
         yield 0.5
         shot("08_saved")
+        # A default name never replaces a file, so each run saves a new one: remove it once checked.
+        app.last_saved.unlink()
         app.load(args.image)
         yield lambda: app.info is not None
         yield lambda: side_ready("right")
@@ -426,6 +437,7 @@ def main() -> int:
         choose("left", "cubic")
         yield 0.5
         shot("09b_image_saved")
+        app.last_saved.unlink()
         app.load(bad_file)
         yield lambda: app.banner.winfo_ismapped()
         yield 0.3
@@ -452,7 +464,13 @@ def main() -> int:
     def advance():
         condition = deadline["condition"]
         if condition is not None:
-            if not condition():
+            try:
+                met = condition()
+            except Exception as error:  # noqa: BLE001 - report and stop
+                check(False, f"waiting raised {error!r}")
+                app.close()
+                return
+            if not met:
                 if time.monotonic() > deadline["time"]:
                     check(False, "timed out waiting for the window")
                     app.close()

@@ -15,6 +15,9 @@ from typing import Callable
 from . import log
 
 WM_DROPFILES = 0x0233
+WM_COPYDATA = 0x004A
+WM_COPYGLOBALDATA = 0x0049  # undocumented, part of the drag and drop exchange
+MSGFLT_ALLOW = 1
 GWLP_WNDPROC = -4
 QUERY_COUNT = 0xFFFFFFFF
 
@@ -28,6 +31,8 @@ if os.name == "nt":
     _user32.CallWindowProcW.restype = LRESULT
     _user32.CallWindowProcW.argtypes = [ctypes.c_void_p, wintypes.HWND, wintypes.UINT, wintypes.WPARAM,
                                         wintypes.LPARAM]
+    _user32.ChangeWindowMessageFilterEx.restype = wintypes.BOOL
+    _user32.ChangeWindowMessageFilterEx.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.DWORD, ctypes.c_void_p]
     _shell32.DragAcceptFiles.argtypes = [wintypes.HWND, wintypes.BOOL]
     _shell32.DragQueryFileW.restype = wintypes.UINT
     _shell32.DragQueryFileW.argtypes = [ctypes.c_void_p, wintypes.UINT, ctypes.c_wchar_p, wintypes.UINT]
@@ -56,6 +61,11 @@ class FileDrop:
                                                    ctypes.cast(self._procedure, ctypes.c_void_p))
         if not self._previous:
             raise OSError(f"could not subclass the window for file drops (error {ctypes.GetLastError()})")
+        # Run as administrator, the window gets no drops from Explorer (a normal process) without these.
+        for message in (WM_DROPFILES, WM_COPYDATA, WM_COPYGLOBALDATA):
+            if not _user32.ChangeWindowMessageFilterEx(self.handle, message, MSGFLT_ALLOW, None):
+                log.emit(f"[ui] error: files dropped from Explorer may not arrive while this runs as administrator "
+                         f"(message filter error {ctypes.GetLastError()})")
         _shell32.DragAcceptFiles(self.handle, True)
 
     def _window_procedure(self, handle, message, wparam, lparam):

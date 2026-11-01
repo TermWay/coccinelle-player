@@ -1,0 +1,4 @@
+# Tested versions: python -m pip install -r requirements.txt
+# opencv-python gives the window and the optical flow; without it the command line still runs with --flow zero.
+numpy==2.3.4
+opencv-python==5.0.0.93

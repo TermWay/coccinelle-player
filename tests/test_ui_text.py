@@ -3,6 +3,11 @@ import unittest
 from fractions import Fraction
 from pathlib import Path
 
+import needs
+
+if not needs.HAS_OPENCV:
+    raise unittest.SkipTest("opencv-python is not installed (the window needs it)")
+
 from fsr4 import ui
 from fsr4.media import AudioStream, MediaInfo
 

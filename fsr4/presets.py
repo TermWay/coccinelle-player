@@ -89,14 +89,27 @@ class PresetStore:
         self.user: list[Preset] = []
         self.load_error: Exception | None = None
         if self.path.exists():
-            try:
-                data = json.loads(self.path.read_text(encoding="utf-8"))
-                if not isinstance(data, dict) or not isinstance(data.get("presets"), list):
-                    raise ValueError("expected an object with a list of presets")
-                self.user = [preset_from_json(entry) for entry in data["presets"]]
-            except (OSError, ValueError, KeyError, TypeError) as error:
-                self.load_error = error
-                log.emit(f"[presets] error: cannot read {self.path}: {error}")
+            self.user = self._read()
+
+    def _read(self) -> list[Preset]:
+        """The user's presets as the file has them now; when it cannot be read, `load_error` says why and the
+        presets this store already has are kept."""
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict) or not isinstance(data.get("presets"), list):
+                raise ValueError("expected an object with a list of presets")
+            return [preset_from_json(entry) for entry in data["presets"]]
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            self.load_error = error
+            log.emit(f"[presets] error: cannot read {self.path}: {error}")
+            return self.user
+
+    def _current(self) -> list[Preset]:
+        """The user's presets to change: the file's as they are now, since another window may have saved some
+        after this one read it."""
+        if self.load_error is None and self.path.exists():
+            return self._read()
+        return self.user
 
     @property
     def all(self) -> list[Preset]:
@@ -127,14 +140,15 @@ class PresetStore:
         problem = self.check_name(name)
         if problem is not None:
             raise ValueError(problem)
-        same = [preset for preset in self.user if preset.name.casefold() == name.strip().casefold()]
+        user = self._current()
+        same = [preset for preset in user if preset.name.casefold() == name.strip().casefold()]
         preset = Preset(same[0].name if same else name.strip(), settings.upscaler, settings.flow,
                         settings.flow_preset, settings.sharpness)
-        self._write([existing for existing in self.user if existing not in same] + [preset])
+        self._write([existing for existing in user if existing not in same] + [preset])
         return preset
 
     def delete(self, name: str) -> None:
-        self._write([preset for preset in self.user if preset.name != name])
+        self._write([preset for preset in self._current() if preset.name != name])
 
     def _write(self, user: list[Preset]) -> None:
         """Write `user` to the file, then keep it (nothing changes when the write fails)."""

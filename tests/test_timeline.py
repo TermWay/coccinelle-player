@@ -2,6 +2,7 @@
 import unittest
 from pathlib import Path
 
+import needs
 from fsr4 import player, render
 from fsr4.timeline import Piece, Timeline, intersect_ranges, keep_going, next_start, piece_lengths
 
@@ -157,6 +158,7 @@ class SchedulingTest(unittest.TestCase):
             self.assertIsNotNone(next_start(timeline, target, False, int(round(render.PREVIEW_LOW_SECONDS * rate))),
                                  f"{rate} fps")
 
+    @needs.opencv  # the window module
     def test_playing_backwards_never_waits_for_a_renderer_working_ahead(self):
         """Backwards, the window keeps the renderer behind the playhead until REVERSE_AHEAD_SECONDS are ready
         there; the player may wait for BUFFER_MAX_SECONDS, so less would leave both waiting."""

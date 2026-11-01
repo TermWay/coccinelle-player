@@ -1,11 +1,19 @@
-"""The player's command merging and its frame streams, with fake decoders (no window, GPU or sound)."""
+"""The player's command merging, its frame streams and the end of a video, with fake decoders (no window, GPU
+or sound)."""
+import queue
+import sys
 import threading
 import unittest
+from fractions import Fraction
+from pathlib import Path
+from unittest import mock
 
 import numpy as np
 
+from fsr4 import player as player_module
 from fsr4.audio import tempo_filter
-from fsr4.player import FrameStream, ReverseFrameStream, merge_seeks, reverse_chunk
+from fsr4.media import KeyframeIndex, MediaInfo, PastEnd
+from fsr4.player import FrameStream, Player, ReverseFrameStream, merge_seeks, reverse_chunk
 
 
 class MergeSeeksTest(unittest.TestCase):
@@ -68,6 +76,19 @@ class FrameStreamTest(unittest.TestCase):
             self.assertTrue(stream.ended)
         finally:
             stream.stop()
+
+    def test_a_source_that_ends_before_the_frame_passed_it(self):
+        """Asked for a frame past the end, the source stream ends (forward) or starts lower (backwards)."""
+        def segments(frame):
+            return (lambda first: FakeReader(first, 3 - first)), 0, sys.maxsize
+
+        for stream_type in (FrameStream, ReverseFrameStream):
+            stream = stream_type(segments, 5, 4, 2, "source", strict=False)
+            try:
+                self.assertIsNone(stream.take(5, timeout=2.0))
+                self.assertTrue(stream.passed(5), stream_type.__name__)
+            finally:
+                stream.stop()
 
     def test_damaged_piece_is_an_error(self):
         stream = FrameStream(lambda frame: ((lambda first: FakeReader(first, 3 - first)), 0, 10), 0, 4, 2, "piece",
@@ -174,6 +195,56 @@ class ReverseStreamTest(unittest.TestCase):
         self.assertEqual(reverse_chunk(1920, 1080), 8)
         self.assertEqual(reverse_chunk(3840, 2160), 4)
         self.assertEqual(reverse_chunk(320, 180), 30)
+
+
+class FakeView:
+    """What the player draws on: records the frame number of each still it shows."""
+
+    def __init__(self):
+        self.stills: queue.Queue = queue.Queue()
+
+    def needed_layers(self) -> set[str]:
+        return set()
+
+    def show_still(self, source: np.ndarray, layers: dict, text: str = "", spinner: bool = False) -> None:
+        self.stills.put(int(source[0, 0, 0]))
+
+    def set_spinner(self, visible: bool, advance: bool = False) -> None:
+        pass
+
+
+class EndTest(unittest.TestCase):
+    """A video that ends before its estimated length (30 frames announced, 20 real ones)."""
+
+    REAL = 20
+
+    def read_frame(self, path, info, frame, keyframes, pixel_format):
+        if frame >= self.REAL:
+            raise PastEnd(path, frame)
+        return np.full((2, 4, 4), frame, np.uint8)
+
+    def test_a_seek_past_the_end_shows_the_last_frame(self):
+        source = Path("tail.mkv")
+        info = MediaInfo(width=4, height=2, frame_rate=Fraction(10), frame_count=30, duration=3.0, codec="h264",
+                         container="matroska")
+        events: queue.Queue = queue.Queue()
+        view = FakeView()
+        with mock.patch.object(player_module, "read_frame", self.read_frame), \
+                mock.patch.object(player_module, "last_frame_before", lambda *arguments: self.REAL - 1):
+            player = Player(view, source, info, KeyframeIndex(source, info),
+                            lambda kind, *values: events.put((kind, values)))
+            try:
+                player.seek(29)
+                self.assertEqual(view.stills.get(timeout=5), self.REAL - 1, "the last frame is shown")
+                received = []
+                while not events.empty():
+                    received.append(events.get())
+                self.assertIn(("end", (self.REAL,)), received, "the window learns the real length")
+                self.assertNotIn("error", [kind for kind, _ in received])
+                self.assertEqual(received[-1], ("position", (self.REAL - 1,)))
+                self.assertEqual(player.total, self.REAL)
+            finally:
+                player.close()
 
 
 class TempoTest(unittest.TestCase):

@@ -1,10 +1,12 @@
 """Screenshot a Tk window through PrintWindow (works when the window is covered), saved as PNG.
 
-Used by the UI checks in `tools/`; Windows only.
+Used by the UI checks in `tools/`; Windows only. Only this process's windows are captured: PrintWindow takes
+one of its windows, and a capture of the screen refuses when another program's window overlaps it.
 """
 from __future__ import annotations
 
 import ctypes
+import os
 import sys
 from ctypes import wintypes
 from pathlib import Path
@@ -16,19 +18,26 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from fsr4.ui_art import png_bytes  # noqa: E402
 
 PW_RENDERFULLCONTENT = 2
-GA_ROOT = 2
 DWMWA_EXTENDED_FRAME_BOUNDS = 9
+DWMWA_CLOAKED = 14
 
 user32 = ctypes.windll.user32
 gdi32 = ctypes.windll.gdi32
 dwmapi = ctypes.windll.dwmapi
+WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 for function, restype, argtypes in (
         (user32.GetWindowDC, ctypes.c_void_p, [wintypes.HWND]),
         (user32.ReleaseDC, ctypes.c_int, [wintypes.HWND, ctypes.c_void_p]),
         (user32.PrintWindow, wintypes.BOOL, [wintypes.HWND, ctypes.c_void_p, wintypes.UINT]),
         (user32.GetWindowRect, wintypes.BOOL, [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]),
-        (user32.WindowFromPoint, wintypes.HWND, [wintypes.POINT]),
-        (user32.GetAncestor, wintypes.HWND, [wintypes.HWND, wintypes.UINT]),
+        (user32.EnumWindows, wintypes.BOOL, [WNDENUMPROC, wintypes.LPARAM]),
+        (user32.IsWindowVisible, wintypes.BOOL, [wintypes.HWND]),
+        (user32.IsIconic, wintypes.BOOL, [wintypes.HWND]),
+        (user32.GetWindowThreadProcessId, wintypes.DWORD, [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]),
+        (user32.GetClassNameW, ctypes.c_int, [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]),
+        # HRESULT as the result type raises OSError on failure.
+        (dwmapi.DwmGetWindowAttribute, ctypes.HRESULT, [wintypes.HWND, wintypes.DWORD, ctypes.c_void_p,
+                                                        wintypes.DWORD]),
         (gdi32.CreateCompatibleDC, ctypes.c_void_p, [ctypes.c_void_p]),
         (gdi32.CreateCompatibleBitmap, ctypes.c_void_p, [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]),
         (gdi32.BitBlt, wintypes.BOOL, [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
@@ -49,6 +58,53 @@ class BITMAPINFOHEADER(ctypes.Structure):
                 ("biYPelsPerMeter", wintypes.LONG), ("biClrUsed", wintypes.DWORD), ("biClrImportant", wintypes.DWORD)]
 
 
+def window_process(handle: int) -> int:
+    """The id of the process that owns a window (0 when the window no longer exists)."""
+    owner = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(handle, ctypes.byref(owner))
+    return owner.value
+
+
+def frame_bounds(handle: int) -> wintypes.RECT:
+    """A window's bounds as drawn, without the invisible resize borders `GetWindowRect` adds around it."""
+    bounds = wintypes.RECT()
+    dwmapi.DwmGetWindowAttribute(handle, DWMWA_EXTENDED_FRAME_BOUNDS, ctypes.byref(bounds), ctypes.sizeof(bounds))
+    return bounds
+
+
+def covering_window(handle: int) -> str | None:
+    """The class name of another program's window that shows over `handle` on screen, or None. EnumWindows lists
+    top-level windows from the top of the z-order, so every window listed before `handle` is above it."""
+    above: list[int] = []
+    found: list[int] = []
+
+    def visit(other, _parameter):
+        if other == handle:
+            found.append(other)
+            return False
+        above.append(other)
+        return True
+
+    user32.EnumWindows(WNDENUMPROC(visit), 0)
+    if not found:
+        raise RuntimeError(f"window {handle:#x} is not a top-level window")
+    bounds = frame_bounds(handle)
+    own = os.getpid()
+    for other in above:
+        if not user32.IsWindowVisible(other) or user32.IsIconic(other) or window_process(other) in (own, 0):
+            continue
+        cloaked = wintypes.DWORD()
+        dwmapi.DwmGetWindowAttribute(other, DWMWA_CLOAKED, ctypes.byref(cloaked), ctypes.sizeof(cloaked))
+        if cloaked.value:  # kept off screen: on another virtual desktop, or a shell window not shown
+            continue
+        box = frame_bounds(other)
+        if box.left < bounds.right and bounds.left < box.right and box.top < bounds.bottom and bounds.top < box.bottom:
+            name = ctypes.create_unicode_buffer(256)
+            user32.GetClassNameW(other, name, 256)
+            return name.value
+    return None
+
+
 def capture(window) -> np.ndarray:
     """RGBA pixels of a Tk toplevel, title bar included, without the invisible resize borders."""
     window.update()
@@ -56,11 +112,13 @@ def capture(window) -> np.ndarray:
 
 
 def capture_handle(handle: int) -> np.ndarray:
-    """RGBA pixels of any top-level window (a native dialog, a popup list) by its HWND."""
+    """RGBA pixels of one of this process's top-level windows (a native dialog, a popup list) by its HWND."""
+    if window_process(handle) != os.getpid():
+        raise RuntimeError(f"window {handle:#x} belongs to another program; only this one's windows are captured")
     rect = wintypes.RECT()
-    user32.GetWindowRect(handle, ctypes.byref(rect))
-    bounds = wintypes.RECT()
-    dwmapi.DwmGetWindowAttribute(handle, DWMWA_EXTENDED_FRAME_BOUNDS, ctypes.byref(bounds), ctypes.sizeof(bounds))
+    if not user32.GetWindowRect(handle, ctypes.byref(rect)):
+        raise RuntimeError("GetWindowRect failed")
+    bounds = frame_bounds(handle)
     width, height = rect.right - rect.left, rect.bottom - rect.top
     window_dc = user32.GetWindowDC(handle)
     memory_dc = gdi32.CreateCompatibleDC(window_dc)
@@ -88,23 +146,20 @@ def capture_handle(handle: int) -> np.ndarray:
 
 def capture_screen(window, settle: bool = True) -> np.ndarray:
     """RGBA pixels of the screen where a Tk toplevel is: what is really displayed, unlike PrintWindow, which
-    asks the window to draw itself and so hides areas that were never repainted. The window must be on top.
-    `settle` lets Tk handle its pending events first; without it, the capture shows what is on screen this
-    instant (paints Tk has not done yet included). Never during Windows' maximize or restore animation: the
-    window is already in place for the check, but the screen there shows the animation and what is behind."""
+    asks the window to draw itself and so hides areas that were never repainted. No other program's window may
+    overlap it. `settle` lets Tk handle its pending events first; without it, the capture shows what is on
+    screen this instant (paints Tk has not done yet included). Never during Windows' maximize or restore
+    animation: the window is already in place for the check, but the screen there shows the animation and what
+    is behind."""
     if settle:
         window.update()
     handle = int(window.wm_frame(), 16)
-    bounds = wintypes.RECT()
-    dwmapi.DwmGetWindowAttribute(handle, DWMWA_EXTENDED_FRAME_BOUNDS, ctypes.byref(bounds), ctypes.sizeof(bounds))
+    covering = covering_window(handle)
+    if covering is not None:
+        # The capture would show that window, which may be private.
+        raise RuntimeError(f"a window of another program ({covering}) overlaps the window; not capturing it")
+    bounds = frame_bounds(handle)
     width, height = bounds.right - bounds.left, bounds.bottom - bounds.top
-    points = [(bounds.left + 4 + (width - 8) * column // 8, bounds.top + 4 + (height - 8) * row // 8)
-              for row in range(9) for column in range(9)]
-    for x, y in points:
-        under = user32.GetAncestor(user32.WindowFromPoint(wintypes.POINT(x, y)), GA_ROOT)
-        if under != handle:
-            # Another window covers it: the capture would show that window, which may be private.
-            raise RuntimeError("the window is covered on screen; not capturing what is over it")
     screen_dc = user32.GetWindowDC(None)
     memory_dc = gdi32.CreateCompatibleDC(screen_dc)
     bitmap = gdi32.CreateCompatibleBitmap(screen_dc, width, height)

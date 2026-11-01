@@ -13,7 +13,7 @@ import threading
 from ctypes import wintypes
 from pathlib import Path
 
-from .media import MediaInfo, _popen, _StderrTail, tool_path
+from .media import MediaInfo, _popen, _StderrTail, file_argument, tool_path
 
 SAMPLE_RATE = 48000
 CHANNELS = 2
@@ -179,7 +179,7 @@ def audio_command(path: Path, track: int, seconds: float, speed: float = 1.0) ->
     command = [tool_path("ffmpeg"), "-v", "error", "-nostdin"]
     if seconds > 0:
         command += ["-ss", f"{seconds:.6f}"]
-    command += ["-i", str(path), "-map", f"0:a:{track}", "-vn", "-sn", "-dn"]
+    command += ["-i", file_argument(path), "-map", f"0:a:{track}", "-vn", "-sn", "-dn"]
     if speed != 1.0:
         command += ["-af", tempo_filter(speed)]
     return command + ["-ac", str(CHANNELS), "-ar", str(SAMPLE_RATE), "-f", "s16le", "-"]

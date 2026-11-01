@@ -1,10 +1,12 @@
 """One upscaling job (image or video) with progress, live preview and cancellation, shared by the CLI and the UI."""
 from __future__ import annotations
 
+import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
 from typing import Callable
 
@@ -14,7 +16,7 @@ from . import log
 from .ffx import QUALITY_MODE_SCALES, find_sdk_dir
 from .flow import create_flow
 from .media import (ENCODER_LIMITS, ENCODER_NAMES, FrameReader, FrameWriter, MediaInfo, describe_audio, is_image,
-                    probe, read_image, write_image)
+                    partial_path, probe, read_image, write_image)
 from .pipeline import Pipeline, upscale_stream
 
 VIDEO_SUFFIX = ".mp4"
@@ -61,8 +63,16 @@ class JobPlan:
     image_mode: bool
 
     @property
-    def scale(self) -> float:
-        return self.output_size[0] / self.render_size[0]
+    def scales(self) -> tuple[float, float]:
+        """Output pixels per source pixel across and down (they differ for an anamorphic source)."""
+        return self.output_size[0] / self.render_size[0], self.output_size[1] / self.render_size[1]
+
+    def describe_scale(self, times: str = "x") -> str:
+        """"2.00x", or "2.37x by 2.00x" for an anamorphic source."""
+        across, down = self.scales
+        if abs(across - down) < 0.005:
+            return f"{across:.2f}{times}"
+        return f"{across:.2f}{times} by {down:.2f}{times}"
 
     @property
     def total_frames(self) -> int | None:
@@ -78,9 +88,20 @@ class JobResult:
     timings: str
 
 
-def even(value: float) -> int:
-    """Round to the nearest even integer (video encoders need even dimensions)."""
-    return max(2, int(round(value / 2)) * 2)
+def round_to(value: float, multiple: int) -> int:
+    """Round to the nearest multiple of `multiple` (at least `multiple`)."""
+    return max(multiple, int(round(value / multiple)) * multiple)
+
+
+def fit(value: float, source: int, multiple: int) -> int:
+    """`value` rounded to a multiple of `multiple`, one step back inside FSR's 1x-3x range if rounding left it
+    (an odd source at 3x would otherwise ask for a hair more than 3x)."""
+    size = round_to(value, multiple)
+    if size > source * MAX_SCALE:
+        size -= multiple
+    elif size < source * MIN_SCALE:
+        size += multiple
+    return size
 
 
 def default_output(path: Path) -> Path:
@@ -88,21 +109,43 @@ def default_output(path: Path) -> Path:
     return path.with_name(f"{path.stem}.fsr4{suffix}")
 
 
-def output_size(width: int, height: int, options: JobOptions) -> tuple[int, int]:
-    if options.width or options.height:
-        if options.width and options.height:
-            return even(options.width), even(options.height)
-        if options.width:
-            return even(options.width), even(options.width * height / width)
-        return even(options.height * width / height), even(options.height)
+def output_size(width: int, height: int, options: JobOptions, pixel_aspect: Fraction = Fraction(1)) -> tuple[int, int]:
+    """The width and height asked for, the other side following the source's shape, or the scale. The shape is
+    the one players show: an anamorphic source (`pixel_aspect` not 1, a DVD) comes out with square pixels, FSR
+    widening it by the pixel aspect too (measured as good as one scale), and a scale that would take that width
+    outside FSR's 1x-3x range is moved inside it. Video encoders need even sizes, and AV1 on the GPU widths that
+    are multiples of 8: it pads other widths and tags the padded one, so the file reads back sheared."""
+    across = 8 if options.codec == "av1_amf" and not is_image(options.input) else 2
+    shown_width = width * float(pixel_aspect)
+    if options.width and options.height:
+        return round_to(options.width, across), round_to(options.height, 2)
+    if options.width:
+        return round_to(options.width, across), fit(options.width * height / shown_width, height, 2)
+    if options.height:
+        return fit(options.height * shown_width / height, width, across), round_to(options.height, 2)
     scale = options.scale if options.scale else QUALITY_MODE_SCALES[options.mode]
-    return even(width * scale), even(height * scale)
+    if pixel_aspect != 1 and MIN_SCALE <= scale <= MAX_SCALE:
+        scale = min(max(scale, MIN_SCALE / float(pixel_aspect)), MAX_SCALE / float(pixel_aspect))
+    return fit(shown_width * scale, width, across), fit(height * scale, height, 2)
+
+
+def check_output(output: Path, source: Path) -> None:
+    """Raise ValueError when writing `output` would overwrite `source`, under any spelling of its path."""
+    if output.exists() and os.path.samefile(output, source):
+        raise ValueError(f"the output is the input file {source.name}; choose another output name")
+    partial = partial_path(output)
+    if partial.exists() and os.path.samefile(partial, source):
+        raise ValueError(f"{output.name} is written as {partial.name} until it is complete, which is the input "
+                         f"file; choose another output name")
 
 
 def plan_from_info(options: JobOptions, info: MediaInfo) -> JobPlan:
-    """Resolve the output path and sizes for an already probed input; raises ValueError for bad scales."""
+    """Resolve the output path and sizes for an already probed input; raises ValueError for bad scales and for
+    an output that would overwrite the input."""
+    output = options.output or default_output(options.input)
+    check_output(output, options.input)
     width, height = info.width, info.height
-    out_width, out_height = output_size(width, height, options)
+    out_width, out_height = output_size(width, height, options, info.pixel_aspect)
     scale_x, scale_y = out_width / width, out_height / height
     if not (MIN_SCALE - 1e-6 <= scale_x <= MAX_SCALE + 1e-6 and MIN_SCALE - 1e-6 <= scale_y <= MAX_SCALE + 1e-6):
         raise ValueError(f"FSR supports scales from 1x to 3x; {width}x{height} -> {out_width}x{out_height} "
@@ -115,8 +158,8 @@ def plan_from_info(options: JobOptions, info: MediaInfo) -> JobPlan:
             raise ValueError(f"{ENCODER_NAMES[options.codec]} encodes from {low_width} × {low_height} to "
                              f"{high_width} × {high_height}; {out_width} × {out_height} needs another encoder "
                              f"or another size")
-    return JobPlan(info=info, output=options.output or default_output(options.input),
-                   render_size=(width, height), output_size=(out_width, out_height), image_mode=image_mode)
+    return JobPlan(info=info, output=output, render_size=(width, height), output_size=(out_width, out_height),
+                   image_mode=image_mode)
 
 
 def plan(options: JobOptions) -> JobPlan:
@@ -141,7 +184,7 @@ def run_job(options: JobOptions, progress: ProgressCallback | None = None,
     out_width, out_height = job.output_size
     if options.verbose:
         kind = "image" if job.image_mode else f"{job.info.codec} video, {float(job.info.frame_rate):.3f} fps"
-        log.emit(f"[fsr4] {options.input.name}: {width}x{height} -> {out_width}x{out_height} ({job.scale:.2f}x), {kind}")
+        log.emit(f"[fsr4] {options.input.name}: {width}x{height} -> {out_width}x{out_height} ({job.describe_scale()}), {kind}")
         if not job.image_mode:
             for line in describe_audio(job.info.audio, job.output):
                 log.emit(f"[fsr4] {line}")
@@ -160,7 +203,8 @@ def run_job(options: JobOptions, progress: ProgressCallback | None = None,
         if job.image_mode:
             source = read_image(options.input)
             upscaled = pipeline.process(source)
-            write_image(job.output, upscaled)
+            transparent = bool((source[..., 3] < 255).any())
+            write_image(job.output, upscaled, alpha_source=options.input if transparent else None)
             frames_done = 1
             if preview:
                 preview(source, upscaled.copy(), 1)
@@ -177,9 +221,11 @@ def run_job(options: JobOptions, progress: ProgressCallback | None = None,
         return JobResult(output=job.output, frames=frames_done, seconds=elapsed, cancelled=cancelled,
                          timings=pipeline.timings.summary())
     finally:
-        if pipeline is not None:
-            pipeline.destroy()
-        gpu.destroy()
+        try:
+            if pipeline is not None:
+                pipeline.destroy()
+        finally:
+            gpu.destroy()
 
 
 def _run_video(options: JobOptions, job: JobPlan, pipeline: Pipeline, progress: ProgressCallback | None,

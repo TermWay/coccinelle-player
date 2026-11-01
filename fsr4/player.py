@@ -16,13 +16,16 @@ each decoder works in short chunks that it hands over last frame first, and the 
 behind the playhead.
 
 Everything runs on the player's own thread; the window sends commands and receives events through
-`on_event(kind, *values)`: "position" (frame shown), "state" (playing, buffering), "ended", "notice"
-(a message for the user, e.g. no sound device), "error" (an exception; playback stops).
+`on_event(kind, *values)`: "position" (frame shown), "state" (playing, buffering), "ended", "end" (the
+real frame count, found when the video turned out to end before a frame asked for), "notice" (a message for
+the user, e.g. no sound device), "unplayable" (play was asked with no upscaled video attached: the window says
+why), "error" (an exception; playback stops).
 """
 from __future__ import annotations
 
 import math
 import queue
+import sys
 import threading
 import time
 from collections import deque
@@ -34,7 +37,7 @@ import numpy as np
 
 from . import log
 from .audio import AudioPlayer
-from .media import FrameReader, KeyframeIndex, MediaInfo, read_frame
+from .media import FrameReader, IndexClosed, KeyframeIndex, MediaInfo, PastEnd, last_frame_before, read_frame
 from .timeline import Timeline
 
 STREAM_BUFFERS = 6
@@ -119,6 +122,11 @@ class _Stream:
             except queue.Empty:
                 continue
         return None
+
+    def passed(self, frame: int) -> bool:
+        """Whether the stream went by `frame` without it (after `take` gave None): it ended, or its next frame
+        comes later in playing order."""
+        return self._ended or (self._waiting is not None and (self._waiting[0] - frame) * self.direction > 0)
 
     def take(self, frame: int, timeout: float) -> np.ndarray | None:
         """The buffer holding `frame`, dropping frames already passed; None when it is not decoded within
@@ -297,6 +305,7 @@ class Player:
         self.playing = False
         self.buffering = False
         self.speed = 1.0
+        self._end: int | None = None  # the real frame count, once a read of the source found it
         self.volume = 0.8
         self.muted = False
         self.render_speed = 0.0
@@ -333,7 +342,10 @@ class Player:
 
     @property
     def total(self) -> int:
-        return self.timeline.total if self.timeline is not None else (self.info.frame_count or 1)
+        """Frames in the video: the current version's count (exact once a read reached the end), never more than
+        the end a read of the source found."""
+        total = self.timeline.total if self.timeline is not None else (self.info.frame_count or 1)
+        return total if self._end is None else min(total, self._end)
 
     @property
     def direction(self) -> int:
@@ -419,14 +431,14 @@ class Player:
                 if command is not None and command[0] == "close":
                     break
                 try:
-                    if command is not None:
-                        self._handle(command)
-                    elif self.playing:
-                        self._play_step()
-                    elif self._still_wanted is not None:
-                        self._load_still()
-                    elif self._showing_unready and self.render_active:
-                        self.view.set_spinner(True, advance=True)
+                    try:
+                        self._step(command)
+                    except PastEnd as past:
+                        if past.path != self.source:
+                            raise  # an upscaled piece shorter than its timeline says: damaged
+                        self._past_end(past.frame)
+                except IndexClosed:
+                    break  # the window is closing the file (close() follows)
                 except Exception as error:  # noqa: BLE001 - reported to the window; the player stays usable
                     log.emit(f"[player] error: {error}")
                     try:
@@ -446,6 +458,31 @@ class Player:
                 except OSError as error:
                     log.emit(f"[player] could not close the sound device: {error}")
 
+    def _step(self, command: tuple | None) -> None:
+        """Handle `command`, or else carry on with what is going on: playback, a still to load, the spinner."""
+        if command is not None:
+            self._handle(command)
+        elif self.playing:
+            self._play_step()
+        elif self._still_wanted is not None:
+            self._load_still()
+        elif self._showing_unready and self.render_active:
+            self.view.set_spinner(True, advance=True)
+
+    def _past_end(self, frame: int) -> None:
+        """The video ends before `frame` (its frame count was an estimate): find its last frame, tell the window
+        the real length, and go on from there (a still, the end of playback, or playing backwards from it)."""
+        last = last_frame_before(self.source, self.info, frame, self.keyframes.get())
+        self._end = last + 1
+        self.on_event("end", self._end)
+        if not self.playing:
+            self.position = self._still_wanted = last
+            self._position_event(force=True)
+        elif self.speed > 0:
+            self._finish()
+        else:
+            self._restart(last)
+
     def _handle(self, command: tuple) -> None:
         kind = command[0]
         if kind == "attach":
@@ -456,7 +493,7 @@ class Player:
             else:
                 self._still_wanted = self.position
         elif kind in ("play", "toggle") and not self.playing and self.timeline is None:
-            self.on_event("notice", "Nothing to play yet: the upscaler is not running (see the GPU status).")
+            self.on_event("unplayable")
         elif kind in ("play", "toggle") and not self.playing:
             self.follow_live = False
             self.position = min(self.position, self.total - 1)  # the frame count may have shrunk to the real one
@@ -552,6 +589,8 @@ class Player:
         source_stream = self._streams["source"]
         source = source_stream.take(frame, FIRST_FRAME_TIMEOUT)
         if source is None:
+            if source_stream.passed(frame):
+                raise PastEnd(self.source, frame)
             raise RuntimeError(f"could not decode frame {frame} for playback")
         held = [(source_stream, source)]
         shown = {}
@@ -594,9 +633,10 @@ class Player:
         keyframes = self.keyframes.get()
         source, info = self.source, self.info
         stream_type = FrameStream if self.speed > 0 else ReverseFrameStream
+        # One segment for the whole file, ending where its decoder runs out: the frame count may be an estimate.
         self._streams["source"] = stream_type(
             lambda start: ((lambda first: FrameReader(source, info, start_frame=first, keyframes=keyframes,
-                                                      pixel_format="bgra")), 0, self.total),
+                                                      pixel_format="bgra")), 0, sys.maxsize),
             frame, info.width, info.height, "source", strict=False)
         self._stream_layers = set(layers)
         for layer in layers:
@@ -714,8 +754,18 @@ class Player:
             return seconds * self.rate
         return self._clock_frame0 + (now - self._clock_perf0) * self.rate * self.speed
 
+    def _past_last(self, frame: int) -> bool:
+        """Whether `frame` lies past the video in the playing direction (forward: once its end is known)."""
+        if self.speed < 0:
+            return frame < 0
+        known = self._end is not None or (self.timeline is not None and self.timeline.exact)
+        return known and frame >= self.total
+
     def _play_step(self) -> None:
         if self.buffering:
+            if self._past_last(self._resume_frame):
+                self._finish()  # the end turned out to be where playback waits
+                return
             now = time.perf_counter()
             if now - self._last_spinner >= SPINNER_INTERVAL:
                 self._last_spinner = now
@@ -724,7 +774,6 @@ class Player:
             return
         direction = self.direction
         clock = self._clock_frame()
-        timeline = self.timeline
         if direction > 0:
             due = max(int(math.floor(clock + 1e-6)), self._clock_frame0)
         else:
@@ -738,7 +787,7 @@ class Player:
                 # Late (the decoders are slower than this speed): go on from this frame at the right pace.
                 self._clock_frame0, self._clock_perf0 = following, time.perf_counter()
             due = following
-        if (direction > 0 and timeline.exact and due >= timeline.total) or due < 0:
+        if self._past_last(due):
             self._finish()
             return
         paced = self._paced(self._stream_layers)
@@ -747,7 +796,7 @@ class Player:
         if limit is not None and (limit - due) * direction <= 0:
             # The next frames are not upscaled yet in every layer shown: wait for the renderer.
             self._resume_frame = limit
-            if (timeline.exact and limit >= timeline.total) or limit < 0:
+            if self._past_last(limit):
                 self._finish()
                 return
             self._stop_streams()

@@ -1,23 +1,31 @@
 # FSR4 upscaler — project rules
 
 A command line tool (and a packaged exe) that upscales an image or a video with AMD FSR Upscaling 4 on a
-Radeon RX 9000 card, through Vulkan. The shared rules in `..\CLAUDE.md` apply; this file adds the specifics.
+Radeon RX 9000 card, through Vulkan.
+
+## Working here
+- Ask before adding any package, runtime or dev-only; the tested versions are pinned in `requirements.txt`
+  (`requirements-build.txt` adds PyInstaller).
+- Measure and look before calling a change done: the tests, the lab, screenshots read back.
+- KISS and DRY; no silent failures (log the error and fail early); descriptive names; docstrings on public
+  classes and functions; no allocations in per-frame code.
 
 ## Stack
 - Python 3.12, stdlib `ctypes` for Vulkan and the FSR API, numpy for pixels, ffmpeg/ffprobe subprocesses for
-  all decoding and encoding. OpenCV (`opencv-python`) only for optical flow and the fake jitter resampling;
-  everything must still run with `--flow zero --jitter none` when it is absent. The window needs OpenCV (it
-  resizes and filters every preview frame with it); the command line does not.
+  all decoding and encoding (ffmpeg 5.1 or later, 6.0 for `av1_amf`; not bundled: it is GPL). OpenCV
+  (`opencv-python`) for optical flow; the command line must still run with `--flow zero` when it is absent.
+  The window needs OpenCV (it resizes and filters every preview frame with it).
 - No C++ toolchain on this machine: the Vulkan structs in `fsr4/vk_types.py` are generated from the vendored
   `third_party/vulkan_core.h` by `tools/gen_vk_types.py`. Regenerate instead of editing by hand.
 - The FSR binaries (`bin/*.dll`) are AMD's signed DLLs from the FidelityFX SDK tag pinned in
   `tools/fetch_sdk.py`; they are not committed. `bin/license.md` must ship with them.
-- Branch: `main`. Commit at the end of every prompt that changed files.
+- Branch: `main`. Commit at the end of every prompt that changed files; never push unless asked.
 
 ## Checks
 - `python -m unittest discover -s tests` is the test suite; `python -m fsr4 selftest --validate` exercises the
   Vulkan layer under the validation layer (Vulkan SDK 1.4.313 is installed; it does not know
-  `VK_EXT_shader_float8`, so warnings about structure type 1000567000 are expected).
+  `VK_EXT_shader_float8`, so warnings about structure type 1000567000 are expected). Tests that need ffmpeg,
+  OpenCV or FSR 4 itself skip without it, saying why (`tests/needs.py`).
 - Quality is measured, not eyeballed: `tools/lab_quality.py` downscales a reference, upscales it back and
   reports PSNR against the reference for each flow/jitter setting. Run it before changing a default.
 - Performance figures go in the README table with the command that produced them.
@@ -25,7 +33,8 @@ Radeon RX 9000 card, through Vulkan. The shared rules in `..\CLAUDE.md` apply; t
   every state through the real widgets (a real WM_DROPFILES drop, tooltip, dropdown, file dialog, playback,
   buffering, presets side by side, zoom slider, full screen, save) and saves PrintWindow screenshots to look at.
   Its presets go to a scratch file in `--out`, never the user's `%APPDATA%` one. The window pops up on the desktop
-  while it runs; `out/ui/sample.wmv` (1080p60 WMV with WMA audio) is the usual clip.
+  while it runs; the usual clip is a 1080p60 WMV with WMA audio. The saved outputs it makes are deleted once
+  checked (a default output name never replaces a file, so each run would add one).
 - `tests/test_render.py` (GPU) checks that pieces rendered around seeks join into exactly the single-pass video;
   `tests/test_audio.py` needs a sound device and skips without one.
 - `tests/test_formats.py` builds one small file per container/codec family with ffmpeg and round-trips it;
@@ -77,7 +86,8 @@ Radeon RX 9000 card, through Vulkan. The shared rules in `..\CLAUDE.md` apply; t
 - While playing, a layer whose decoder still works at the previous zoom or position is drawn with `reframe`
   (its picture resampled to where it belongs), never stretched: both sides of the divider must move together.
 - `tools/window_capture.py` can capture what the screen shows (`screen=True`; `settle=False` to see paints Tk
-  has not done yet) but it refuses when another window covers ours: never capture other windows' content.
+  has not done yet) but it refuses when another program's window overlaps ours, and PrintWindow captures
+  only this process's windows: never capture other windows' content.
   Probes that drive a window find it by the process they started, never by its title (the user may have the
   app open).
 - FSR 4 ignores the SDK's upscale tuning keys (verified bit-identical); `ffx.Upscaler(provider=...)` selects the
@@ -108,5 +118,9 @@ Radeon RX 9000 card, through Vulkan. The shared rules in `..\CLAUDE.md` apply; t
   ffmpeg skips pictures it cannot decode and still succeeds (the timeline repeats the one before): readers run
   it with `-v level+...` and log the video decoder's first error once per file, for reads from the start
   (after a seek, the pictures before the keyframe fail by design).
+- Anamorphic sources (a sample aspect ratio other than 1:1, as on DVDs) come out at the shape players show,
+  with square pixels: FSR scales each axis on its own (`job.output_size`, measured as good as one scale), and
+  the preview follows from the output size. Images are always taken as square; a tag outside 1:4 to 4:1 is
+  ignored and logged.
 - Resource states told to FSR must match the Vulkan layouts the images are really in (inputs
   `SHADER_READ_ONLY_OPTIMAL`, output `GENERAL`); `Gpu` tracks layouts, use its `cmd_*` helpers.

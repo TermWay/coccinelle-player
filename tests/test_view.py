@@ -1,13 +1,18 @@
 """The video view's geometry and the left side's alignment with the upscaled picture (no window needed)."""
 import unittest
 
+import needs
+
+if not needs.HAS_OPENCV:
+    raise unittest.SkipTest("opencv-python is not installed (the view draws with it)")
+
 import cv2
 import numpy as np
 
 from fsr4.ui_transport import format_precise, format_speed, format_time
 from fsr4.ui_art import Sketch
-from fsr4.ui_video import (VideoView, blend, blend_outline, block_view, compute_geometry, decode_request, over,
-                           reference_view, reframe, step_zoom, upscaled_view)
+from fsr4.ui_video import (VideoView, blend, blend_outline, block_view, compute_geometry, decode_request,
+                           minimap_box, over, reference_view, reframe, step_zoom, upscaled_view)
 
 
 def gradient(width: int, height: int) -> np.ndarray:
@@ -41,6 +46,25 @@ class GeometryTest(unittest.TestCase):
         geometry = compute_geometry((1000, 800), (640, 360), 1, None)
         self.assertEqual(geometry.region, (0, 0, 640, 360))
         self.assertEqual(geometry.shown, (180, 220, 640, 360))
+
+
+class MinimapTest(unittest.TestCase):
+    def test_tall_picture_in_a_short_view_fits(self):
+        """A 9:16 output in a short view at 150% gets a narrower map that stays inside the view."""
+        px = lambda value: int(round(value * 1.5))  # noqa: E731 - the theme's DPI scaling
+        for view_size in ((1400, 455), (700, 300), (300, 120)):
+            box = minimap_box(view_size, (2160, 3840), px)
+            self.assertIsNotNone(box, view_size)
+            left, top, right, bottom = box
+            self.assertTrue(0 <= left < right <= view_size[0] and 0 <= top < bottom <= view_size[1], (view_size, box))
+            self.assertAlmostEqual((right - left) / (bottom - top), 2160 / 3840, delta=0.05)
+
+    def test_landscape_map_keeps_its_width(self):
+        self.assertEqual(minimap_box((1600, 900), (3840, 2160), lambda value: int(round(value))),
+                         (1408, 787, 1588, 888))
+
+    def test_no_room_no_map(self):
+        self.assertIsNone(minimap_box((40, 30), (3840, 2160), lambda value: int(round(value * 1.5))))
 
 
 class ReferenceTest(unittest.TestCase):

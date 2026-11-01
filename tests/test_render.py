@@ -15,6 +15,7 @@ from unittest import mock
 
 import numpy as np
 
+import needs
 from fsr4 import media, render
 from fsr4.ffx import find_sdk_dir
 from fsr4.job import JobOptions, run_job
@@ -43,9 +44,12 @@ def decode(path: Path) -> list[np.ndarray]:
     return [frame[..., :3].astype(np.int16) for frame in media.FrameReader(path, info)]
 
 
+@needs.ffmpeg
+@needs.opencv
 class RendererTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        needs.require_fsr()
         cls.directory = tempfile.TemporaryDirectory()
         cls.root = Path(cls.directory.name)
         cls.source = cls.root / "source.mp4"
@@ -157,6 +161,38 @@ class RendererTest(unittest.TestCase):
         for source in (dropped, raw):
             saved, decoded = self.export_whole(source)
             self.assertEqual(saved, decoded, f"{source.name}: the saved video ends where the source does")
+
+    def test_a_seek_past_the_real_end_finds_it(self):
+        """A video shorter than its estimated length (2 s of video, 3 s of sound, no frame count in Matroska):
+        a run started past the end decodes nothing, and the real end is found at once, not in steps."""
+        tail = self.root / "tail.mkv"
+        subprocess.run([media.tool_path("ffmpeg"), "-v", "error", "-y",
+                        "-f", "lavfi", "-i", f"testsrc2=size={WIDTH}x{HEIGHT}:rate={RATE}:duration=2",
+                        "-f", "lavfi", "-i", "sine=duration=3", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                        "-c:a", "aac", str(tail)], check=True)
+        info = media.probe(tail)
+        frames = sum(1 for _ in media.FrameReader(tail, info))
+        self.assertGreater(info.frame_count, frames + render.PREROLL_FRAMES)
+        events: queue.Queue = queue.Queue()
+        renderer = Renderer(tail, info, RenderSettings((WIDTH * 2, HEIGHT * 2)), find_sdk_dir(None),
+                            lambda kind, *values: events.put((kind, values)), target=info.frame_count - 1)
+        try:
+            deadline = time.monotonic() + TIMEOUT
+            totals = []
+            while not renderer.timeline.exact:
+                self.assertLess(time.monotonic(), deadline, "the end was never found")
+                try:
+                    kind, values = events.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+                if kind == "error":
+                    raise values[0]
+                if kind == "total":
+                    totals.append(values[0])
+            self.assertEqual(renderer.timeline.total, frames)
+            self.assertEqual(totals, [frames])
+        finally:
+            renderer.close()
 
     def test_versions_are_kept_and_upscaled_side_by_side(self):
         timeline = self.renderer.timeline

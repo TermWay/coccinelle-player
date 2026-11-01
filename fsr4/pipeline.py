@@ -59,11 +59,27 @@ class Pipeline:
         self.debug_view = debug_view
         self.verbose = verbose
         self.timings = Timings()
-        width, height = render_size
-        output_width, output_height = output_size
         self.render_size = render_size
         self.output_size = output_size
+        self.provider = provider
+        flags = (ffx.FFX_UPSCALE_ENABLE_AUTO_EXPOSURE | ffx.FFX_UPSCALE_ENABLE_NON_LINEAR_COLORSPACE
+                 | ffx.FFX_UPSCALE_ENABLE_DEPTH_INVERTED)
+        if debug_view:
+            flags |= ffx.FFX_UPSCALE_ENABLE_DEBUG_VISUALIZATION
+        try:
+            self._create(sdk_dir, flags, debug_checking)
+        except BaseException:
+            self._free_memory()  # FSR refused (another card, an old driver, a size it cannot do): free the rest
+            raise
+        self.frame_index = 0
+        if verbose:
+            log.emit(f"[pipeline] flow {flow.name}, sharpness {sharpness if sharpness is not None else 'off'}")
 
+    def _create(self, sdk_dir: Path, flags: int, debug_checking: bool) -> None:
+        """The images, staging buffers and FSR context."""
+        gpu = self.gpu
+        width, height = self.render_size
+        output_width, output_height = self.output_size
         sampled = T.VK_IMAGE_USAGE_SAMPLED_BIT | T.VK_IMAGE_USAGE_TRANSFER_DST_BIT
         self.color = gpu.create_image(width, height, T.VK_FORMAT_R8G8B8A8_UNORM, sampled)
         self.depth = gpu.create_image(width, height, T.VK_FORMAT_R32_SFLOAT, sampled)
@@ -80,17 +96,8 @@ class Pipeline:
         gpu.cmd_clear(self.depth, CONSTANT_DEPTH, 0.0, 0.0, 0.0, T.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                       SHADER_READ_STAGE, T.VK_ACCESS_SHADER_READ_BIT)
         gpu.submit_and_wait()
-
-        flags = (ffx.FFX_UPSCALE_ENABLE_AUTO_EXPOSURE | ffx.FFX_UPSCALE_ENABLE_NON_LINEAR_COLORSPACE
-                 | ffx.FFX_UPSCALE_ENABLE_DEPTH_INVERTED)
-        if debug_view:
-            flags |= ffx.FFX_UPSCALE_ENABLE_DEBUG_VISUALIZATION
-        self.provider = provider
-        self.upscaler = ffx.Upscaler(gpu, render_size, output_size, flags, sdk_dir, verbose=verbose,
-                                     debug_checking=debug_checking, provider=provider)
-        self.frame_index = 0
-        if verbose:
-            log.emit(f"[pipeline] flow {flow.name}, sharpness {sharpness if sharpness is not None else 'off'}")
+        self.upscaler = ffx.Upscaler(gpu, self.render_size, self.output_size, flags, sdk_dir, verbose=self.verbose,
+                                     debug_checking=debug_checking, provider=self.provider)
 
     def reset(self) -> None:
         """Start a new sequence: the next frame does not blend with history."""
@@ -142,13 +149,25 @@ class Pipeline:
         return self.output_pixels
 
     def destroy(self) -> None:
-        """Free the FSR context and this pipeline's images and buffers; the device stays for the next one."""
+        """Free the FSR context and this pipeline's images and buffers; the device stays for the next one. On a
+        lost device the context may fail to go: that is logged, and the memory is freed all the same."""
         self.gpu.wait_idle()
-        self.upscaler.destroy()
-        for image in (self.color, self.depth, self.motion, self.output):
-            self.gpu.free_image(image)
-        for buffer in (self.color_staging, self.motion_staging, self.output_staging):
-            self.gpu.free_buffer(buffer)
+        try:
+            self.upscaler.destroy()
+        except Exception as error:  # noqa: BLE001 - teardown goes on; logged
+            log.emit(f"[pipeline] could not free the FSR context: {error}")
+        self._free_memory()
+
+    def _free_memory(self) -> None:
+        """Free the images and buffers (the ones made so far, when the pipeline could not be completed)."""
+        for name in ("color", "depth", "motion", "output"):
+            image = self.__dict__.pop(name, None)
+            if image is not None:
+                self.gpu.free_image(image)
+        for name in ("color_staging", "motion_staging", "output_staging"):
+            buffer = self.__dict__.pop(name, None)
+            if buffer is not None:
+                self.gpu.free_buffer(buffer)
 
 
 def upscale_stream(frames: Iterator[np.ndarray], pipeline: Pipeline,

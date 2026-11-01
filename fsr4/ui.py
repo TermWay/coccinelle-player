@@ -25,7 +25,7 @@ import time
 import tkinter as tk
 from dataclasses import replace
 from pathlib import Path
-from tkinter import filedialog, ttk
+from tkinter import filedialog, messagebox, ttk
 
 import cv2
 import numpy as np
@@ -145,6 +145,15 @@ def format_duration(seconds: float) -> str:
     return f"{hours}:{minutes:02d}:{seconds:02d}" if hours else f"{minutes}:{seconds:02d}"
 
 
+def free_name(path: Path) -> Path:
+    """`path`, or the first of `name (2).ext`, `name (3).ext`… that is not an existing file."""
+    candidate, number = path, 2
+    while candidate.exists():
+        candidate = path.with_name(f"{path.stem} ({number}){path.suffix}")
+        number += 1
+    return candidate
+
+
 def describe_source(path: Path, info: MediaInfo) -> str:
     """Two short lines about a probed file for the sidebar."""
     size = f"{info.width} × {info.height}"
@@ -153,6 +162,8 @@ def describe_source(path: Path, info: MediaInfo) -> str:
     rate = f"{float(info.frame_rate):.3f}".rstrip("0").rstrip(".")
     first = f"{codec_name(info.codec, VIDEO_CODEC_NAMES)} · {size} · {rate} fps"
     parts = []
+    if info.pixel_aspect != 1:
+        parts.append(f"plays as {round(info.display_width)} × {info.height}")
     if info.duration:
         parts.append(format_duration(info.duration))
     if info.frame_count:
@@ -201,8 +212,10 @@ class App:
         self.player: Player | None = None
         self.source_thumbnails: dict[int, np.ndarray] = {}
         self.output_custom = False
+        self.output_confirmed: Path | None = None  # picked in the Save dialog, which asked about replacing it
         self._setting_output = False
         self.last_saved: Path | None = None
+        self.closing = False
         self.image_running = False
         self.image_cancel = threading.Event()
         self.worker: threading.Thread | None = None
@@ -245,7 +258,7 @@ class App:
         log.set_sink(lambda line: self.queue.put(("log", line)))
         self.drop = self._enable_drop()
         self._bind_keys()
-        root.protocol("WM_DELETE_WINDOW", self.close)
+        root.protocol("WM_DELETE_WINDOW", self._close_requested)
         root.bind("<Configure>", self._window_configured, add="+")
         root.report_callback_exception = self._callback_failed
         root.after(POLL_MS, self._poll)
@@ -300,7 +313,10 @@ class App:
         sidebar_button.grid(row=0, column=0, padx=(0, px(10)))
         self._tip(sidebar_button, "Hide or show the settings (Ctrl+B).")
         ttk.Label(header, image=self.theme.icon(24)).grid(row=0, column=1, padx=(0, px(10)))
-        ttk.Label(header, text=APP_NAME, style="Title.TLabel").grid(row=0, column=2, sticky="w")
+        title = ttk.Label(header, text=APP_NAME, style="Title.TLabel")
+        title.grid(row=0, column=2, sticky="w")
+        self._tip(title, "Upscales videos and images with AMD FSR 4. An independent tool, not made or endorsed by "
+                         "AMD; AMD, Radeon and FidelityFX are trademarks of Advanced Micro Devices, Inc.")
         status = ttk.Frame(header)
         status.grid(row=0, column=4, sticky="e")
         self.cpu_label = ttk.Label(status, text="", style="Small.TLabel")
@@ -485,6 +501,8 @@ class App:
         self.output_var.trace_add("write", self._output_edited)
         self.output_entry = ttk.Entry(output_row, textvariable=self.output_var)
         self.output_entry.grid(row=0, column=0, sticky="ew")
+        for key in ("<Return>", "<Escape>"):
+            self.output_entry.bind(key, lambda _: self.root.focus_set())  # done typing: the keys play again
         self._tip(self.output_entry, "Where the upscaled file is saved. .mp4 plays everywhere; .mkv keeps every "
                                      "audio track exactly as it is.")
         self.save_button = ttk.Button(output_row, text="…", width=3, style="Secondary.TButton",
@@ -724,6 +742,19 @@ class App:
         root.bind_all("<Motion>", self._pointer_moved, add="+")
         root.bind_all("<ButtonPress>", lambda _: self._set_pointer_pressed(True), add="+")
         root.bind_all("<ButtonRelease>", lambda _: self._set_pointer_pressed(False), add="+")
+        root.bind_all("<ButtonPress-1>", self._focus_window, add="+")
+        root.bind_class("TCombobox", "<<ComboboxSelected>>", self._dropdown_picked, add="+")
+
+    def _focus_window(self, event: tk.Event) -> None:
+        """A click anywhere but in a text field gives the keyboard back to the window, so Space and the arrows
+        play and seek (a clicked button, chip or checkbox would keep it, and Space would press it again)."""
+        if not isinstance(event.widget, (str, tk.Entry, ttk.Entry, tk.Text)):
+            self.root.focus_set()
+
+    def _dropdown_picked(self, event: tk.Event) -> None:
+        """After a pick from any dropdown, the keyboard goes back to the window too."""
+        event.widget.selection_clear()
+        self.root.focus_set()
 
     def _shortcut(self, action):
         """Run `action` unless the key goes to a text field or a list."""
@@ -743,7 +774,7 @@ class App:
         if choice in TARGET_SHORT_SIDES:
             if self.info is None:
                 return None
-            return TARGET_SHORT_SIDES[choice] / min(self.info.width, self.info.height)
+            return TARGET_SHORT_SIDES[choice] / min(self.info.display_width, self.info.height)
         return float(choice)
 
     def _options(self) -> JobOptions:
@@ -782,7 +813,7 @@ class App:
     def _apply_settings(self) -> None:
         self._settings_job = None
         settings = self._render_settings()
-        if settings is None or (self.renderer is None and self.image_source is None):
+        if settings is None or (self.player is None and self.image_source is None):
             return
         if self.renderer is not None:
             try:
@@ -792,6 +823,8 @@ class App:
                 self._show_banner(f"The new settings could not be applied: {self._first_line(error)}")
                 return
             self.transport.set_thumbnails(upscaled=self.renderer.thumbnails())
+        elif self.player is not None:
+            self._start_renderer(settings)  # the settings at load could not be upscaled (a size the encoder refuses)
         self.view.set_media((self.info.width, self.info.height), settings.output_size)
         self._update_layers()
         self._update_progress()
@@ -879,10 +912,9 @@ class App:
             (width, height), (out_width, out_height) = plan.render_size, plan.output_size
             self.size_label.configure(text=f"{width} × {height}   →   {out_width} × {out_height}",
                                       style="Strong.TLabel")
-            self.size_note.configure(text=f"{plan.scale:.2f}× per side · {plan.scale ** 2:.1f}× the pixels")
+            across, down = plan.scales
+            self.size_note.configure(text=f"{plan.describe_scale('×')} per side · {across * down:.1f}× the pixels")
             self.audio_note.configure(text="" if image else describe_audio_plan(self.info, plan.output))
-            if plan.output.resolve() == self.input_path.resolve():
-                problem = "The output would overwrite the input; choose another name."
         else:
             self.size_label.configure(style="Faint.TLabel",
                                       text="Reading the file…" if self.input_path is not None
@@ -911,11 +943,12 @@ class App:
         self._update_zoom_controls()
 
     def _default_output(self) -> Path:
+        """`<name>.fsr4.<ext>` next to the file, numbered when that exists: a default never replaces a file."""
         current = self.output_var.get().strip()
         path = default_output(self.input_path)
         if current and not is_image(self.input_path) and Path(current).suffix.lower() in (".mkv", ".mov"):
             path = path.with_suffix(Path(current).suffix)
-        return path
+        return free_name(path)
 
     def _zoom_value(self):
         value = self.zoom_var.get()
@@ -1142,18 +1175,24 @@ class App:
                                               defaultextension=current.suffix, filetypes=types)
         if chosen:
             self.output_custom = True
+            self.output_confirmed = Path(chosen)
             self._set_output(Path(chosen))
             self._refresh()
 
-    def load(self, path: Path) -> None:
-        """Probe `path` (on a worker thread), then set up its preview and playback."""
+    def load(self, path: Path) -> bool:
+        """Probe `path` (on a worker thread), then set up its preview and playback. False, with the reason in the
+        banner, when it cannot be opened now."""
         if self.busy:
-            self._show_banner("An upscale is running. Stop it before opening another file.")
-            return
+            self._show_banner("The upscaled video is being saved; open another file once it is saved."
+                              if self.saving else "An upscale is running. Stop it before opening another file.")
+            return False
         path = Path(path)
+        if path.is_dir():
+            self._show_banner(f"{path.name} is a folder: open a video or an image.")
+            return False
         if not path.is_file():
             self._show_banner(f"Not found: {path}")
-            return
+            return False
         self._close_media()
         self.load_token += 1
         self.input_path, self.info, self.last_saved = path, None, None
@@ -1166,6 +1205,7 @@ class App:
         self.status_var.set("Reading the file…")
         self._refresh()
         threading.Thread(target=self._load_worker, args=(self.load_token, path), daemon=True).start()
+        return True
 
     def _load_worker(self, token: int, path: Path) -> None:
         try:
@@ -1177,6 +1217,8 @@ class App:
 
     def _close_media(self) -> None:
         """Stop playback and upscaling of the current file and delete its pieces."""
+        if self.keyframes is not None:
+            self.keyframes.close()  # first: a player or renderer waiting for the index stops at once
         if self.player is not None:
             self.player.close()
             self.player = None
@@ -1192,6 +1234,8 @@ class App:
         self.source_thumbnails = {}
         self.render_position, self.render_speed = None, 0.0
         self.transport.grid_remove()
+        self.transport.place_forget()  # in full screen it is placed over the picture instead
+        self.root.title(APP_NAME)
 
     def _start_video(self, path: Path, info: MediaInfo) -> None:
         self.keyframes = KeyframeIndex(path, info)
@@ -1201,14 +1245,44 @@ class App:
         self.player = Player(self.view, path, info, self.keyframes,
                              lambda kind, *values: self.queue.put(("player", kind, values)))
         self.player.set_volume(self.transport.volume, self.transport.muted)  # the slider's, kept between files
-        if settings is not None and self.gpu_ready is not False:
-            self.renderer = Renderer(path, info, settings, find_sdk_dir(None),
-                                     lambda kind, *values: self.queue.put(("render", kind, values)), self.keyframes)
+        if settings is not None:
+            self._start_renderer(settings)
         self._update_layers()
         self.transport.set_media(self._total(), float(info.frame_rate))
-        self.transport.grid()
+        if self.fullscreen:
+            self._flash_controls()  # over the picture, hiding at rest
+        else:
+            self.transport.grid()
         threading.Thread(target=self._source_thumbnail_worker, args=(self.load_token, path, info),
                          daemon=True).start()
+
+    def _start_renderer(self, settings: RenderSettings) -> None:
+        """Start upscaling the open video with `settings` (valid ones), unless FSR 4 cannot start here."""
+        if self.gpu_ready is False:
+            return
+        sdk_dir = self._sdk_dir()
+        if sdk_dir is not None:
+            self.renderer = Renderer(self.input_path, self.info, settings, sdk_dir,
+                                     lambda kind, *values: self.queue.put(("render", kind, values)), self.keyframes)
+
+    def _sdk_dir(self) -> Path | None:
+        """The folder of the FSR DLLs, or None (said in the banner) when they are missing."""
+        try:
+            return find_sdk_dir(None)
+        except FileNotFoundError as error:
+            log.emit(f"[ui] error: {error}")
+            self._show_banner(f"FSR 4 cannot start: {self._first_line(error)}")
+            return None
+
+    def _why_not_upscaling(self) -> str:
+        """Why the open video has no renderer, for Play and Upscale."""
+        if self.gpu_ready is False:
+            return "FSR 4 cannot start on this machine (see the GPU status)"
+        try:
+            self._plan()
+        except ValueError as error:
+            return str(error)
+        return "the upscaler is not running (see the log)"
 
     def _source_thumbnail_worker(self, token: int, path: Path, info: MediaInfo) -> None:
         usage.lower_current_thread()
@@ -1227,6 +1301,8 @@ class App:
     def _total(self) -> int:
         if self.renderer is not None:
             return self.renderer.timeline.total
+        if self.player is not None:
+            return self.player.total
         return (self.info.frame_count or 1) if self.info is not None else 1
 
     # ---- playback -------------------------------------------------------------------------------
@@ -1313,6 +1389,8 @@ class App:
                 self.sidebar.grid()
             if self.log_visible:
                 self.log_panel.grid()
+            if self.banner_label.cget("text"):
+                self.banner.grid()  # a message that came during full screen waited for the window
             self.main.configure(padding=(px(4), px(4), px(20), px(6)))
         self.view.set_fullscreen(self.fullscreen)
         self.transport.set_fullscreen(self.fullscreen)
@@ -1332,7 +1410,13 @@ class App:
         self.view.configure(cursor="")
         if self.fullscreen:
             self.root.update_idletasks()
-            self.screen.enter()
+            try:
+                self.screen.enter()
+            except OSError as error:
+                log.emit(f"[ui] error: {error}")
+                self.toggle_fullscreen()  # back to the window with all its controls
+                self._show_banner(f"Full screen is unavailable: {self._first_line(error)}")
+                return
         self._repaint_everything()
         if self.fullscreen:
             self._rest_later()
@@ -1435,15 +1519,15 @@ class App:
         except ValueError as error:
             self._show_banner(str(error))
             return
-        if plan.output.resolve() == self.input_path.resolve():
-            self._show_banner("The output would overwrite the input; choose another name.")
+        if plan.output.exists() and plan.output != self.output_confirmed and not messagebox.askyesno(
+                APP_NAME, f"{plan.output.name} already exists. Replace it?", icon="warning", parent=self.root):
             return
         self._hide_banner()
         if plan.image_mode:
             self._start_image(self._options())
             return
         if self.renderer is None:
-            self._show_banner("The upscaler is not available on this machine (see the GPU status).")
+            self._show_banner(f"Cannot upscale: {self._why_not_upscaling()}.")
             return
         if self._settings_job is not None:
             self.root.after_cancel(self._settings_job)
@@ -1470,6 +1554,7 @@ class App:
             self.renderer.set_batch(False)
             self._update_layers()
             self.renderer.want_live = False
+            self.root.title(APP_NAME)
             done = self.renderer.timeline.ready_frames() / max(1, self._total())
             self.status_var.set(f"Stopped at {done:.0%} upscaled · Upscale carries on from there")
             self._refresh()
@@ -1529,11 +1614,29 @@ class App:
         self.log_button.configure(text="Hide log" if self.log_visible else "Show log")
         self._repaint_everything()
 
+    def _close_requested(self) -> None:
+        """The window's close button: a whole-file upscale in progress would be lost, so ask first."""
+        if self.batch and not self.saving and not messagebox.askyesno(
+                APP_NAME, "The video is still being upscaled. Close the window and lose that work?",
+                icon="warning", parent=self.root):
+            return
+        self.close()
+
     def close(self) -> None:
+        """Close the window; a save in progress (or an image being upscaled) finishes first."""
+        if self.closing:
+            return  # already waiting for it
+        self.closing = True
         if self.image_running:
             self.image_cancel.set()
+        if self.saving:
+            self.status_var.set("Closing once the video is saved…")
+        self._close_when_done()
+
+    def _close_when_done(self) -> None:
         if self.worker is not None and self.worker.is_alive():
-            self.worker.join(timeout=30)
+            self.root.after(POLL_MS, self._close_when_done)  # the window keeps painting meanwhile
+            return
         try:
             self._close_media()
             if self.drop is not None:
@@ -1644,9 +1747,7 @@ class App:
             self.root.after(MACHINE_REFRESH_MS, self._show_machine)
 
     def _on_drop(self, paths: list[str]) -> None:
-        if paths:
-            self.load(Path(paths[0]))
-        if len(paths) > 1:
+        if paths and self.load(Path(paths[0])) and len(paths) > 1:
             self._show_banner(f"Opened {Path(paths[0]).name}; drop one file at a time.")
 
     def _on_loaded(self, token: int, path: Path, info: MediaInfo, image: np.ndarray | None) -> None:
@@ -1659,9 +1760,10 @@ class App:
             settings = self._render_settings()
             self.view.set_media((info.width, info.height), settings.output_size if settings else (info.width, info.height))
             self.image_source = image
-            if self.gpu_ready is not False:
+            sdk_dir = self._sdk_dir() if self.gpu_ready is not False else None
+            if sdk_dir is not None:
                 self.image_previewer = ImagePreviewer(
-                    path, find_sdk_dir(None), lambda kind, *values: self.queue.put(("preview", token, kind, values)))
+                    path, sdk_dir, lambda kind, *values: self.queue.put(("preview", token, kind, values)))
             self._update_layers()
             self.status_var.set("Ready · press Upscale or Ctrl+Enter to save")
         else:
@@ -1720,6 +1822,7 @@ class App:
                 self.batch = False
                 renderer.set_batch(False)
                 self._update_layers()
+                self.root.title(APP_NAME)
             if self.player.playing:
                 self.player.pause()
             self._show_banner(f"Upscaling stopped: {self._first_line(error)}")
@@ -1777,6 +1880,14 @@ class App:
                 self._flash_controls()
         elif kind == "notice":
             self._show_banner(values[0])
+        elif kind == "unplayable":
+            self._show_banner(f"Nothing to play yet: {self._why_not_upscaling()}.")
+        elif kind == "end":
+            # The video ends earlier than its estimated length: the renderer takes the real one (and says so).
+            if self.renderer is not None:
+                self.renderer.set_total(values[0])
+            else:
+                self.transport.set_total(values[0])
         elif kind == "error":
             self._show_banner(f"Playback stopped: {self._first_line(values[0])}")
 
@@ -1860,6 +1971,7 @@ class App:
             self.banner.grid()
 
     def _hide_banner(self) -> None:
+        self.banner_label.configure(text="")
         self.banner.grid_remove()
 
     def _clear_log(self) -> None:

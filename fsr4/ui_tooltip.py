@@ -5,6 +5,7 @@ import tkinter as tk
 from typing import Callable
 
 from .ui_theme import Theme
+from .ui_window import work_area_at
 
 DELAY_MS = 450
 WRAP = 320
@@ -48,12 +49,13 @@ class Tooltip:
         label.pack(padx=1, pady=1)
         window.update_idletasks()
         width, height = window.winfo_reqwidth(), window.winfo_reqheight()
-        x = self.widget.winfo_pointerx() + px(12)
-        y = self.widget.winfo_rooty() + self.widget.winfo_height() + px(6)
-        screen_width, screen_height = window.winfo_screenwidth(), window.winfo_screenheight()
-        x = max(0, min(x, screen_width - width - px(4)))
-        if y + height > screen_height - px(4):
-            y = self.widget.winfo_rooty() - height - px(6)
+        pointer_x, widget_y = self.widget.winfo_pointerx(), self.widget.winfo_rooty()
+        x, y = pointer_x + px(12), widget_y + self.widget.winfo_height() + px(6)
+        # Kept on the monitor the widget is on (a second monitor's coordinates may be negative).
+        left, top, area_width, area_height = work_area_at(pointer_x, widget_y)
+        x = max(left, min(x, left + area_width - width - px(4)))
+        if y + height > top + area_height - px(4):
+            y = widget_y - height - px(6)
         window.wm_geometry(f"+{x}+{y}")
         self._window = window
 

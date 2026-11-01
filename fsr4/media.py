@@ -24,6 +24,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from fractions import Fraction
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 
@@ -50,12 +51,18 @@ ENCODER_LIMITS = {"amf": ((384, 128), (8192, 4352)), "av1_amf": ((320, 128), (81
                   "h264_amf": ((96, 66), (4096, 4096))}
 ENCODER_NAMES = {"amf": "HEVC on the GPU", "av1_amf": "AV1 on the GPU", "h264_amf": "H.264 on the GPU",
                  "x264": "x264", "x265": "x265", "png": "PNG"}
+# Image formats that keep transparency, with the pixel format that holds it, and the quality of lossy ones
+# (ffmpeg's default JPEG quality loses more than the upscaler gains).
+ALPHA_PIXEL_FORMATS = {".png": "rgba", ".tif": "rgba", ".tiff": "rgba", ".webp": "yuva420p"}
+IMAGE_QUALITY = {".jpg": ["-q:v", "2"], ".jpeg": ["-q:v", "2"], ".webp": ["-quality", "95"]}
 
 # Audio codecs an MP4/MOV file holds and every common player decodes: these are copied, the rest re-encoded.
 MP4_AUDIO_COPY = frozenset({"aac", "mp3", "ac3", "eac3", "alac"})
 COPY_ANY_AUDIO_SUFFIXES = frozenset({".mkv"})
 AAC_KBPS_PER_CHANNEL = 96
 HD_HEIGHT = 720
+# Pixel shapes seen in real video run from 8:9 (4:3 NTSC DVD) to 2:1; outside this the tag is broken.
+PIXEL_ASPECT_RANGE = (Fraction(1, 4), Fraction(4))
 STDERR_LINES = 40
 # Containers whose demuxer seeks to a keyframe before the requested time (they carry an index). Others
 # (MPEG-TS/PS, FLV, Ogg, raw streams) can land on a frame that does not decode, so they get a keyframe index.
@@ -64,6 +71,7 @@ SEEK_MARGIN_SECONDS = 1.0
 KEYFRAME_SLACK_SECONDS = 0.25
 SEEK_ATTEMPTS = 3
 FIRST_FRAME_TIMEOUT = 20.0
+LAST_FRAME_SEARCH_SECONDS = 2.0
 _CREATE_NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 _SHOWINFO_TIME = re.compile(r"Parsed_showinfo.*\bn:\s*0\b.*\bpts_time:\s*(-?[\d.]+)")
 _decode_errors_reported: set[Path] = set()
@@ -79,7 +87,8 @@ def tool_path(name: str) -> str:
             return str(bundled)
     found = shutil.which(name)
     if found is None:
-        raise FileNotFoundError(f"{name} not found on PATH; install ffmpeg (https://ffmpeg.org) or put {name}.exe next to the exe")
+        raise FileNotFoundError(f"{name} not found on PATH; install ffmpeg (winget install Gyan.FFmpeg.Essentials, "
+                                f"then open a new window) or put {name}.exe next to the exe")
     return found
 
 
@@ -87,11 +96,52 @@ def is_image(path: Path) -> bool:
     return path.suffix.lower() in IMAGE_SUFFIXES
 
 
+def file_argument(path: Path) -> str:
+    """`path` as ffmpeg and ffprobe take it: absolute, so a name starting with '-' is not read as an option."""
+    return str(path.absolute())
+
+
+def partial_path(path: Path) -> Path:
+    """Where `path` is written until it is complete (same suffix: ffmpeg picks the format from it). Renaming it
+    into place at the end means a failed or cancelled write never replaces a good file."""
+    return path.with_name(f"{path.stem}.partial{path.suffix}")
+
+
+def _move_into_place(partial: Path, path: Path) -> None:
+    try:
+        os.replace(partial, path)
+    except OSError as error:
+        raise RuntimeError(f"cannot replace {path} (is it open in another program?); the result is kept as "
+                           f"{partial.name}") from error
+
+
+def _remove_partial(path: Path) -> None:
+    """Delete an unfinished output after a failure; logged rather than raised over the error being reported."""
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as error:
+        log.emit(f"[media] could not delete {path}: {error}")
+
+
 def _parse_rate(text: str | None) -> Fraction:
     if not text or "/" not in text:
         return Fraction(0)
     numerator, denominator = (int(part) for part in text.split("/"))
     return Fraction(numerator, denominator) if numerator > 0 and denominator > 0 else Fraction(0)
+
+
+def _parse_aspect(text: str | None, path: Path) -> Fraction:
+    """A sample aspect ratio ("32:27"): 1 when unknown ("0:1", "N/A") or implausible (logged)."""
+    if not text or ":" not in text:
+        return Fraction(1)
+    numerator, denominator = (int(part) for part in text.split(":"))
+    if numerator <= 0 or denominator <= 0:
+        return Fraction(1)
+    aspect = Fraction(numerator, denominator)
+    if not PIXEL_ASPECT_RANGE[0] <= aspect <= PIXEL_ASPECT_RANGE[1]:
+        log.emit(f"[media] {path.name}: ignoring its pixel shape {text} (implausible); square pixels are used")
+        return Fraction(1)
+    return aspect
 
 
 def _parse_seconds(text) -> float | None:
@@ -132,10 +182,17 @@ class MediaInfo:
     audio: list[AudioStream] = field(default_factory=list)
     container: str = ""
     start_time: float = 0.0
+    pixel_aspect: Fraction = Fraction(1)
 
     @property
     def has_audio(self) -> bool:
         return bool(self.audio)
+
+    @property
+    def display_width(self) -> float:
+        """The width players show the picture at: an anamorphic video (a DVD) stores pixels wider or narrower
+        than they are tall (`pixel_aspect`, the sample aspect ratio)."""
+        return self.width * float(self.pixel_aspect)
 
     @property
     def frame_time_ms(self) -> float:
@@ -160,15 +217,25 @@ def probe(path: Path) -> MediaInfo:
     command = [
         tool_path("ffprobe"), "-v", "error", "-show_entries",
         "stream=index,codec_type,codec_name,width,height,r_frame_rate,avg_frame_rate,nb_frames,duration,channels,"
-        "color_space,pix_fmt,start_time:stream_disposition=attached_pic:stream_side_data=rotation"
+        "color_space,pix_fmt,start_time,sample_aspect_ratio:stream_disposition=attached_pic"
+        ":stream_side_data=rotation"
         ":format=duration,format_name,start_time",
-        "-of", "json", str(path),
+        "-of", "json", file_argument(path),
     ]
     completed = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace",
                                creationflags=_CREATE_NO_WINDOW)
     if completed.returncode != 0:
         raise RuntimeError(f"not a video or image ffmpeg can read ({ffmpeg_reason(completed.stderr, path)})")
     return parse_probe(json.loads(completed.stdout), path)
+
+
+def ffmpeg_failure(what: str, stderr: str) -> RuntimeError:
+    """A failed ffmpeg run as an error. An option it does not know means an ffmpeg older than this tool needs
+    (`-fps_mode` came with 5.1, the AV1 GPU encoder with 6.0): say so."""
+    text = stderr.strip()
+    if "Unrecognized option" in text:
+        text += " (this ffmpeg is too old: version 5.1 or later is needed, 6.0 or later for the AV1 GPU encoder)"
+    return RuntimeError(f"{what}: {text}")
 
 
 def ffmpeg_reason(stderr: str, path: Path | None = None) -> str:
@@ -178,7 +245,7 @@ def ffmpeg_reason(stderr: str, path: Path | None = None) -> str:
         return "no error message"
     reason = re.sub(r"^\[[^\]]*@ [0-9a-fA-Fx]+\]\s*", "", lines[-1])
     if path is not None:
-        reason = reason.replace(f"{path}: ", "")
+        reason = reason.replace(f"{file_argument(path)}: ", "").replace(f"{path}: ", "")
     return reason
 
 
@@ -204,9 +271,12 @@ def parse_probe(data: dict, path: Path) -> MediaInfo:
         if "rotation" in side_data:
             rotation = int(side_data["rotation"]) % 360
     width, height = int(video["width"]), int(video["height"])
+    # Image viewers ignore a picture's pixel shape (a PNG's pHYs), so images keep square pixels.
+    pixel_aspect = Fraction(1) if is_image(path) else _parse_aspect(video.get("sample_aspect_ratio"), path)
     if rotation in (90, 270):
         # ffmpeg rotates the decoded frames upright, so the RGBA frames have the swapped size.
         width, height = height, width
+        pixel_aspect = 1 / pixel_aspect
     color_space = video.get("color_space")
     audio_streams = [stream for stream in streams if stream.get("codec_type") == "audio"]
     start_time = _parse_seconds(data.get("format", {}).get("start_time"))
@@ -220,7 +290,7 @@ def parse_probe(data: dict, path: Path) -> MediaInfo:
         audio=[AudioStream(position, stream.get("codec_name", "?"), int(stream.get("channels") or 2),
                            _parse_seconds(stream.get("start_time")) or start_time)
                for position, stream in enumerate(audio_streams)],
-        container=data.get("format", {}).get("format_name", ""), start_time=start_time)
+        container=data.get("format", {}).get("format_name", ""), start_time=start_time, pixel_aspect=pixel_aspect)
 
 
 def _popen(command: list[str], background: bool = False, **kwargs) -> subprocess.Popen:
@@ -294,15 +364,21 @@ def seek_position(info: MediaInfo, start_frame: int, keyframes: list[float] | No
     return position if position > 0 else None
 
 
-def scan_keyframes(path: Path, info: MediaInfo) -> list[float]:
-    """Absolute timestamps of the video stream's keyframes, from its packets (no decoding)."""
+def scan_keyframes(path: Path, info: MediaInfo,
+                   on_start: Callable[[subprocess.Popen], None] | None = None) -> list[float]:
+    """Absolute timestamps of the video stream's keyframes, from its packets (no decoding). `on_start` gets the
+    ffprobe process, to kill it when the scan is no longer wanted."""
     command = [tool_path("ffprobe"), "-v", "error", "-select_streams", str(info.stream_index),
-               "-show_entries", "packet=pts_time,dts_time,flags", "-of", "csv=p=0", str(path)]
-    completed = subprocess.run(command, capture_output=True, text=True, creationflags=_CREATE_NO_WINDOW)
-    if completed.returncode != 0:
-        raise RuntimeError(f"cannot index the keyframes of {path.name}: {ffmpeg_reason(completed.stderr, path)}")
+               "-show_entries", "packet=pts_time,dts_time,flags", "-of", "csv=p=0", file_argument(path)]
+    process = _popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
+                     errors="replace")
+    if on_start is not None:
+        on_start(process)
+    stdout, stderr = process.communicate()
+    if process.returncode != 0:
+        raise RuntimeError(f"cannot index the keyframes of {path.name}: {ffmpeg_reason(stderr, path)}")
     keyframes = []
-    for line in completed.stdout.splitlines():
+    for line in stdout.splitlines():
         parts = line.split(",")
         if len(parts) < 3 or "K" not in parts[2]:
             continue
@@ -313,11 +389,16 @@ def scan_keyframes(path: Path, info: MediaInfo) -> list[float]:
     return keyframes
 
 
+class IndexClosed(RuntimeError):
+    """The keyframe index was closed (its file is being closed) while a reader needed it."""
+
+
 class KeyframeIndex:
     """The keyframes of a file whose container does not seek reliably, scanned on a background thread.
 
     `get()` returns None for containers with their own index (ffmpeg's seeking is enough), else waits for the
-    scan and returns the keyframe timestamps for `FrameReader(keyframes=...)`.
+    scan and returns the keyframe timestamps for `FrameReader(keyframes=...)`. `close()` stops the scan and
+    makes `get()` raise IndexClosed, so closing a file never waits for a scan of the whole file.
     """
 
     def __init__(self, path: Path, info: MediaInfo):
@@ -326,21 +407,42 @@ class KeyframeIndex:
         self._ready = threading.Event()
         self._keyframes: list[float] | None = None
         self._error: Exception | None = None
+        self._lock = threading.Lock()
+        self._process: subprocess.Popen | None = None
+        self._closed = False
         if info.seeks_by_index or is_image(path):
             self._ready.set()
         else:
-            threading.Thread(target=self._scan, daemon=True).start()
+            threading.Thread(target=self._scan, name="keyframes", daemon=True).start()
 
     def _scan(self) -> None:
         try:
-            self._keyframes = scan_keyframes(self.path, self.info)
+            self._keyframes = scan_keyframes(self.path, self.info, self._started)
         except Exception as error:  # noqa: BLE001 - handed to whoever needs the index
             self._error = error
         finally:
             self._ready.set()
 
+    def _started(self, process: subprocess.Popen) -> None:
+        with self._lock:
+            self._process = process
+            closed = self._closed
+        if closed:
+            process.kill()
+
+    def close(self) -> None:
+        """Stop a scan still running and wake whoever waits in `get` (it raises IndexClosed)."""
+        with self._lock:
+            self._closed = True
+            process = self._process
+        if process is not None and process.poll() is None:
+            process.kill()
+        self._ready.set()
+
     def get(self) -> list[float] | None:
         self._ready.wait()
+        if self._closed:
+            raise IndexClosed(f"{self.path.name} was closed")
         if self._error is not None:
             raise RuntimeError(f"cannot seek in {self.path.name}: {self._error}") from self._error
         return self._keyframes
@@ -417,7 +519,7 @@ class FrameReader:
         if scale:
             filters.append("scale=" + ":".join(scale))
         filters.append(f"format={self.pixel_format}")
-        command += ["-i", str(self.path), "-map", f"0:{info.stream_index}", "-an", "-sn", "-dn",
+        command += ["-i", file_argument(self.path), "-map", f"0:{info.stream_index}", "-an", "-sn", "-dn",
                     "-vf", ",".join(filters)]
         if self.timeline:
             command += ["-fps_mode", "passthrough"]
@@ -494,7 +596,7 @@ class FrameReader:
         code = self.process.wait()
         stderr = self._stderr.text()
         if code != 0:
-            raise RuntimeError(f"ffmpeg decode failed ({code}): {stderr.strip()}")
+            raise ffmpeg_failure(f"ffmpeg decode failed ({code})", stderr)
         self._report_decode_errors()
 
     def stop(self) -> None:
@@ -567,8 +669,9 @@ def codec_tag_arguments(encoder: str, output: Path) -> list[str]:
 class FrameWriter:
     """Feeds RGBA uint8 frames to ffmpeg, which encodes them and adds the source's audio tracks.
 
-    `gop` sets the keyframe interval (pieces use a short one so playback can seek inside them quickly);
-    `background` runs the encoder at the Speed setting's priority and thread count.
+    The file is written as `partial_path(path)` and renamed to `path` by `close` once the encoder succeeded;
+    `abort` and a failed `close` delete it. `gop` sets the keyframe interval (pieces use a short one so playback
+    can seek inside them quickly); `background` runs the encoder at the Speed setting's priority and thread count.
     """
 
     def __init__(self, path: Path, width: int, height: int, frame_rate: Fraction, encoder: str,
@@ -577,6 +680,7 @@ class FrameWriter:
         if encoder not in ENCODERS:
             raise ValueError(f"unknown encoder {encoder}; choose from {', '.join(ENCODERS)}")
         self.path = path
+        self.partial = partial_path(path)
         self.width = width
         self.height = height
         self.frame_bytes = width * height * 4
@@ -588,7 +692,7 @@ class FrameWriter:
         if audio_source is not None and tracks:
             if audio_seconds is not None:
                 command += ["-t", f"{audio_seconds:.3f}"]
-            command += ["-i", str(audio_source), "-map", "0:v:0"] + audio_arguments(tracks, path)
+            command += ["-i", file_argument(audio_source), "-map", "0:v:0"] + audio_arguments(tracks, path)
         command += ENCODERS[encoder]
         if gop is not None:
             command += ["-g", str(gop)]
@@ -600,7 +704,7 @@ class FrameWriter:
             command += ["-threads", str(threads)]
         if encoder != "png":
             command += color_arguments(height)
-        command.append(str(path))
+        command.append(file_argument(self.partial))
         self.process = _popen(command, background=background, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
         self._stderr = _StderrTail(self.process.stderr)
 
@@ -611,11 +715,11 @@ class FrameWriter:
             self.process.stdin.write(memoryview(frame).cast("B"))
         except (BrokenPipeError, OSError) as error:
             self.process.wait()
-            raise RuntimeError(f"ffmpeg encoder stopped: {self._stderr.text()}") from error
+            raise ffmpeg_failure("ffmpeg encoder stopped", self._stderr.text()) from error
         self.frames += 1
 
     def close(self) -> None:
-        """Finish the stream and wait for the encoder; raises when ffmpeg failed."""
+        """Finish the stream, wait for the encoder and move the file into place; raises when ffmpeg failed."""
         if not self.process.stdin.closed:
             try:
                 self.process.stdin.close()
@@ -624,10 +728,12 @@ class FrameWriter:
         code = self.process.wait()
         stderr = self._stderr.text()
         if code != 0:
-            raise RuntimeError(f"ffmpeg encode failed ({code}): {stderr}")
+            _remove_partial(self.partial)
+            raise ffmpeg_failure(f"ffmpeg encode failed ({code})", stderr)
+        _move_into_place(self.partial, self.path)
 
     def abort(self) -> None:
-        """Kill the encoder without waiting for it (after an error elsewhere)."""
+        """Kill the encoder without waiting for it (after an error elsewhere) and delete what it wrote."""
         self.process.kill()
         try:
             self.process.stdin.close()
@@ -635,6 +741,7 @@ class FrameWriter:
             pass  # killed mid-write; nothing left to flush
         self.process.wait()
         self._stderr.text()
+        _remove_partial(self.partial)
 
 
 def concat_list(paths: list[Path]) -> str:
@@ -649,35 +756,70 @@ def concat_list(paths: list[Path]) -> str:
 def join_pieces(pieces: list[Path], output: Path, encoder: str, audio_source: Path | None,
                 audio: list[AudioStream], seconds: float | None = None) -> None:
     """Join separately encoded pieces of one stream into `output` without re-encoding, adding the source's
-    audio from its start (cut to `seconds` when the pieces cover only the beginning)."""
+    audio from its start (cut to `seconds` when the pieces cover only the beginning). Written through
+    `partial_path(output)`, so a failed join leaves an existing `output` untouched."""
     if not pieces:
         raise ValueError("nothing to join")
     listing = pieces[0].parent / f"{output.stem}.join.txt"
-    listing.write_text(concat_list(pieces), encoding="utf-8")
+    partial = partial_path(output)
     command = [tool_path("ffmpeg"), "-v", "error", "-nostdin", "-y", "-f", "concat", "-safe", "0",
-               "-i", str(listing)]
+               "-i", file_argument(listing)]
     if audio_source is not None and audio:
-        command += ["-i", str(audio_source), "-map", "0:v:0"] + audio_arguments(audio, output)
+        command += ["-i", file_argument(audio_source), "-map", "0:v:0"] + audio_arguments(audio, output)
     command += ["-c:v", "copy"] + codec_tag_arguments(encoder, output)
     if seconds is not None:
         command += ["-t", f"{seconds:.6f}"]
-    command.append(str(output))
-    completed = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                               creationflags=_CREATE_NO_WINDOW | usage.background_creation_flags())
-    listing.unlink()
+    command.append(file_argument(partial))
+    listing.write_text(concat_list(pieces), encoding="utf-8")
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                   creationflags=_CREATE_NO_WINDOW | usage.background_creation_flags())
+    finally:
+        listing.unlink(missing_ok=True)
     if completed.returncode != 0:
+        _remove_partial(partial)
         raise RuntimeError(f"ffmpeg could not join the pieces into {output.name}: {completed.stderr.strip()}")
+    _move_into_place(partial, output)
+
+
+class PastEnd(RuntimeError):
+    """The video ends before frame `frame` of `path`: its frame count is an estimate until a read reaches the end."""
+
+    def __init__(self, path: Path, frame: int):
+        super().__init__(f"{path.name} ends before frame {frame}")
+        self.path = path
+        self.frame = frame
 
 
 def read_frame(path: Path, info: MediaInfo, frame: int = 0, keyframes: list[float] | None = None,
                pixel_format: str = "rgba") -> np.ndarray:
-    """Decode frame `frame` of `path` (the first picture of an image)."""
+    """Decode frame `frame` of `path` (the first picture of an image); raises PastEnd when the video ends before."""
     reader = FrameReader(path, info, max_frames=1, start_frame=frame, keyframes=keyframes,
                          pixel_format=pixel_format, timeline=not is_image(path))
     frames = [picture.copy() for picture in reader]
     if not frames:
-        raise RuntimeError(f"ffmpeg decoded no frame from {path}" + (f" at frame {frame}" if frame else ""))
+        if frame > 0:
+            raise PastEnd(path, frame)
+        raise RuntimeError(f"ffmpeg decoded no frame from {path}")
     return frames[0]
+
+
+def last_frame_before(path: Path, info: MediaInfo, before: int, keyframes: list[float] | None = None) -> int:
+    """The number of the last frame of a video that ends before frame `before` (see PastEnd): reads the frames
+    before it, from further back each time until some decode (from the start at worst)."""
+    back = max(1, int(round(float(info.frame_rate) * LAST_FRAME_SEARCH_SECONDS)))
+    while before > 0:
+        start = max(0, before - back)
+        # Only their count matters: tiny frames keep the pipe from carrying full pictures.
+        reader = FrameReader(path, info, max_frames=before - start, start_frame=start, keyframes=keyframes,
+                             size=(16, 16))
+        frames = sum(1 for _ in reader)
+        if frames:
+            return start + frames - 1
+        if start == 0:
+            break
+        back *= 4
+    raise RuntimeError(f"ffmpeg decoded no frame from {path}")
 
 
 def read_thumbnail(path: Path, info: MediaInfo, frame: int, height: int) -> np.ndarray | None:
@@ -686,7 +828,7 @@ def read_thumbnail(path: Path, info: MediaInfo, frame: int, height: int) -> np.n
     width = max(2, 2 * int(round(info.width * height / info.height / 2)))
     scale = f"scale={width}:{height}:flags=area" + (":in_color_matrix=bt709" if info.needs_hd_matrix else "")
     command = [tool_path("ffmpeg"), "-v", "error", "-nostdin", "-noaccurate_seek",
-               "-ss", f"{info.frame_seconds(frame):.6f}", "-skip_frame", "nokey", "-i", str(path),
+               "-ss", f"{info.frame_seconds(frame):.6f}", "-skip_frame", "nokey", "-i", file_argument(path),
                "-map", f"0:{info.stream_index}", "-an", "-sn", "-dn", "-frames:v", "1", "-vf", scale,
                "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
     completed = subprocess.run(command, capture_output=True,
@@ -704,13 +846,29 @@ def read_image(path: Path) -> np.ndarray:
     return read_frame(path, probe(path))
 
 
-def write_image(path: Path, frame: np.ndarray) -> None:
-    """Encode an RGBA uint8 array to an image file (format from the suffix)."""
+def write_image(path: Path, frame: np.ndarray, alpha_source: Path | None = None) -> None:
+    """Encode an RGBA uint8 array to an image file (format from the suffix), through `partial_path(path)`.
+
+    The frame's own alpha is dropped. With `alpha_source`, the transparency of that image (the picture that was
+    upscaled) is scaled to the frame's size and kept, in the formats that hold it (`ALPHA_PIXEL_FORMATS`).
+    """
     height, width = frame.shape[:2]
+    suffix = path.suffix.lower()
+    partial = partial_path(path)
     command = [tool_path("ffmpeg"), "-v", "error", "-nostdin", "-y",
-               "-f", "rawvideo", "-pix_fmt", "rgba", "-s", f"{width}x{height}", "-i", "-",
-               "-frames:v", "1", "-pix_fmt", "rgb24", str(path)]
+               "-f", "rawvideo", "-pix_fmt", "rgba", "-s", f"{width}x{height}", "-i", "-"]
+    pixel_format = "rgb24"
+    if alpha_source is not None and suffix in ALPHA_PIXEL_FORMATS:
+        command += ["-i", file_argument(alpha_source), "-filter_complex",
+                    f"[1:v]format=rgba,alphaextract,scale={width}:{height}:flags=bicubic[alpha];"
+                    f"[0:v][alpha]alphamerge[out]", "-map", "[out]"]
+        pixel_format = ALPHA_PIXEL_FORMATS[suffix]
+    # -update: one picture under exactly this name (the image muxer would read a '%' in it as a pattern).
+    command += ["-frames:v", "1", "-update", "1", "-pix_fmt", pixel_format] + IMAGE_QUALITY.get(suffix, [])
+    command.append(file_argument(partial))
     completed = subprocess.run(command, input=memoryview(np.ascontiguousarray(frame)).cast("B"),
                                capture_output=True, creationflags=_CREATE_NO_WINDOW)
     if completed.returncode != 0:
+        _remove_partial(partial)
         raise RuntimeError(f"ffmpeg could not write {path}: {completed.stderr.decode('utf-8', 'replace').strip()}")
+    _move_into_place(partial, path)

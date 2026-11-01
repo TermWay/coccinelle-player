@@ -63,6 +63,9 @@ class Buffer:
         view = memoryview(data).cast("B")
         if view.nbytes > self.size:
             raise ValueError(f"{view.nbytes} bytes do not fit in a {self.size}-byte buffer")
+        if view.readonly:  # bytes, a read-only array: ctypes takes the address of writable buffers only
+            ctypes.memmove(self.mapped, view.tobytes(), view.nbytes)
+            return
         ctypes.memmove(self.mapped, (ctypes.c_char * view.nbytes).from_buffer(view), view.nbytes)
 
     def read_into(self, destination) -> None:
@@ -96,6 +99,7 @@ class Gpu:
         self.fence = self._create_fence()
         self._images: list[Image] = []
         self._buffers: list[Buffer] = []
+        self.lost = False
         if verbose:
             log.emit(f"[gpu] {self.device_name}, Vulkan {self.api_version_text}, driver {self.driver_version_text}")
             log.emit(f"[gpu] device extensions enabled: {', '.join(self.enabled_extensions) or 'none'}")
@@ -340,7 +344,20 @@ class Gpu:
         self._buffers.remove(buffer)
 
     def wait_idle(self) -> None:
-        vk.check(vk.vkDeviceWaitIdle(self.device), "vkDeviceWaitIdle")
+        """Wait for the device to finish before freeing what it uses. A failure (a device lost to a driver reset)
+        is logged, once, rather than raised: what the device holds must be freed all the same."""
+        if self.lost:
+            return
+        result = vk.vkDeviceWaitIdle(self.device)
+        if result != T.VK_SUCCESS:
+            self.lost = result == T.VK_ERROR_DEVICE_LOST
+            log.emit(f"[gpu] {vk.VkError(result, 'vkDeviceWaitIdle')}; freeing its objects anyway")
+
+    def is_lost(self) -> bool:
+        """Whether the device is gone (a driver reset): nothing runs on it any more, a new Gpu is needed."""
+        if not self.lost:
+            self.lost = vk.vkDeviceWaitIdle(self.device) == T.VK_ERROR_DEVICE_LOST
+        return self.lost
 
     # ---- commands -------------------------------------------------------------------------------
 
@@ -420,7 +437,7 @@ class Gpu:
         """Wait for the device and free everything created through this object."""
         if self.device is None:
             return
-        vk.check(vk.vkDeviceWaitIdle(self.device), "vkDeviceWaitIdle")
+        self.wait_idle()
         for buffer in self._buffers:
             vk.vkUnmapMemory(self.device, buffer.memory)
             vk.vkDestroyBuffer(self.device, buffer.handle, None)

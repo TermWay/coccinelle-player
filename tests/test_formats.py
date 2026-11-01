@@ -11,6 +11,7 @@ from pathlib import Path
 
 import numpy as np
 
+import needs
 from fsr4 import log, media
 
 WIDTH, HEIGHT, FRAMES, RATE = 96, 64, 20, 10
@@ -43,6 +44,7 @@ def probe_streams(path: Path) -> list[dict]:
     return json.loads(completed.stdout)["streams"]
 
 
+@needs.ffmpeg
 class FormatTest(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -214,6 +216,7 @@ class FormatTest(unittest.TestCase):
         self.assertGreater(green[1], 210)
 
 
+@needs.ffmpeg
 class SeekTest(unittest.TestCase):
     """A read that starts at frame n returns exactly the frames a read from the start numbers n, n+1, ...
 
@@ -321,6 +324,7 @@ class ArgumentTest(unittest.TestCase):
         self.assertEqual(media.guess_frame_rate(Fraction(0), Fraction(25)), Fraction(25))
         self.assertEqual(media.guess_frame_rate(Fraction(0), Fraction(0)), Fraction(30))
 
+    @needs.ffmpeg
     def test_unreadable_file_gives_a_plain_reason(self):
         stderr = ("[mov,mp4,m4a,3gp,3g2,mj2 @ 000002860cf942c0] moov atom not found\n"
                   "clips\\broken.mp4: Invalid data found when processing input\n")
@@ -333,6 +337,12 @@ class ArgumentTest(unittest.TestCase):
                 media.probe(broken)
             self.assertTrue(str(raised.exception).startswith("not a video or image ffmpeg can read ("))
             self.assertNotIn("@", str(raised.exception))
+
+    def test_an_old_ffmpeg_is_named(self):
+        error = media.ffmpeg_failure("ffmpeg decode failed (1)", "Unrecognized option 'fps_mode'.\n")
+        self.assertIn("version 5.1 or later is needed", str(error))
+        self.assertEqual(str(media.ffmpeg_failure("ffmpeg encode failed (1)", "Conversion failed!\n")),
+                         "ffmpeg encode failed (1): Conversion failed!")
 
     def test_every_listed_suffix_is_known(self):
         self.assertIn(".wmv", media.VIDEO_SUFFIXES)

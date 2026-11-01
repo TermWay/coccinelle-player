@@ -45,6 +45,7 @@ REFERENCE_FILTERS = {
     "lanczos": ("Lanczos", cv2.INTER_LANCZOS4),
 }
 MINIMAP_WIDTH = 180
+MINIMAP_MIN = 8
 SPINNER_FRAMES = 24
 DIVIDER_COLOR = (0xf5, 0xf4, 0xf4)
 OFF = "off"
@@ -121,30 +122,36 @@ class Gdi:
         gdi32 = self.gdi32
         font = gdi32.CreateFontW(-pixel_height, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 4, 0, family)
         dc = gdi32.CreateCompatibleDC(None)
-        if not font or not dc:
-            raise OSError("GDI could not create a font or a drawing context")
-        previous_font = gdi32.SelectObject(dc, font)
-        size = wintypes.SIZE()
-        gdi32.GetTextExtentPoint32W(dc, text, len(text), ctypes.byref(size))
-        width, height = max(1, size.cx + 2), max(1, size.cy)
-        bits = ctypes.c_void_p()
-        bitmap = gdi32.CreateDIBSection(dc, ctypes.byref(_bitmap_header(width, height)), 0, ctypes.byref(bits), None, 0)
-        if not bitmap:
-            raise OSError("GDI could not create a text bitmap")
-        previous_bitmap = gdi32.SelectObject(dc, bitmap)
-        ctypes.memset(bits, 0, width * height * 4)
-        gdi32.SetTextColor(dc, 0x00FFFFFF)
-        gdi32.SetBkMode(dc, 1)
-        gdi32.TextOutW(dc, 1, 0, text, len(text))
-        gdi32.GdiFlush()
-        data = np.frombuffer(ctypes.string_at(bits, width * height * 4), np.uint8).reshape(height, width, 4)
-        coverage = data[..., 1].astype(np.float32) / 255
-        gdi32.SelectObject(dc, previous_bitmap)
-        gdi32.DeleteObject(bitmap)
-        gdi32.SelectObject(dc, previous_font)
-        gdi32.DeleteObject(font)
-        gdi32.DeleteDC(dc)
-        return coverage
+        try:
+            if not font or not dc:
+                raise OSError("GDI could not create a font or a drawing context")
+            previous_font = gdi32.SelectObject(dc, font)
+            size = wintypes.SIZE()
+            gdi32.GetTextExtentPoint32W(dc, text, len(text), ctypes.byref(size))
+            width, height = max(1, size.cx + 2), max(1, size.cy)
+            bits = ctypes.c_void_p()
+            bitmap = gdi32.CreateDIBSection(dc, ctypes.byref(_bitmap_header(width, height)), 0, ctypes.byref(bits),
+                                            None, 0)
+            if not bitmap:
+                gdi32.SelectObject(dc, previous_font)
+                raise OSError("GDI could not create a text bitmap")
+            previous_bitmap = gdi32.SelectObject(dc, bitmap)
+            ctypes.memset(bits, 0, width * height * 4)
+            gdi32.SetTextColor(dc, 0x00FFFFFF)
+            gdi32.SetBkMode(dc, 1)
+            gdi32.TextOutW(dc, 1, 0, text, len(text))
+            gdi32.GdiFlush()
+            data = np.frombuffer(ctypes.string_at(bits, width * height * 4), np.uint8).reshape(height, width, 4)
+            coverage = data[..., 1].astype(np.float32) / 255
+            gdi32.SelectObject(dc, previous_bitmap)
+            gdi32.DeleteObject(bitmap)
+            gdi32.SelectObject(dc, previous_font)
+            return coverage
+        finally:
+            if dc:
+                gdi32.DeleteDC(dc)  # first: a font still selected into a DC cannot be deleted
+            if font:
+                gdi32.DeleteObject(font)
 
 
 _gdi: Gdi | None = None
@@ -236,6 +243,25 @@ class Geometry:
     @property
     def key(self) -> tuple:
         return self.view_size, self.output_size, self.fit, self.scale, self.region, self.shown
+
+
+def minimap_box(view_size: tuple[int, int], output_size: tuple[int, int],
+                px: Callable[[float], int]) -> tuple[int, int, int, int] | None:
+    """Where the minimap goes (left, top, right, bottom): bottom right, at most MINIMAP_WIDTH wide and a third of
+    the view, and within the view's height (a tall picture in a short view gets a narrower map). None when the
+    view has no room for a usable one."""
+    width, height = view_size
+    out_width, out_height = output_size
+    margin = px(12)
+    right, bottom = width - margin, height - margin
+    map_width = min(px(MINIMAP_WIDTH), width // 3)
+    map_height = max(1, int(map_width * out_height / out_width))
+    room = bottom - margin
+    if map_height > room:
+        map_width, map_height = int(map_width * room / map_height), room
+    if map_width < MINIMAP_MIN or map_height < MINIMAP_MIN or right - map_width < 2:
+        return None
+    return right - map_width, bottom - map_height, right, bottom
 
 
 def compute_geometry(view_size: tuple[int, int], output_size: tuple[int, int], zoom,
@@ -438,6 +464,7 @@ class VideoView(tk.Frame):
         self._cache: dict[str, tuple] = {}
         self._geometry: Geometry | None = None
         self._minimap_box: tuple[int, int, int, int] | None = None
+        self._next_minimap_box: tuple[int, int, int, int] | None = None
         self._drag: str | None = None
         self._pill_pressed: str | None = None
         self._pan_origin: tuple[int, int, float, float] | None = None
@@ -643,7 +670,8 @@ class VideoView(tk.Frame):
             if self._canvas is None or self._canvas.shape[:2] != (height, width):
                 self._canvas = np.empty((height, width, 4), np.uint8)
             canvas = self._canvas
-            self._minimap_box = None
+            # The Tk thread reads the box while the player thread composes: it keeps the last one until then.
+            self._next_minimap_box = None
             if self.comparing:
                 self._compose_compare(canvas)
             else:
@@ -652,6 +680,7 @@ class VideoView(tk.Frame):
                     self._compose_message(canvas)
                 else:
                     self._compose_empty(canvas)
+            self._minimap_box = self._next_minimap_box
             if self.spinner:
                 sprite = self._spinner_frames[self._spinner_index]
                 blend(canvas, sprite, (width - sprite.shape[1]) // 2, (height - sprite.shape[0]) // 2)
@@ -773,14 +802,14 @@ class VideoView(tk.Frame):
 
     def _draw_minimap(self, canvas: np.ndarray, geometry: Geometry, source: np.ndarray) -> None:
         px = self.theme.px
-        width, height = self._view_size
-        out_width, out_height = geometry.output_size
-        map_width = min(px(MINIMAP_WIDTH), width // 3)
-        map_height = max(1, int(map_width * out_height / out_width))
+        out_width, _ = geometry.output_size
+        box = minimap_box(self._view_size, geometry.output_size, px)
+        if box is None:
+            return
+        map_left, map_top, right, bottom = box
+        map_width, map_height = right - map_left, bottom - map_top
         thumbnail = self._cached("minimap", (map_width, map_height, id(source)),
                                  lambda: cv2.resize(source, (map_width, map_height), interpolation=cv2.INTER_AREA))
-        right, bottom = width - px(12), height - px(12)
-        map_left, map_top = right - map_width, bottom - map_height
         fill(canvas, map_left - 2, map_top - 2, right + 2, bottom + 2, self.colors["border_hover"])
         canvas[map_top:bottom, map_left:right, :3] = thumbnail[..., :3]
         scale = map_width / out_width
@@ -794,7 +823,7 @@ class VideoView(tk.Frame):
         fill(canvas, box_left, box_bottom - thickness, box_right, box_bottom, accent)
         fill(canvas, box_left, box_top, box_left + thickness, box_bottom, accent)
         fill(canvas, box_right - thickness, box_top, box_right, box_bottom, accent)
-        self._minimap_box = (map_left, map_top, right, bottom)
+        self._next_minimap_box = box
 
     def _compose_message(self, canvas: np.ndarray) -> None:
         width, height = self._view_size
@@ -985,7 +1014,10 @@ class VideoView(tk.Frame):
         self.redraw()
 
     def _move_to_minimap(self, x: int, y: int) -> None:
-        left, top, right, _ = self._minimap_box
+        box = self._minimap_box
+        if box is None:
+            return  # zoomed out meanwhile, or no room left for the map
+        left, top, right, _ = box
         scale = (right - left) / self.output_size[0]
         with self._lock:
             self.center = ((x - left) / scale, (y - top) / scale)

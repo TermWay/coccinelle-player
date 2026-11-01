@@ -37,6 +37,20 @@ class PresetTest(unittest.TestCase):
         again.delete("Crisp")
         self.assertEqual(PresetStore(self.path).user, [])
 
+    def test_two_windows_keep_each_others_presets(self):
+        first, second = PresetStore(self.path), PresetStore(self.path)
+        first.save("Mine", RenderSettings((1, 1), sharpness=0.2))
+        second.save("Theirs", RenderSettings((1, 1), flow="zero"))
+        self.assertEqual([preset.name for preset in PresetStore(self.path).user], ["Mine", "Theirs"])
+        first.delete("Mine")
+        self.assertEqual([preset.name for preset in first.user], ["Theirs"], "the other window's preset stays")
+        # The file turned unreadable meanwhile: it is kept aside, as when it could not be read at the start, and
+        # the window writes the presets it knew.
+        self.path.write_text("{broken", encoding="utf-8")
+        second.save("Later", RenderSettings((1, 1)))
+        self.assertTrue(self.path.with_suffix(".unreadable").exists())
+        self.assertEqual([preset.name for preset in PresetStore(self.path).user], ["Mine", "Theirs", "Later"])
+
     def test_names(self):
         store = PresetStore(self.path)
         self.assertIsNotNone(store.check_name("  "))

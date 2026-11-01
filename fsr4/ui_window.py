@@ -37,6 +37,7 @@ _MonitorEnumProc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HMONITOR, wintypes
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 for _function, _restype, _argtypes in (
         (user32.MonitorFromWindow, wintypes.HMONITOR, [wintypes.HWND, wintypes.DWORD]),
+        (user32.MonitorFromPoint, wintypes.HMONITOR, [wintypes.POINT, wintypes.DWORD]),
         (user32.GetMonitorInfoW, wintypes.BOOL, [wintypes.HMONITOR, ctypes.POINTER(MONITORINFO)]),
         (user32.EnumDisplayMonitors, wintypes.BOOL, [wintypes.HDC, ctypes.POINTER(wintypes.RECT), _MonitorEnumProc,
                                                      wintypes.LPARAM]),
@@ -87,6 +88,15 @@ def monitor_of(window: tk.Misc) -> tuple[int, int, int, int]:
     monitor = user32.MonitorFromWindow(frame_handle(window), MONITOR_DEFAULTTONEAREST)
     _check(user32.GetMonitorInfoW(monitor, ctypes.byref(info)), "read the window's monitor")
     return _rect(info.rcMonitor)
+
+
+def work_area_at(x: int, y: int) -> tuple[int, int, int, int]:
+    """(left, top, width, height) of what the taskbar leaves free on the monitor at the desktop point (x, y), or on
+    the nearest monitor."""
+    info = MONITORINFO(cbSize=ctypes.sizeof(MONITORINFO))
+    monitor = user32.MonitorFromPoint(wintypes.POINT(x, y), MONITOR_DEFAULTTONEAREST)
+    _check(user32.GetMonitorInfoW(monitor, ctypes.byref(info)), "read the monitor at a point")
+    return _rect(info.rcWork)
 
 
 def repaint(window: tk.Misc) -> None:

@@ -2,6 +2,9 @@
 
 Structures mirror `third_party/ffx/*.h` field for field; `tests/test_ffx_structs.py` pins their sizes to the
 MSVC x64 layout. Only the upscaler entry points are bound.
+
+The constants and structures come from those headers: Copyright (C) 2026 Advanced Micro Devices, Inc., under
+the MIT license whose full text heads each of them.
 """
 from __future__ import annotations
 
@@ -201,10 +204,14 @@ class FfxError(RuntimeError):
 
 
 def find_sdk_dir(explicit: str | None = None) -> Path:
-    """Locate the folder holding the two FSR DLLs: `--sdk`, then `bin/` next to the exe or the package."""
-    candidates = []
+    """Locate the folder holding the two FSR DLLs: `--sdk` (which must hold them), else `bin/` next to the exe or
+    the package."""
     if explicit:
-        candidates.append(Path(explicit))
+        folder = Path(explicit)
+        if (folder / LOADER_DLL).is_file() and (folder / UPSCALER_DLL).is_file():
+            return folder
+        raise FileNotFoundError(f"{LOADER_DLL} and {UPSCALER_DLL} are not in {folder} (the --sdk folder)")
+    candidates = []
     import sys
     if getattr(sys, "frozen", False):
         candidates.append(Path(sys.executable).parent / "bin")

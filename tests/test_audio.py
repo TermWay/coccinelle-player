@@ -5,6 +5,7 @@ import time
 import unittest
 from pathlib import Path
 
+import needs
 from fsr4 import media
 from fsr4.audio import AudioPlayer, audio_command, leading_silence
 
@@ -15,6 +16,7 @@ def make_clip(path: Path, video_delay: float = 0.0) -> None:
                     "-pix_fmt", "yuv420p", "-c:a", "aac", str(path)], check=True)
 
 
+@needs.ffmpeg
 class AudioTest(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()

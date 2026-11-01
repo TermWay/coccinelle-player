@@ -3,6 +3,7 @@ import unittest
 
 import numpy as np
 
+import needs
 from fsr4 import flow
 
 
@@ -22,11 +23,8 @@ class FlowTest(unittest.TestCase):
         self.assertEqual(vectors.dtype, np.float32)
         self.assertEqual(float(np.abs(vectors).max()), 0.0)
 
+    @needs.opencv
     def test_dis_flow_sign_and_magnitude(self):
-        try:
-            import cv2  # noqa: F401
-        except ImportError:
-            self.skipTest("opencv-python not installed")
         width, height, shift = 256, 128, 5
         previous = textured_image(width + 4 * shift, height)
         current = np.ascontiguousarray(previous[:, 2 * shift:2 * shift + width])
