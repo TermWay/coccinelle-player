@@ -9,6 +9,8 @@ Radeon RX 9000 card, through Vulkan.
 - Measure and look before calling a change done: the tests, the lab, screenshots read back.
 - KISS and DRY; no silent failures (log the error and fail early); descriptive names; docstrings on public
   classes and functions; no allocations in per-frame code.
+- `SPEC.md` is the public statement of what the tool must do, standing in for the requests behind it: when a
+  request changes a requirement (a behavior, a default, a limit, a format), update it in the same commit.
 
 ## Stack
 - Python 3.12, stdlib `ctypes` for Vulkan and the FSR API, numpy for pixels, ffmpeg/ffprobe subprocesses for
@@ -19,7 +21,10 @@ Radeon RX 9000 card, through Vulkan.
   `third_party/vulkan_core.h` by `tools/gen_vk_types.py`. Regenerate instead of editing by hand.
 - The FSR binaries (`bin/*.dll`) are AMD's signed DLLs from the FidelityFX SDK tag pinned in
   `tools/fetch_sdk.py`; they are not committed. `bin/license.md` must ship with them.
-- Branch: `main`. Commit at the end of every prompt that changed files; never push unless asked.
+- Branch: `main`. Commit at the end of every prompt that changed files; never push unless asked. The
+  repository is public, so commit messages carry no `Request:` line (this replaces the shared rule): once the
+  commit exists, the request goes into `requests/log.md` (git-ignored, never published) under a
+  `## <short hash> · <date> · <subject>` heading, quoted as the shared rule says.
 
 ## Checks
 - `python -m unittest discover -s tests` is the test suite; `python -m fsr4 selftest --validate` exercises the

@@ -315,5 +315,5 @@ Not affiliated with AMD or the Khronos Group. AMD, Radeon and FidelityFX are tra
 Devices, Inc.; Vulkan is a registered trademark of the Khronos Group Inc.
 
 ## Credits
-Written by Claude (Anthropic's AI model) in Claude Code: the code, the tests and this README. Directed and tested
-by TermWay.
+Written by Claude (Anthropic's AI model) in Claude Code: the code, the tests and this README, to the requirements
+in `SPEC.md`. Directed and tested by TermWay.
