@@ -175,15 +175,16 @@ has none of those; the tool substitutes, as the quality lab (§14) settled:
 
 ### Look and layout
 - A dark theme throughout: a custom ttk theme of anti-aliased image elements, a dark title bar, dark file
-  dialogs, the app's own icon (a ladybug seen from above) and the ladybug's red as the accent colour. Every
-  choice is the same themed dropdown; there is no native menu.
+  dialogs, the app's own icon (a ladybug seen from above, facing right, its head a play triangle under the
+  shell) and the ladybug's red as the accent colour. Every choice is the same themed dropdown; there is no
+  native menu.
 - Title "Coccinelle Player" ("42% · Coccinelle Player" during a whole-file upscale). It opens centred at
   1280 × 860 (at most 92% × 88% of the screen), never smaller than 960 × 640, at the display's DPI.
-- Header: at the far left the button that folds the settings away, then the icon and the title, whose tooltip
-  says the tool is independent, not made or endorsed by AMD, with AMD's trademarks. At the right, refreshed every
-  2 s: "<processor> · RAM <this program> / <installed> GB" and "● <graphics card> · VRAM <this program> / <card>
-  GB · FSR <version>" (VRAM as DXGI counts it, Vulkan memory included); "Checking the GPU…" until the check
-  ends, a red dot and "GPU unavailable" if it fails.
+- Header: at the far left the button that folds the settings away; the name and icon are only in the title bar,
+  not repeated below it. At the right, refreshed every 2 s: "<processor> · RAM <this program> / <installed> GB"
+  and "● <graphics card> · VRAM <this program> / <card> GB · FSR <version>" (VRAM as DXGI counts it, Vulkan
+  memory included), whose tooltip also says the tool is independent, not made or endorsed by AMD, with AMD's
+  trademarks; "Checking the GPU…" until the check ends, a red dot and "GPU unavailable" if it fails.
 - Sidebar (340 px wide): the settings, top to bottom (below). It scrolls when the window is too short; the wheel
   anywhere over it scrolls it and never changes a control. Everything but Processor is locked during a
   whole-file upscale, a save or an image upscale.

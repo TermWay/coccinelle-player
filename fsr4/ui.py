@@ -307,18 +307,13 @@ class App:
     def _build_header(self) -> ttk.Frame:
         px = self.theme.px
         header = ttk.Frame(self.root, padding=(px(12), px(12), px(20), px(8)))
-        header.columnconfigure(3, weight=1)
+        header.columnconfigure(1, weight=1)
         sidebar_button = ttk.Button(header, image=self._icon_images("sidebar"), style="Icon.TButton",
                                     takefocus=False, command=self.toggle_sidebar)
         sidebar_button.grid(row=0, column=0, padx=(0, px(10)))
         self._tip(sidebar_button, "Hide or show the settings (Ctrl+B).")
-        ttk.Label(header, image=self.theme.icon(24)).grid(row=0, column=1, padx=(0, px(10)))
-        title = ttk.Label(header, text=APP_NAME, style="Title.TLabel")
-        title.grid(row=0, column=2, sticky="w")
-        self._tip(title, "Upscales videos and images with AMD FSR 4. An independent tool, not made or endorsed by "
-                         "AMD; AMD, Radeon and FidelityFX are trademarks of Advanced Micro Devices, Inc.")
         status = ttk.Frame(header)
-        status.grid(row=0, column=4, sticky="e")
+        status.grid(row=0, column=2, sticky="e")
         self.cpu_label = ttk.Label(status, text="", style="Small.TLabel")
         self.cpu_label.grid(row=0, column=0, padx=(0, px(20)))
         self._tip(self.cpu_label, "The processor, and the main memory (RAM) this program uses now / installed.")
@@ -327,7 +322,9 @@ class App:
         self.gpu_label = ttk.Label(status, text="Checking the GPU…", style="Small.TLabel")
         self.gpu_label.grid(row=0, column=2)
         self._tip(self.gpu_label, "The graphics card, the memory on it (VRAM) this program uses now (FSR and its "
-                                  "frames) / its size, and the version of FSR in AMD's DLL.")
+                                  "frames) / its size, and the version of FSR in AMD's DLL.\n\n"
+                                  f"{APP_NAME} is an independent tool, not made or endorsed by AMD; AMD, Radeon "
+                                  "and FidelityFX are trademarks of Advanced Micro Devices, Inc.")
         return header
 
     def _section(self, parent: ttk.Frame, row: int, title: str) -> int:

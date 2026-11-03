@@ -114,6 +114,11 @@ class Sketch:
             distance = np.maximum(distance, edge)
         return np.clip(0.5 - distance, 0, 1)
 
+    def rounded_triangle(self, points: list[tuple[float, float]], radius: float) -> np.ndarray:
+        """A filled triangle whose corners are rounded with `radius`, filling the same outline as the sharp one."""
+        inner = inset_triangle(points, radius)
+        return np.maximum(self.polygon(inner), self.polyline(inner + inner[:1], radius * 2))
+
     def ring(self, center_x: float, center_y: float, radius: float, thickness: float, start: float,
              end: float) -> np.ndarray:
         """An arc of a circle outline between angles `start` and `end` (radians, 0 = right, clockwise in y-down)."""
@@ -160,37 +165,54 @@ class Sketch:
 # ---- shared artwork ---------------------------------------------------------------------------------
 
 
+def inset_triangle(points: list[tuple[float, float]], inset: float) -> list[tuple[float, float]]:
+    """The triangle whose sides lie `inset` inside those of `points`: a scale about the incircle's centre."""
+    (ax, ay), (bx, by), (cx, cy) = points
+    side_a, side_b, side_c = np.hypot(bx - cx, by - cy), np.hypot(cx - ax, cy - ay), np.hypot(ax - bx, ay - by)
+    perimeter = side_a + side_b + side_c
+    center_x = (side_a * ax + side_b * bx + side_c * cx) / perimeter
+    center_y = (side_a * ay + side_b * by + side_c * cy) / perimeter
+    inradius = abs((bx - ax) * (cy - ay) - (cx - ax) * (by - ay)) / perimeter
+    scale = (inradius - inset) / inradius
+    return [(center_x + (x - center_x) * scale, center_y + (y - center_y) * scale) for x, y in points]
+
+
+LADYBUG_RED = "#e8402f"
 LADYBUG_BLACK = "#17171a"
 
 
 def app_icon(size: int) -> np.ndarray:
-    """The app icon: a ladybug seen from above, its shell in the accent's red. Antennae, eyes and
-    gloss appear only where the size leaves room for them."""
+    """The app icon: a ladybug seen from above, facing right, its head a play triangle tucked under the red
+    shell. Eyes and gloss appear only where the size leaves room for them."""
     sketch = Sketch(size, size)
     unit = size / 16
+
+    def scaled(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
+        return [(x * unit, y * unit) for x, y in points]
+
+    head_corners = [(8.2, 3.4), (15.7, 8.0), (8.2, 12.6)]
+    # a red rim keeps the black head visible on a dark title bar
+    head_rim = sketch.rounded_triangle(scaled(head_corners), 1.1 * unit)
+    sketch.fill(head_rim, LADYBUG_RED)
+    sketch.fill(sketch.rounded_triangle(scaled(inset_triangle(head_corners, 0.6)), 0.55 * unit), LADYBUG_BLACK)
+    shell_x, shell_radius_x, shell_radius_y = 5.0, 4.6, 5.4
+    shell_front = shell_x + shell_radius_x
     if size >= 32:
-        antennae = np.maximum(sketch.segment(7.1 * unit, 1.6 * unit, 5.9 * unit, 0.5 * unit, 0.42 * unit),
-                              sketch.segment(8.9 * unit, 1.6 * unit, 10.1 * unit, 0.5 * unit, 0.42 * unit))
-        sketch.fill(antennae, LADYBUG_BLACK)
-    head = sketch.circle(8 * unit, 3.7 * unit, 2.6 * unit)
-    sketch.fill(head, LADYBUG_BLACK)
-    # a faint sheen keeps the black head visible on a dark title bar
-    sketch.fill(sketch.ellipse(8 * unit, 2.6 * unit, 1.4 * unit, 0.7 * unit) * head, "#ffffff", 0.18)
-    if size >= 32:
-        sketch.fill(np.maximum(sketch.ellipse(6.7 * unit, 3.0 * unit, 0.62 * unit, 0.5 * unit),
-                               sketch.ellipse(9.3 * unit, 3.0 * unit, 0.62 * unit, 0.5 * unit)), "#ffffff")
-    shell_y, shell_radius_y = 9.6 * unit, 5.95 * unit
-    shell = sketch.ellipse(8 * unit, shell_y, 6.4 * unit, shell_radius_y)
+        eyes = np.maximum(sketch.circle((shell_front + 1.15) * unit, 6.65 * unit, 0.5 * unit),
+                          sketch.circle((shell_front + 1.15) * unit, 9.35 * unit, 0.5 * unit))
+        sketch.fill(eyes, "#ffffff")
+    # a dark gap where the shell overlaps the head, so their two reds do not merge
+    gap = sketch.ellipse(shell_x * unit, 8 * unit, (shell_radius_x + 0.4) * unit, (shell_radius_y + 0.4) * unit)
+    sketch.fill(gap * head_rim, LADYBUG_BLACK)
+    shell = sketch.ellipse(shell_x * unit, 8 * unit, shell_radius_x * unit, shell_radius_y * unit)
     sketch.fill(shell, sketch.vertical_gradient("#ff6a52", "#c3170f"))
-    seam = sketch.segment(8 * unit, shell_y - shell_radius_y, 8 * unit, shell_y + shell_radius_y,
-                          max(0.7, 0.5 * unit))
-    spots = seam
-    for x, y, radius in ((5.1, 7.3, 1.2), (4.2, 11.0, 1.3), (6.3, 13.7, 1.0)):
+    spots = sketch.segment(0.4 * unit, 8 * unit, (shell_front - 0.3) * unit, 8 * unit, max(0.7, 0.5 * unit))
+    for x, y, radius in ((2.1, 5.6, 1.1), (4.8, 4.1, 1.1)):
         spots = np.maximum(spots, np.maximum(sketch.circle(x * unit, y * unit, radius * unit),
-                                             sketch.circle((16 - x) * unit, y * unit, radius * unit)))
+                                             sketch.circle(x * unit, (16 - y) * unit, radius * unit)))
     sketch.fill(spots * shell, LADYBUG_BLACK)
     if size >= 24:
-        sketch.fill(sketch.ellipse(5.4 * unit, 5.6 * unit, 1.5 * unit, 0.8 * unit) * shell, "#ffffff", 0.35)
+        sketch.fill(sketch.ellipse(3.1 * unit, 4.4 * unit, 1.3 * unit, 0.7 * unit) * shell, "#ffffff", 0.35)
     return sketch.rgba()
 
 

@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from tkinter import ttk
 
 from . import log
-from .ui_art import Sketch, app_icon, png_base64, stretch_middle
+from .ui_art import LADYBUG_RED, Sketch, app_icon, png_base64, stretch_middle
 
 
 @dataclass(frozen=True)
@@ -34,7 +34,7 @@ class Palette:
     text: str = "#ececee"
     text_secondary: str = "#a3a7ae"
     text_faint: str = "#6c7079"
-    accent: str = "#e8402f"
+    accent: str = LADYBUG_RED
     accent_hover: str = "#f25a49"
     accent_pressed: str = "#c9321f"
     on_accent: str = "#17090a"
@@ -58,7 +58,6 @@ FONT_CHOICES = {
     "strong": (("Segoe UI Variable Text Semibold", "Segoe UI Semibold"), 10),
     "small": (("Segoe UI Variable Text", "Segoe UI"), 9),
     "section": (("Segoe UI Variable Text Semibold", "Segoe UI Semibold"), 8),
-    "title": (("Segoe UI Variable Display Semib", "Segoe UI Semibold"), 13),
     "display": (("Segoe UI Variable Display Semib", "Segoe UI Semibold"), 17),
     "mono": (("Cascadia Mono", "Consolas"), 9),
 }
@@ -172,12 +171,6 @@ class Theme:
     def slice_border(self, radius: float = 6) -> int:
         return self.px(radius) + 2
 
-    def icon(self, size: float) -> tk.PhotoImage:
-        """The app icon at `size` (96 DPI pixels), for use inside the window."""
-        image = tk.PhotoImage(master=self.root, data=png_base64(app_icon(self.px(size))))
-        self._images.append(image)
-        return image
-
     def icon_photos(self) -> list[tk.PhotoImage]:
         photos = []
         for size in (16, 24, 32, 48, 64, 256):
@@ -217,7 +210,6 @@ class Theme:
         style.configure("Small.TLabel", foreground=p.text_secondary, font=self.fonts["small"])
         style.configure("Section.TLabel", foreground=p.text_faint, font=self.fonts["section"])
         style.configure("Strong.TLabel", font=self.fonts["strong"])
-        style.configure("Title.TLabel", font=self.fonts["title"])
         style.configure("Status.TLabel", foreground=p.text_secondary)
         style.configure("Time.TLabel", foreground=p.text_secondary, font=self.fonts["mono"])
         style.configure("Banner.TFrame", background=p.error_soft)
