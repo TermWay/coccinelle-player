@@ -1,4 +1,4 @@
-# FSR4 upscaler: specification
+# Coccinelle Player: specification
 
 What the tool must do, written as requirements. The tool was built from a series of requests; this file states
 where all of them led, so that a developer or a coding agent given it builds the same tool. Figures marked
@@ -177,8 +177,8 @@ has none of those; the tool substitutes, as the quality lab (§14) settled:
 - A dark theme throughout: a custom ttk theme of anti-aliased image elements, a dark title bar, dark file
   dialogs, the app's own icon (a ladybug seen from above) and the ladybug's red as the accent colour. Every
   choice is the same themed dropdown; there is no native menu.
-- Title "FSR4 Upscaler" ("42% · FSR4 Upscaler" during a whole-file upscale). It opens centred at 1280 × 860 (at
-  most 92% × 88% of the screen), never smaller than 960 × 640, at the display's DPI.
+- Title "Coccinelle Player" ("42% · Coccinelle Player" during a whole-file upscale). It opens centred at
+  1280 × 860 (at most 92% × 88% of the screen), never smaller than 960 × 640, at the display's DPI.
 - Header: at the far left the button that folds the settings away, then the icon and the title, whose tooltip
   says the tool is independent, not made or endorsed by AMD, with AMD's trademarks. At the right, refreshed every
   2 s: "<processor> · RAM <this program> / <installed> GB" and "● <graphics card> · VRAM <this program> / <card>
@@ -331,7 +331,7 @@ is its own version (§10).
   40 characters, a built-in name (in any case). A user preset's name used again (in any case) replaces it. The
   bin deletes the user preset shown, without asking; sides showing it go back to Current settings. Built-in
   presets cannot be deleted.
-- Saved in `%APPDATA%\FSR4 Upscaler\presets.json` (`{"version": 1, "presets": [...]}`, written through a
+- Saved in `%APPDATA%\Coccinelle Player\presets.json` (`{"version": 1, "presets": [...]}`, written through a
   temporary file). A file that cannot be read is reported in the banner and never overwritten: the next save
   keeps it as `presets.unreadable`. Every save or delete reads the file again first, so two windows open at once
   keep each other's presets.
@@ -419,10 +419,10 @@ is its own version (§10).
   third-party notices, and copies the FSR DLLs with AMD's license into `bin\`, the README, and the license as
   `LICENSE.txt`. Any failure prints one line, pauses and exits 1. It ends by reminding that ffmpeg and ffprobe
   must be on PATH or next to the executables.
-- `dist\fsr4\` holds `FSR4 Upscaler.exe` (the window, no console) and `fsr4.exe` (the command line), built from
+- `dist\fsr4\` holds `Coccinelle Player.exe` (the window, no console) and `fsr4.exe` (the command line), built from
   one entry script: no arguments, or one existing file, opens the window (`fsr4.exe` then hides its console when
-  it owns it); anything else is the command line. Both carry the icon and a version resource (product "FSR4
-  Upscaler", version 0.1.0, "Copyright (c) 2026 TermWay", "AMD, Radeon and FidelityFX are trademarks of Advanced
+  it owns it); anything else is the command line. Both carry the icon and a version resource (product "Coccinelle
+  Player", version 0.1.0, "Copyright (c) 2026 TermWay", "AMD, Radeon and FidelityFX are trademarks of Advanced
   Micro Devices, Inc. Not affiliated with AMD."). OpenSSL, asyncio and other unused modules, and OpenCV's own
   ffmpeg plugin (31 MB), are left out; the folder is about 170 MB, 85 MB zipped.
 - `licenses\` holds one notice per component, from the installed packages and `third_party\`, and the build fails

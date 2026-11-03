@@ -1,7 +1,8 @@
-# FSR4 upscaler — project rules
+# Coccinelle Player — project rules
 
-A command line tool (and a packaged exe) that upscales an image or a video with AMD FSR Upscaling 4 on a
-Radeon RX 9000 card, through Vulkan.
+A desktop window and a command line tool (packaged as two exes) that upscale an image or a video with AMD FSR
+Upscaling 4 on a Radeon RX 9000 card, through Vulkan. The window is Coccinelle Player; the command line and the
+Python package stay `fsr4`.
 
 ## Working here
 - Ask before adding any package, runtime or dev-only; the tested versions are pinned in `requirements.txt`

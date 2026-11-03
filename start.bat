@@ -1,16 +1,16 @@
 @echo off
-title FSR4 upscaler
+title Coccinelle Player
 setlocal
 rem Opens the window, with the file dropped on this script (if any) open in it. The full path is taken before
 rem changing folder, so a relative path given on a command line works too.
 set "INPUT=%~f1"
 cd /d "%~dp0"
 
-if exist "dist\fsr4\FSR4 Upscaler.exe" (
+if exist "dist\fsr4\Coccinelle Player.exe" (
     if defined INPUT (
-        start "" "dist\fsr4\FSR4 Upscaler.exe" "%INPUT%"
+        start "" "dist\fsr4\Coccinelle Player.exe" "%INPUT%"
     ) else (
-        start "" "dist\fsr4\FSR4 Upscaler.exe"
+        start "" "dist\fsr4\Coccinelle Player.exe"
     )
     exit /b 0
 )

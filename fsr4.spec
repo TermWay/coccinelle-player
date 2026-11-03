@@ -1,5 +1,5 @@
 # PyInstaller build: two executables sharing one folder (dist/fsr4).
-#   "FSR4 Upscaler.exe"  the window, no console (double-click it)
+#   "Coccinelle Player.exe"  the window, no console (double-click it)
 #   fsr4.exe             the command line (fsr4 upscale clip.mp4 ...); with no arguments it opens the window too
 # Build with build_exe.bat: it also checks and copies the FSR DLLs next to the executables and writes the
 # third-party notices into licenses\.
@@ -81,6 +81,6 @@ analysis.binaries = [entry for entry in analysis.binaries
 archive = PYZ(analysis.pure)
 command_line = EXE(archive, analysis.scripts, [], exclude_binaries=True, name="fsr4", console=True,
                    icon=str(ICON), version=version_info("fsr4.exe"))
-window = EXE(archive, analysis.scripts, [], exclude_binaries=True, name="FSR4 Upscaler", console=False,
-             icon=str(ICON), version=version_info("FSR4 Upscaler.exe"))
+window = EXE(archive, analysis.scripts, [], exclude_binaries=True, name="Coccinelle Player", console=False,
+             icon=str(ICON), version=version_info("Coccinelle Player.exe"))
 COLLECT(command_line, window, analysis.binaries, analysis.datas, name="fsr4")

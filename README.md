@@ -1,4 +1,4 @@
-# FSR4 upscaler
+# Coccinelle Player
 
 Upscales an image or a video with **AMD FSR Upscaling 4** (the RDNA 4 machine-learning upscaler, FSR SDK 2.4,
 upscaler 4.1.2) on a Radeon RX 9000 series card: in a dark desktop window that plays the video upscaled while it
@@ -37,7 +37,7 @@ sub-pixel camera jitter every frame. A video file has none of those, so this too
 - **macOS:** not supported. AMD ships FSR 4 for Windows only, and Apple silicon Macs have no Radeon.
 
 ## Use
-**Window:** double-click `FSR4 Upscaler.exe` (or `start.bat` in the source tree), or drop a file on its icon.
+**Window:** double-click `Coccinelle Player.exe` (or `start.bat` in the source tree), or drop a file on its icon.
 - Drop a video or an image anywhere on the window, click the empty preview, or use Choose file (Ctrl+O).
   Every setting explains itself when the pointer rests on it.
 - **Size:** 1.5×, 2×, 3×, 1440p or 4K (the short side; chips that would leave FSR's 1×–3× range are disabled),
@@ -66,7 +66,7 @@ sub-pixel camera jitter every frame. A video file has none of those, so this too
   more). Off turns a side off: the other one fills the picture, without the divider.
 - **Presets** hold how the video is upscaled: the upscaler, the motion vectors and the sharpening (the size and
   the encoder stay the file's). Six are built in (FSR 4, sharpened, best motion, no motion, FSR 3.1, FSR 2.3);
-  + saves the current settings as your own (kept in `%APPDATA%\FSR4 Upscaler\presets.json`), the bin deletes
+  + saves the current settings as your own (kept in `%APPDATA%\Coccinelle Player\presets.json`), the bin deletes
   one, and choosing one in the Preset dropdown loads it into the settings.
 - **Zoom:** Fit shows the whole picture; Original size shows the source at its own pixel size (the upscaled
   side shrunk to match); 100% to 800% show upscaled pixels 1:1 or enlarged, and the slider beside them goes
@@ -116,7 +116,7 @@ fsr4 selftest --validate                    # Vulkan round trip under the valida
 From the source tree, `python -m fsr4 ...` is the same (`python -m fsr4 ui` for the window). `start.bat` and
 `upscale.bat` use the executables in `dist\fsr4\` when they exist, else Python. `build_exe.bat` (after
 `python -m pip install -r requirements-build.txt`) checks the FSR DLLs against their pinned hashes and builds
-the executables with PyInstaller from `fsr4.spec`: `FSR4 Upscaler.exe` (window, no console) and `fsr4.exe`
+the executables with PyInstaller from `fsr4.spec`: `Coccinelle Player.exe` (window, no console) and `fsr4.exe`
 (command line) share one folder of about 170 MB (85 MB zipped), mostly OpenCV and numpy, with the FSR DLLs and
 AMD's license in `bin\` and the third-party notices in `licenses\`. Its two optional arguments build elsewhere:
 the folder that receives `fsr4\` and PyInstaller's work folder.

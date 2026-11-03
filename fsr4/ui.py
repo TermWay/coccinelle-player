@@ -47,7 +47,7 @@ from .ui_transport import Transport, format_time
 from .ui_video import OFF, REFERENCE_FILTERS, ZOOM_LEVELS, VideoView
 from .ui_window import Fullscreen, repaint
 
-APP_NAME = "FSR4 Upscaler"
+APP_NAME = "Coccinelle Player"
 POLL_MS = 30
 DRAG_SEEK_SECONDS = 0.12
 SIDEBAR_WIDTH = 340

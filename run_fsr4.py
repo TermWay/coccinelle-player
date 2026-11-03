@@ -1,6 +1,6 @@
 """Entry point of both packaged executables (PyInstaller cannot start a package's `__main__` directly).
 
-"FSR4 Upscaler.exe" has no console; fsr4.exe has one. Either opens the window when started with no arguments
+"Coccinelle Player.exe" has no console; fsr4.exe has one. Either opens the window when started with no arguments
 (a double click) or with a single existing file (a file dropped on the exe icon, or "Open with"); fsr4.exe
 hides the console it was given in that case. Any other arguments are the command line
 (`fsr4.exe upscale clip.mp4`, `fsr4.exe info`, ...).

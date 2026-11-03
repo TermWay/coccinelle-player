@@ -52,7 +52,7 @@ BUILTIN = (
 
 def default_path() -> Path:
     base = os.environ.get("APPDATA")
-    folder = Path(base) / "FSR4 Upscaler" if base else Path.home() / ".config" / "fsr4"
+    folder = Path(base) / "Coccinelle Player" if base else Path.home() / ".config" / "coccinelle-player"
     return folder / "presets.json"
 
 

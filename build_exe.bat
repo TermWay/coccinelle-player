@@ -1,7 +1,7 @@
 @echo off
 title Build exe
 setlocal
-rem Builds dist\fsr4: "FSR4 Upscaler.exe" and fsr4.exe, the FSR DLLs and their license in bin\, the
+rem Builds dist\fsr4: "Coccinelle Player.exe" and fsr4.exe, the FSR DLLs and their license in bin\, the
 rem third-party notices in licenses\, README.md and LICENSE.txt. Optional arguments, to build elsewhere: the
 rem folder that receives fsr4\ (default dist) and PyInstaller's work folder (default build).
 set "DIST_ROOT=dist"
@@ -68,5 +68,5 @@ if errorlevel 1 (
 )
 
 echo.
-echo Done: "%DIST%\FSR4 Upscaler.exe"  (ffmpeg.exe and ffprobe.exe must be on PATH or copied next to it)
+echo Done: "%DIST%\Coccinelle Player.exe"  (ffmpeg.exe and ffprobe.exe must be on PATH or copied next to it)
 pause
