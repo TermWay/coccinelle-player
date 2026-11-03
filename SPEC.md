@@ -175,7 +175,8 @@ has none of those; the tool substitutes, as the quality lab (§14) settled:
 
 ### Look and layout
 - A dark theme throughout: a custom ttk theme of anti-aliased image elements, a dark title bar, dark file
-  dialogs, the app's own icon. Every choice is the same themed dropdown; there is no native menu.
+  dialogs, the app's own icon (a ladybug seen from above) and the ladybug's red as the accent colour. Every
+  choice is the same themed dropdown; there is no native menu.
 - Title "FSR4 Upscaler" ("42% · FSR4 Upscaler" during a whole-file upscale). It opens centred at 1280 × 860 (at
   most 92% × 88% of the screen), never smaller than 960 × 640, at the display's DPI.
 - Header: at the far left the button that folds the settings away, then the icon and the title, whose tooltip

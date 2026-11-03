@@ -34,12 +34,12 @@ class Palette:
     text: str = "#ececee"
     text_secondary: str = "#a3a7ae"
     text_faint: str = "#6c7079"
-    accent: str = "#ff6a3d"
-    accent_hover: str = "#ff8157"
-    accent_pressed: str = "#e65b31"
-    on_accent: str = "#1c0e08"
-    accent_soft: str = "#33211b"
-    accent_text: str = "#ffb39c"
+    accent: str = "#e8402f"
+    accent_hover: str = "#f25a49"
+    accent_pressed: str = "#c9321f"
+    on_accent: str = "#17090a"
+    accent_soft: str = "#391a18"
+    accent_text: str = "#ffaba1"
     success: str = "#3fb950"
     error: str = "#f2555a"
     error_soft: str = "#3b1a1c"
@@ -251,7 +251,7 @@ class Theme:
         self._button_style("Secondary", p.field, p.field_hover, p.field_pressed, p.border, p.text, "body",
                            p.background, p.border, p.text_faint, (14, 6))
         self._button_style("Accent", p.accent, p.accent_hover, p.accent_pressed, None, p.on_accent, "strong",
-                           p.accent_soft, None, "#8a5a4a", (20, 6))
+                           p.accent_soft, None, "#8a4f4a", (20, 6))
         self._button_style("Ghost", p.background, p.field, p.field_pressed, None, p.text_secondary, "body",
                            p.background, None, p.text_faint, (10, 6))
         self._button_style("Banner", p.error_soft, "#4a2225", "#331618", None, p.error_text, "body",
@@ -335,7 +335,7 @@ class Theme:
 
         self.style.element_create(
             "Switch.indicator", "image", switch(p.field, p.text_secondary, False, p.border_hover),
-            ("disabled", "selected", switch(p.accent_soft, "#6b4a40", True)),
+            ("disabled", "selected", switch(p.accent_soft, "#6b4240", True)),
             ("disabled", switch(p.background, p.text_faint, False, p.border)),
             ("selected", "active", switch(p.accent_hover, p.on_accent, True)),
             ("selected", switch(p.accent, p.on_accent, True)),

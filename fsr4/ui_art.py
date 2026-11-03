@@ -82,6 +82,11 @@ class Sketch:
     def circle(self, center_x: float, center_y: float, radius: float) -> np.ndarray:
         return np.clip(0.5 - (np.hypot(self.x - center_x, self.y - center_y) - radius), 0, 1)
 
+    def ellipse(self, center_x: float, center_y: float, radius_x: float, radius_y: float) -> np.ndarray:
+        """An axis-aligned ellipse; its distance is approximate, close enough for one-pixel edges."""
+        stretched = np.hypot((self.x - center_x) / radius_x, (self.y - center_y) / radius_y)
+        return np.clip(0.5 - (stretched - 1) * min(radius_x, radius_y), 0, 1)
+
     def segment(self, ax: float, ay: float, bx: float, by: float, thickness: float) -> np.ndarray:
         """A capsule (line with round caps) from a to b."""
         px, py = self.x - ax, self.y - ay
@@ -155,23 +160,37 @@ class Sketch:
 # ---- shared artwork ---------------------------------------------------------------------------------
 
 
+LADYBUG_BLACK = "#17171a"
+
+
 def app_icon(size: int) -> np.ndarray:
-    """The app icon: on an orange tile, a small block in the corner of a large frame, and an arrow growing it."""
+    """The app icon: a ladybug seen from above, its shell in the accent's red. Antennae, eyes and
+    gloss appear only where the size leaves room for them."""
     sketch = Sketch(size, size)
-    inset = size * 0.04
-    sketch.fill(sketch.rounded_rect(inset, inset, size - inset, size - inset, size * 0.22),
-                sketch.vertical_gradient("#ff8a4c", "#e8452f"))
     unit = size / 16
-    stroke = max(1.0, 1.15 * unit)
-    outline = sketch.rounded_rect(3.3 * unit, 3.3 * unit, 12.7 * unit, 12.7 * unit, 1.6 * unit)
-    hole = sketch.rounded_rect(3.3 * unit + stroke, 3.3 * unit + stroke, 12.7 * unit - stroke, 12.7 * unit - stroke,
-                               max(0.0, 1.6 * unit - stroke))
-    sketch.fill(np.clip(outline - hole, 0, 1), "#ffffff", opacity=0.55)
-    sketch.fill(sketch.rounded_rect(3.3 * unit, 7.9 * unit, 8.1 * unit, 12.7 * unit, 1.1 * unit), "#ffffff")
-    tip_x, tip_y = 10.9 * unit, 5.1 * unit
-    arrow = sketch.polyline([(8.4 * unit, 7.6 * unit), (tip_x, tip_y)], stroke * 1.1)
-    head = sketch.polyline([(tip_x - 2.4 * unit, tip_y), (tip_x, tip_y), (tip_x, tip_y + 2.4 * unit)], stroke * 1.1)
-    sketch.fill(np.maximum(arrow, head), "#ffffff")
+    if size >= 32:
+        antennae = np.maximum(sketch.segment(7.1 * unit, 1.6 * unit, 5.9 * unit, 0.5 * unit, 0.42 * unit),
+                              sketch.segment(8.9 * unit, 1.6 * unit, 10.1 * unit, 0.5 * unit, 0.42 * unit))
+        sketch.fill(antennae, LADYBUG_BLACK)
+    head = sketch.circle(8 * unit, 3.7 * unit, 2.6 * unit)
+    sketch.fill(head, LADYBUG_BLACK)
+    # a faint sheen keeps the black head visible on a dark title bar
+    sketch.fill(sketch.ellipse(8 * unit, 2.6 * unit, 1.4 * unit, 0.7 * unit) * head, "#ffffff", 0.18)
+    if size >= 32:
+        sketch.fill(np.maximum(sketch.ellipse(6.7 * unit, 3.0 * unit, 0.62 * unit, 0.5 * unit),
+                               sketch.ellipse(9.3 * unit, 3.0 * unit, 0.62 * unit, 0.5 * unit)), "#ffffff")
+    shell_y, shell_radius_y = 9.6 * unit, 5.95 * unit
+    shell = sketch.ellipse(8 * unit, shell_y, 6.4 * unit, shell_radius_y)
+    sketch.fill(shell, sketch.vertical_gradient("#ff6a52", "#c3170f"))
+    seam = sketch.segment(8 * unit, shell_y - shell_radius_y, 8 * unit, shell_y + shell_radius_y,
+                          max(0.7, 0.5 * unit))
+    spots = seam
+    for x, y, radius in ((5.1, 7.3, 1.2), (4.2, 11.0, 1.3), (6.3, 13.7, 1.0)):
+        spots = np.maximum(spots, np.maximum(sketch.circle(x * unit, y * unit, radius * unit),
+                                             sketch.circle((16 - x) * unit, y * unit, radius * unit)))
+    sketch.fill(spots * shell, LADYBUG_BLACK)
+    if size >= 24:
+        sketch.fill(sketch.ellipse(5.4 * unit, 5.6 * unit, 1.5 * unit, 0.8 * unit) * shell, "#ffffff", 0.35)
     return sketch.rgba()
 
 
