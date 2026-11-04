@@ -464,9 +464,9 @@ is its own version (§10).
   skip without it, saying why.
 - `python -m fsr4 selftest --validate` passes under the validation layer.
 - The quality lab (`tools/lab_quality.py`) downscales a reference 2x (area), upscales it back and reports PSNR
-  against it for each setting, beside bicubic and Lanczos. Defaults change only on its numbers. *Measured* on a
-  panning fractal clip: FSR 4 with DIS fast flow 26.82 dB (medium 27.09), Lanczos 26.42, FSR 4 without motion
-  vectors 25.59, with the flow negated 25.63.
+  against it for each setting, beside bicubic, Lanczos and, when ffmpeg has `sr_amf`, AMD's HQ scaler. Defaults
+  change only on its numbers. *Measured* on a panning fractal clip: FSR 4 with DIS fast flow 26.82 dB (medium
+  27.10), Lanczos 26.42, HQ scaler 26.34, FSR 4 without motion vectors 25.59, with the flow negated 25.63.
 - Speed, end to end (decode, flow, upscale, encode), *measured*: 720p60 to 1440p at 85 fps, 1080p60 to 4K at
   41 fps, more than 160 fps without motion vectors. In the window a 1080p60 file plays at 60 fps once a few
   seconds are ready, about 0.3 s after Play.

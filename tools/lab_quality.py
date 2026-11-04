@@ -1,12 +1,14 @@
 """Quality lab: downscale a reference, upscale it back with FSR 4 under several settings, measure PSNR.
 
 Image lab (`--image ref.png`): the reference is downscaled by `--scale` (area filter), upscaled back with
-and without sharpening, and compared to the reference. Bicubic and Lanczos (ffmpeg) are the baselines.
+and without sharpening, and compared to the reference. Bicubic and Lanczos (ffmpeg) are the baselines; AMD's
+HQ scaler (`AMF_SETTINGS`, ffmpeg's `sr_amf`) is measured beside them when this ffmpeg has it.
 Alongside PSNR, the table shows the mean per-channel bias and the best PSNR over small integer shifts, which
 separates "blurry" from "misaligned" and from "wrong colour transform".
 
 Video lab (`--video gt.mkv`): the ground-truth clip is downscaled the same way and upscaled with every
-flow setting; PSNR is averaged over the frames after the first `--warmup` ones.
+flow setting; PSNR is averaged over the frames after the first `--warmup` ones. Times cover the upscaling, not
+the PSNR; the AMF rows are a whole ffmpeg run, so theirs also cover decoding, upload and read back.
 
     python tools/lab_quality.py --image out/lab/ref.png --video out/lab/gt.mkv --out out/lab
 """
@@ -27,6 +29,18 @@ from fsr4.ffx import find_sdk_dir  # noqa: E402
 from fsr4.flow import create_flow  # noqa: E402
 from fsr4.gpu import Gpu  # noqa: E402
 from fsr4.pipeline import Pipeline  # noqa: E402
+
+
+# (name, sr_amf algorithm, sr_amf sharpness); -1 leaves the sharpness to the driver. The value counts stops down
+# from the strongest, as in FSR's RCAS: measured, detail energy is 2.9 times the reference at 0, 0.7 times at 2.
+AMF_SETTINGS = [
+    ("amf bicubic", "bicubic", -1.0),
+    ("amf video SR 1.0", "sr1-0", -1.0),
+    ("amf video SR 1.1", "sr1-1", -1.0),
+    ("amf video SR 1.1, sharpness 0 (strongest)", "sr1-1", 0.0),
+    ("amf video SR 1.1, sharpness 1", "sr1-1", 1.0),
+    ("amf video SR 1.1, sharpness 2 (mildest)", "sr1-1", 2.0),
+]
 
 
 def psnr(image: np.ndarray, reference: np.ndarray) -> float:
@@ -56,6 +70,42 @@ def best_shift(image: np.ndarray, reference: np.ndarray, radius: int = 2) -> tup
 def ffmpeg_scale(source: Path, destination: Path, width: int, height: int, flags: str) -> None:
     subprocess.run([media.tool_path("ffmpeg"), "-v", "error", "-y", "-i", str(source),
                     "-vf", f"scale={width}:{height}:flags={flags}", str(destination)], check=True)
+
+
+def has_amf_scaler() -> bool:
+    """Whether this ffmpeg has `sr_amf`; says so when it does not, the lab then skips those rows."""
+    filters = subprocess.run([media.tool_path("ffmpeg"), "-hide_banner", "-filters"], check=True,
+                             capture_output=True, text=True).stdout
+    if " sr_amf " not in filters:
+        print("this ffmpeg has no sr_amf filter: the AMF rows are skipped", flush=True)
+        return False
+    return True
+
+
+def amf_command(source: Path, width: int, height: int, algorithm: str, sharpness: float) -> list[str]:
+    """The ffmpeg command up to its output: `source` through the HQ scaler on the GPU, RGBA in and out."""
+    scaler = f"sr_amf=w={width}:h={height}:algorithm={algorithm}:sharpness={sharpness}"
+    return [media.tool_path("ffmpeg"), "-v", "error", "-nostdin", "-init_hw_device", "amf=amf",
+            "-filter_hw_device", "amf", "-i", str(source),
+            "-vf", f"format=rgba,hwupload,{scaler},hwdownload,format=rgba"]
+
+
+def amf_upscale(source: Path, width: int, height: int, algorithm: str, sharpness: float) -> np.ndarray:
+    """Every frame of `source` upscaled by the HQ scaler, as RGBA of shape (frames, height, width, 4)."""
+    command = amf_command(source, width, height, algorithm, sharpness) + ["-f", "rawvideo", "-pix_fmt", "rgba", "-"]
+    output = subprocess.run(command, check=True, stdout=subprocess.PIPE).stdout
+    return np.frombuffer(output, np.uint8).reshape(-1, height, width, 4)
+
+
+def amf_ms_per_frame(source: Path, width: int, height: int, algorithm: str, sharpness: float, frames: int) -> float:
+    """Decoding, upload, scaling and read back per frame; a one-frame run takes the start-up out."""
+    def seconds(count: int) -> float:
+        started = time.perf_counter()
+        subprocess.run(amf_command(source, width, height, algorithm, sharpness)
+                       + ["-frames:v", str(count), "-f", "null", "-"], check=True)
+        return time.perf_counter() - started
+
+    return (seconds(frames) - seconds(1)) * 1000 / (frames - 1)
 
 
 def run_pipeline_on_image(gpu: Gpu, sdk_dir: Path, frame: np.ndarray, output_size: tuple[int, int],
@@ -92,6 +142,11 @@ def image_lab(gpu: Gpu, sdk_dir: Path, reference_path: Path, out_dir: Path, scal
         path = out_dir / f"{reference_path.stem}_{flags}.png"
         ffmpeg_scale(low_path, path, width, height, flags)
         report(flags, media.read_image(path))
+    if has_amf_scaler():
+        for name, algorithm, sharpness in AMF_SETTINGS:
+            image = amf_upscale(low_path, width, height, algorithm, sharpness)[0]
+            media.write_image(out_dir / f"{reference_path.stem}_amf_{algorithm}_{sharpness}.png", image)
+            report(name, image)
     settings = [
         ("fsr4, 1 pass", 1, None),
         ("fsr4, 8 passes of the same frame", 8, None),
@@ -127,12 +182,23 @@ def video_lab(gpu: Gpu, sdk_dir: Path, truth_path: Path, out_dir: Path, scale: f
         print(lines[-1], flush=True)
 
     lanczos = []
-    started = time.perf_counter()
+    upscale_seconds = 0.0
     import cv2
     for low, truth in zip(low_frames, truth_frames):
+        started = time.perf_counter()
         up = cv2.resize(low, (width, height), interpolation=cv2.INTER_LANCZOS4)
+        upscale_seconds += time.perf_counter() - started
         lanczos.append(psnr(up, truth))
-    report("lanczos (opencv)", lanczos[warmup:], (time.perf_counter() - started) * 1000 / len(low_frames))
+    report("lanczos (opencv)", lanczos[warmup:], upscale_seconds * 1000 / len(low_frames))
+
+    if has_amf_scaler():
+        for name, algorithm, sharpness in AMF_SETTINGS:
+            upscaled = amf_upscale(low_path, width, height, algorithm, sharpness)
+            if len(upscaled) != len(truth_frames):
+                raise RuntimeError(f"{name}: {len(upscaled)} frames for {len(truth_frames)}")
+            media.write_image(out_dir / f"{truth_path.stem}_amf_{algorithm}_{sharpness}_last.png", upscaled[-1])
+            values = [psnr(image, truth) for image, truth in zip(upscaled, truth_frames)]
+            report(name, values[warmup:], amf_ms_per_frame(low_path, width, height, algorithm, sharpness, len(low_frames)))
 
     settings = [
         ("fsr4 flow zero", "zero", 1.0, "fast", 1),
@@ -150,10 +216,12 @@ def video_lab(gpu: Gpu, sdk_dir: Path, truth_path: Path, out_dir: Path, scale: f
             flow.compute = lambda frame, original=original: np.negative(original(frame))
         pipeline = Pipeline(gpu, render, (width, height), sdk_dir, flow, frame_time_ms=low_info.frame_time_ms)
         values = []
-        started = time.perf_counter()
+        upscale_seconds = 0.0
         try:
             for index, (low, truth) in enumerate(zip(low_frames, truth_frames)):
+                started = time.perf_counter()
                 result = pipeline.process(low)
+                upscale_seconds += time.perf_counter() - started
                 values.append(psnr(result, truth))
                 if index == len(low_frames) - 1:
                     tag = f"{flow_name}_{preset}_s{flow_scale}{'_neg' if flow_sign < 0 else ''}"
@@ -162,7 +230,7 @@ def video_lab(gpu: Gpu, sdk_dir: Path, truth_path: Path, out_dir: Path, scale: f
         finally:
             pipeline.destroy()
         flow_ms = pipeline.timings.stages.get("flow", 0.0) / max(pipeline.timings.frames, 1)
-        report(f"{name} (flow {flow_ms:.1f} ms)", values[warmup:], (time.perf_counter() - started) * 1000 / len(low_frames))
+        report(f"{name} (flow {flow_ms:.1f} ms)", values[warmup:], upscale_seconds * 1000 / len(low_frames))
     lines.append("")
     return lines
 

@@ -247,18 +247,26 @@ optical flow is fastest with about 8 threads here (47 fps; 32 threads: 39 fps), 
 
 Quality lab (`python tools/lab_quality.py`, PSNR against the original after a 2x area downscale):
 
-| Content                                   | Lanczos | FSR 4                      |
-|-------------------------------------------|---------|----------------------------|
-| Still image, smooth CGI wallpaper         | 42.06   | 42.32                      |
-| Still image, aliased fractal              | 26.38   | 25.98                      |
-| Panning fractal clip, no motion vectors   | 26.42   | 25.59                      |
-| Panning fractal clip, DIS fast flow       | 26.42   | 26.82 (negated flow 25.63) |
-| Panning fractal clip, DIS medium flow     | 26.42   | 27.09                      |
+| Content                                   | Lanczos | AMD HQ scaler | FSR 4                      |
+|-------------------------------------------|---------|---------------|----------------------------|
+| Still image, smooth CGI wallpaper         | 42.06   | 43.25         | 42.32                      |
+| Still image, aliased fractal              | 26.38   | 26.26         | 25.98                      |
+| Panning fractal clip, no motion vectors   | 26.42   | 26.34         | 25.59                      |
+| Panning fractal clip, DIS fast flow       | 26.42   | 26.34         | 26.82 (negated flow 25.63) |
+| Panning fractal clip, DIS medium flow     | 26.42   | 26.34         | 27.10                      |
+| Natural footage, DIS fast flow            | 44.90   | 44.32         | 44.46                      |
 
 Things the lab settled: motion vectors from optical flow help (+1.2 dB over zero flow, and the sign is
 verified by the negated run); faking the camera jitter by resampling the input costs 2 to 8 dB and is not
 done; feeding a still image several times does not help either, so images get one pass. On screen
 recordings the FSR output is a touch crisper than Lanczos on text, with no visible artifacts.
+
+AMD's HQ scaler (ffmpeg's `sr_amf`, Video SR 1.1, default sharpness) works on one frame at a time and is measured
+for comparison; the tool does not use it. At 2880x2160 it takes 9 ms a frame against 17 ms for FSR 4 with DIS fast
+flow. It wins on the smooth still, is level with FSR 4 on natural footage, and loses 0.5 dB on the panning clip,
+where FSR 4 gathers detail across frames. Lanczos leads on natural footage only because PSNR rewards softness: on
+one frame it keeps 43% of the original's detail energy, the HQ scaler 99%, FSR 4 112%. Video SR 1.0 scores a little
+higher on stills (43.81) but leaves stair steps on diagonal edges.
 
 ## Layout
 - `fsr4/vk.py`, `fsr4/vk_types.py`, `fsr4/gpu.py`: ctypes Vulkan binding, generated structs, device and copies.
