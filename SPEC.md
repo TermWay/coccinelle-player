@@ -182,17 +182,17 @@ has none of those; the tool substitutes, as the quality lab (§14) settled:
   1280 × 860 (at most 92% × 88% of the screen), never smaller than 960 × 640, at the display's DPI.
 - No header: the name and icon are only in the title bar, not repeated below it, and the sidebar and the toolbar
   start at the top of the window.
-- Sidebar (340 px wide): the settings, top to bottom (below). It scrolls when the window is too short; the wheel
-  anywhere over it scrolls it and never changes a control. Everything but Processor is locked during a
-  whole-file upscale, a save or an image upscale.
+- Sidebar (340 px wide): the settings, top to bottom (below). The button that folds it away starts its first line,
+  before "Source"; folded, the same button starts the toolbar, in the same place on the screen. It scrolls when
+  the window is too short; the wheel anywhere over it scrolls it and never changes a control. Everything but
+  Processor is locked during a whole-file upscale, a save or an image upscale.
 - Under the settings, always in view while the sidebar shows, refreshed every 2 s: "<processor> · RAM <this
   program> / <installed> GB" and "● <graphics card> · VRAM <this program> / <card> GB · FSR <version>" (VRAM as
   DXGI counts it, Vulkan memory included), whose tooltip also says the tool is independent, not made or endorsed
   by AMD, with AMD's trademarks; "Checking the GPU…" until the check ends, a red dot and "GPU unavailable" if it
   fails.
-- Main area, top to bottom: the error banner; a toolbar with the button that folds the settings away, the Left and
-  Right dropdowns, the zoom chips, the zoom slider and the zoom percentage; the picture; the playback controls
-  (videos); the log.
+- Main area, top to bottom: the error banner; a toolbar with the Left and Right dropdowns, the zoom chips, the
+  zoom slider and the zoom percentage; the picture; the playback controls (videos); the log.
 - Footer: a thin progress bar, the status text, Show log / Hide log, Open and Show in folder (after a save), Stop
   (during a whole-file upscale) and the accent Upscale button.
 - Every setting has a tooltip (after 450 ms, 320 px wide, kept on the pointer's monitor) saying in plain words

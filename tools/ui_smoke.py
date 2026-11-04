@@ -406,9 +406,12 @@ def main() -> int:
         root.state("normal")
         root.geometry(windowed)
         yield 0.6
+        fold_place = app.fold_button.winfo_rootx(), app.fold_button.winfo_rooty()
         app.toggle_sidebar()
         yield 0.6
         check(not app.sidebar.winfo_ismapped(), "sidebar folds away")
+        unfold_place = app.unfold_button.winfo_rootx(), app.unfold_button.winfo_rooty()
+        check(fold_place == unfold_place, f"its button stays in place ({fold_place}, then {unfold_place})")
         shot("07_sidebar_hidden")
         app.toggle_sidebar()
         app.start()

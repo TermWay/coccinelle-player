@@ -1,8 +1,8 @@
 """The window: open a video or an image, watch it upscaled while it is made, compare it, save it.
 
-Layout: a settings sidebar that folds away (Ctrl+B) with the presets and, at its foot, the machine's status;
-the preview with its toolbar (the sidebar button, what each side of the divider shows, zoom), the playback
-controls with the filmstrip, an optional log, and a footer with the progress and the actions. Full screen (F11 or F) keeps
+Layout: a settings sidebar that folds away (its button at the top left, Ctrl+B) with the presets and, at its
+foot, the machine's status; the preview with its toolbar (what each side of the divider shows, zoom), the
+playback controls with the filmstrip, an optional log, and a footer with the progress and the actions. Full screen (F11 or F) keeps
 the video; its controls come up when the mouse moves near the bottom and hide once it rests.
 
 Each side of the divider shows the current settings, a preset or the source through a filter. A loaded video
@@ -302,6 +302,13 @@ class App:
         palette = self.theme.palette
         return self.icons[(name, palette.text_secondary)], "disabled", self.icons[(name, palette.text_faint)]
 
+    def _sidebar_button(self, parent: ttk.Frame) -> ttk.Button:
+        """The button that folds the settings away; there are two, one in the sidebar and one in the toolbar."""
+        button = ttk.Button(parent, image=self._icon_images("sidebar"), style="Icon.TButton", takefocus=False,
+                            command=self.toggle_sidebar)
+        self._tip(button, "Hide or show the settings (Ctrl+B).")
+        return button
+
     def _build_machine_status(self, parent: ttk.Frame) -> ttk.Frame:
         """The processor and the graphics card with the memory this program uses on each, at the sidebar's foot."""
         px = self.theme.px
@@ -373,7 +380,12 @@ class App:
         canvas.bind("<Configure>", fit)
         wrap = px(SIDEBAR_WIDTH - 38)
 
-        row = self._section(sidebar, 0, "Source")
+        title_row = ttk.Frame(sidebar)
+        title_row.grid(row=0, column=0, sticky="w", pady=(0, px(4)))
+        self.fold_button = self._sidebar_button(title_row)
+        self.fold_button.grid(row=0, column=0, padx=(0, px(8)))
+        ttk.Label(title_row, text="SOURCE", style="Section.TLabel").grid(row=0, column=1)
+        row = 1
         self.source_name = ttk.Label(sidebar, text="No file yet", style="Strong.TLabel", wraplength=wrap)
         self.source_name.grid(row=row, column=0, sticky="w")
         self.source_details = ttk.Label(sidebar, text="Drop a file anywhere on this window, or choose one.",
@@ -583,10 +595,10 @@ class App:
         self.toolbar = ttk.Frame(main)
         self.toolbar.grid(row=1, column=0, sticky="ew", pady=(0, px(8)))
         self.toolbar.columnconfigure(2, weight=1)
-        sidebar_button = ttk.Button(self.toolbar, image=self._icon_images("sidebar"), style="Icon.TButton",
-                                    takefocus=False, command=self.toggle_sidebar)
-        sidebar_button.grid(row=0, column=0, padx=(0, px(10)))
-        self._tip(sidebar_button, "Hide or show the settings (Ctrl+B).")
+        # The sidebar's button, in the same place on the screen, while the sidebar is folded.
+        self.unfold_button = self._sidebar_button(self.toolbar)
+        self.unfold_button.grid(row=0, column=0, padx=(0, px(10)))
+        self.unfold_button.grid_remove()
         self.side_boxes: dict[str, ttk.Combobox] = {}
         for side, column, sticky in (("left", 1, "w"), ("right", 3, "e")):
             group = ttk.Frame(self.toolbar)
@@ -1367,8 +1379,10 @@ class App:
         self.sidebar_visible = not self.sidebar_visible
         if self.sidebar_visible:
             self.sidebar.grid()
+            self.unfold_button.grid_remove()
         else:
             self.sidebar.grid_remove()
+            self.unfold_button.grid()
         self.main.configure(padding=self._main_padding())
         self._repaint_everything()
 

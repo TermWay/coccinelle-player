@@ -83,7 +83,7 @@ sub-pixel camera jitter every frame. A video file has none of those, so this too
 - **Full screen** (F11, F or the button) covers the monitor the window is on and keeps the video; leaving it
   puts the window back exactly where and as it was. Its controls come up when the mouse moves near the bottom
   of the screen, and hide, with the pointer, once the mouse rests, wherever it is.
-  The button at the far left of the toolbar (Ctrl+B) folds the settings away. **Processor** in the settings
+  The button at the top left of the window (Ctrl+B) folds the settings away. **Processor** in the settings
   sets how many threads upscaling may use (1 to all) and its priority (Normal, Low, Background).
 - When it is saved, Open plays the file and Show in folder selects it. Show log (Ctrl+L) has the details;
   errors appear in a red banner. The foot of the sidebar names the processor and the graphics card, with the
