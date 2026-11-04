@@ -180,16 +180,19 @@ has none of those; the tool substitutes, as the quality lab (§14) settled:
   native menu.
 - Title "Coccinelle Player" ("42% · Coccinelle Player" during a whole-file upscale). It opens centred at
   1280 × 860 (at most 92% × 88% of the screen), never smaller than 960 × 640, at the display's DPI.
-- Header: at the far left the button that folds the settings away; the name and icon are only in the title bar,
-  not repeated below it. At the right, refreshed every 2 s: "<processor> · RAM <this program> / <installed> GB"
-  and "● <graphics card> · VRAM <this program> / <card> GB · FSR <version>" (VRAM as DXGI counts it, Vulkan
-  memory included), whose tooltip also says the tool is independent, not made or endorsed by AMD, with AMD's
-  trademarks; "Checking the GPU…" until the check ends, a red dot and "GPU unavailable" if it fails.
+- No header: the name and icon are only in the title bar, not repeated below it, and the sidebar and the toolbar
+  start at the top of the window.
 - Sidebar (340 px wide): the settings, top to bottom (below). It scrolls when the window is too short; the wheel
   anywhere over it scrolls it and never changes a control. Everything but Processor is locked during a
   whole-file upscale, a save or an image upscale.
-- Main area, top to bottom: the error banner; a toolbar with the Left and Right dropdowns, the zoom chips, the
-  zoom slider and the zoom percentage; the picture; the playback controls (videos); the log.
+- Under the settings, always in view while the sidebar shows, refreshed every 2 s: "<processor> · RAM <this
+  program> / <installed> GB" and "● <graphics card> · VRAM <this program> / <card> GB · FSR <version>" (VRAM as
+  DXGI counts it, Vulkan memory included), whose tooltip also says the tool is independent, not made or endorsed
+  by AMD, with AMD's trademarks; "Checking the GPU…" until the check ends, a red dot and "GPU unavailable" if it
+  fails.
+- Main area, top to bottom: the error banner; a toolbar with the button that folds the settings away, the Left and
+  Right dropdowns, the zoom chips, the zoom slider and the zoom percentage; the picture; the playback controls
+  (videos); the log.
 - Footer: a thin progress bar, the status text, Show log / Hide log, Open and Show in folder (after a save), Stop
   (during a whole-file upscale) and the accent Upscale button.
 - Every setting has a tooltip (after 450 ms, 320 px wide, kept on the pointer's monitor) saying in plain words
@@ -343,7 +346,7 @@ is its own version (§10).
   the window back exactly where and as it was (a maximized window is restored first and maximized again). If it
   fails, the window comes back with "Full screen is unavailable: <reason>". Tk's own full screen is not used: it
   always takes the primary monitor.
-- Hidden in full screen: header, footer, toolbar, sidebar, banner, log and the picture's frame; the labels lose
+- Hidden in full screen: footer, toolbar, sidebar, banner, log and the picture's frame; the labels lose
   ▾ and open nothing.
 - The playback controls (videos) sit over the bottom of the picture. They come up when the pointer moves within
   their height plus 80 px of the bottom, hide 600 ms after it moves away, and hide with the pointer after 2.5 s

@@ -1,8 +1,8 @@
 """The window: open a video or an image, watch it upscaled while it is made, compare it, save it.
 
-Layout: a header (sidebar button, title and GPU), a settings sidebar that folds away (Ctrl+B) with the
-presets, the preview with its toolbar (what each side of the divider shows, zoom), the playback controls with
-the filmstrip, an optional log, and a footer with the progress and the actions. Full screen (F11 or F) keeps
+Layout: a settings sidebar that folds away (Ctrl+B) with the presets and, at its foot, the machine's status;
+the preview with its toolbar (the sidebar button, what each side of the divider shows, zoom), the playback
+controls with the filmstrip, an optional log, and a footer with the progress and the actions. Full screen (F11 or F) keeps
 the video; its controls come up when the mouse moves near the bottom and hide once it rests.
 
 Each side of the divider shows the current settings, a preset or the source through a filter. A loaded video
@@ -282,11 +282,9 @@ class App:
     def _build(self) -> None:
         root = self.root
         root.columnconfigure(0, weight=1)
-        root.rowconfigure(1, weight=1)
-        self.header = self._build_header()
-        self.header.grid(row=0, column=0, sticky="ew")
+        root.rowconfigure(0, weight=1)
         self.body = ttk.Frame(root)
-        self.body.grid(row=1, column=0, sticky="nsew")
+        self.body.grid(row=0, column=0, sticky="nsew")
         self.body.columnconfigure(1, weight=1)
         self.body.rowconfigure(0, weight=1)
         self.sidebar = self._build_sidebar(self.body)
@@ -294,7 +292,7 @@ class App:
         self.main = self._build_main(self.body)
         self.main.grid(row=0, column=1, sticky="nsew")
         self.footer = self._build_footer()
-        self.footer.grid(row=2, column=0, sticky="ew")
+        self.footer.grid(row=1, column=0, sticky="ew")
 
     def _tip(self, widget: tk.Misc, text) -> None:
         Tooltip(widget, self.theme, text)
@@ -304,28 +302,29 @@ class App:
         palette = self.theme.palette
         return self.icons[(name, palette.text_secondary)], "disabled", self.icons[(name, palette.text_faint)]
 
-    def _build_header(self) -> ttk.Frame:
+    def _build_machine_status(self, parent: ttk.Frame) -> ttk.Frame:
+        """The processor and the graphics card with the memory this program uses on each, at the sidebar's foot."""
         px = self.theme.px
-        header = ttk.Frame(self.root, padding=(px(12), px(12), px(20), px(8)))
-        header.columnconfigure(1, weight=1)
-        sidebar_button = ttk.Button(header, image=self._icon_images("sidebar"), style="Icon.TButton",
-                                    takefocus=False, command=self.toggle_sidebar)
-        sidebar_button.grid(row=0, column=0, padx=(0, px(10)))
-        self._tip(sidebar_button, "Hide or show the settings (Ctrl+B).")
-        status = ttk.Frame(header)
-        status.grid(row=0, column=2, sticky="e")
+        status = ttk.Frame(parent, padding=(px(20), px(8), px(6), px(8)))
+        status.columnconfigure(1, weight=1)
         self.cpu_label = ttk.Label(status, text="", style="Small.TLabel")
-        self.cpu_label.grid(row=0, column=0, padx=(0, px(20)))
+        self.cpu_label.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, px(2)))
         self._tip(self.cpu_label, "The processor, and the main memory (RAM) this program uses now / installed.")
         self.gpu_dot = ttk.Label(status, text="●", style="Faint.TLabel")
-        self.gpu_dot.grid(row=0, column=1, padx=(0, px(6)))
-        self.gpu_label = ttk.Label(status, text="Checking the GPU…", style="Small.TLabel")
-        self.gpu_label.grid(row=0, column=2)
+        self.gpu_dot.grid(row=1, column=0, sticky="nw", padx=(0, px(6)))
+        self.gpu_label = ttk.Label(status, text="Checking the GPU…", style="Small.TLabel",
+                                   wraplength=px(SIDEBAR_WIDTH - 56), justify="left")
+        self.gpu_label.grid(row=1, column=1, sticky="w")
         self._tip(self.gpu_label, "The graphics card, the memory on it (VRAM) this program uses now (FSR and its "
                                   "frames) / its size, and the version of FSR in AMD's DLL.\n\n"
                                   f"{APP_NAME} is an independent tool, not made or endorsed by AMD; AMD, Radeon "
                                   "and FidelityFX are trademarks of Advanced Micro Devices, Inc.")
-        return header
+        return status
+
+    def _main_padding(self) -> tuple[int, int, int, int]:
+        """Around the preview: next to the sidebar, or the window's own margin once it is folded."""
+        px = self.theme.px
+        return px(4) if self.sidebar_visible else px(20), px(12), px(20), px(6)
 
     def _section(self, parent: ttk.Frame, row: int, title: str) -> int:
         px = self.theme.px
@@ -336,7 +335,8 @@ class App:
     def _build_sidebar(self, parent: ttk.Frame) -> ttk.Frame:
         """Settings top to bottom in the order they are decided: source, size, motion, sharpening, output.
 
-        The settings sit in a canvas that scrolls (wheel or scrollbar) when the window is too short for them.
+        The settings sit in a canvas that scrolls (wheel or scrollbar) when the window is too short for them;
+        the machine's status stays below it.
         """
         palette, px = self.theme.palette, self.theme.px
         holder = ttk.Frame(parent, width=px(SIDEBAR_WIDTH))
@@ -350,7 +350,10 @@ class App:
         # The scrollbar's column stays reserved, so the settings keep one width whether it shows or not (a canvas
         # window does not always follow its canvas back to a narrower width, e.g. after full screen).
         holder.columnconfigure(1, minsize=scrollbar.winfo_reqwidth() + px(2))
-        sidebar = ttk.Frame(canvas, padding=(px(20), px(2), px(6), px(8)))
+        tk.Frame(holder, background=palette.border, height=px(1)).grid(row=1, column=0, columnspan=2, sticky="ew",
+                                                                       padx=(px(20), px(6)))
+        self._build_machine_status(holder).grid(row=2, column=0, columnspan=2, sticky="ew")
+        sidebar = ttk.Frame(canvas, padding=(px(20), px(12), px(6), px(8)))
         sidebar.columnconfigure(0, weight=1)
         item = canvas.create_window(0, 0, window=sidebar, anchor="nw")
         self.sidebar_canvas, self.sidebar_scrollbar, self.sidebar_content = canvas, scrollbar, sidebar
@@ -565,7 +568,7 @@ class App:
 
     def _build_main(self, parent: ttk.Frame) -> ttk.Frame:
         px = self.theme.px
-        main = ttk.Frame(parent, padding=(px(4), px(4), px(20), px(6)))
+        main = ttk.Frame(parent, padding=self._main_padding())
         main.columnconfigure(0, weight=1)
         main.rowconfigure(2, weight=1)
         self.banner = ttk.Frame(main, style="Banner.TFrame", padding=(px(14), px(8), px(6), px(8)))
@@ -579,9 +582,13 @@ class App:
 
         self.toolbar = ttk.Frame(main)
         self.toolbar.grid(row=1, column=0, sticky="ew", pady=(0, px(8)))
-        self.toolbar.columnconfigure(1, weight=1)
+        self.toolbar.columnconfigure(2, weight=1)
+        sidebar_button = ttk.Button(self.toolbar, image=self._icon_images("sidebar"), style="Icon.TButton",
+                                    takefocus=False, command=self.toggle_sidebar)
+        sidebar_button.grid(row=0, column=0, padx=(0, px(10)))
+        self._tip(sidebar_button, "Hide or show the settings (Ctrl+B).")
         self.side_boxes: dict[str, ttk.Combobox] = {}
-        for side, column, sticky in (("left", 0, "w"), ("right", 2, "e")):
+        for side, column, sticky in (("left", 1, "w"), ("right", 3, "e")):
             group = ttk.Frame(self.toolbar)
             group.grid(row=0, column=column, sticky=sticky)
             ttk.Label(group, text=side.capitalize(), style="Small.TLabel").grid(row=0, column=0, padx=(0, px(6)))
@@ -598,7 +605,7 @@ class App:
                            "move it.")
             self.side_boxes[side] = box
         zoom_chips = ttk.Frame(self.toolbar)
-        zoom_chips.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(px(8), 0))
+        zoom_chips.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(px(8), 0))
         zoom_chips.columnconfigure(len(ZOOM_LEVELS), weight=1)
         self.zoom_var = tk.StringVar(value="fit")
         self.zoom_chips = []
@@ -1362,6 +1369,7 @@ class App:
             self.sidebar.grid()
         else:
             self.sidebar.grid_remove()
+        self.main.configure(padding=self._main_padding())
         self._repaint_everything()
 
     def toggle_fullscreen(self) -> None:
@@ -1371,7 +1379,7 @@ class App:
         if not self.fullscreen:
             self.screen.leave()
             self.root.update_idletasks()  # the rows come back laid out once, at the window's own size
-        for widget in (self.header, self.footer, self.toolbar):
+        for widget in (self.footer, self.toolbar):
             if self.fullscreen:
                 widget.grid_remove()
             else:
@@ -1388,7 +1396,7 @@ class App:
                 self.log_panel.grid()
             if self.banner_label.cget("text"):
                 self.banner.grid()  # a message that came during full screen waited for the window
-            self.main.configure(padding=(px(4), px(4), px(20), px(6)))
+            self.main.configure(padding=self._main_padding())
         self.view.set_fullscreen(self.fullscreen)
         self.transport.set_fullscreen(self.fullscreen)
         if self.info is not None and not is_image(self.input_path):

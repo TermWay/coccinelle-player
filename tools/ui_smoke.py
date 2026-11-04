@@ -169,7 +169,7 @@ def main() -> int:
         yield lambda: app.gpu_ready is not None
         check(app.gpu_ready is True, f"GPU check: {app.gpu_label.cget('text')}")
         check("RAM" in app.cpu_label.cget("text") and "VRAM" in app.gpu_label.cget("text"),
-              f"header: {app.cpu_label.cget('text')} | {app.gpu_label.cget('text')}")
+              f"machine status: {app.cpu_label.cget('text')} | {app.gpu_label.cget('text')}")
         check(app.choose_button.cget("text") == "Choose file…", "button reads Choose file… without a file")
         shot("01_empty")
         post_drop(root, [args.video])
