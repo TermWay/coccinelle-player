@@ -186,6 +186,9 @@ has none of those; the tool substitutes, as the quality lab (§14) settled:
   before "Source"; folded, the same button starts the toolbar, in the same place on the screen. It scrolls when
   the window is too short; the wheel anywhere over it scrolls it and never changes a control. Everything but
   Processor is locked during a whole-file upscale, a save or an image upscale.
+- Folding or unfolding the sidebar and showing or hiding the log dissolve the old layout into the new one in
+  0.12 s: no widget is ever seen in a wrong place. While the window changes size only what changes is redrawn, and
+  what is anchored to the right follows the edge.
 - Under the settings, always in view while the sidebar shows, refreshed every 2 s: "<processor> · RAM <this
   program> / <installed> GB" and "● <graphics card> · VRAM <this program> / <card> GB · FSR <version>" (VRAM as
   DXGI counts it, Vulkan memory included), whose tooltip also says the tool is independent, not made or endorsed

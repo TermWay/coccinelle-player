@@ -23,6 +23,8 @@ import sys
 import threading
 import time
 import tkinter as tk
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -45,7 +47,7 @@ from .ui_theme import Theme, enable_dark_dialogs, style_title_bar
 from .ui_tooltip import Tooltip
 from .ui_transport import Transport, format_time
 from .ui_video import OFF, REFERENCE_FILTERS, ZOOM_LEVELS, VideoView
-from .ui_window import Fullscreen, repaint
+from .ui_window import Curtain, Fullscreen, keep_contents_on_resize, repaint
 
 APP_NAME = "Coccinelle Player"
 POLL_MS = 30
@@ -236,6 +238,7 @@ class App:
         self.gpu_text = ""
         self.screen = Fullscreen(root)
         self._repaint_job: str | None = None
+        keep_contents_on_resize(root)
         self.presets = PresetStore()
         self.side_choices = dict(DEFAULT_SIDES)
         self._shown_layers: dict[str, RenderSettings] = {}
@@ -1377,14 +1380,14 @@ class App:
         if self.fullscreen:
             return
         self.sidebar_visible = not self.sidebar_visible
-        if self.sidebar_visible:
-            self.sidebar.grid()
-            self.unfold_button.grid_remove()
-        else:
-            self.sidebar.grid_remove()
-            self.unfold_button.grid()
-        self.main.configure(padding=self._main_padding())
-        self._repaint_everything()
+        with self._behind_curtain():
+            if self.sidebar_visible:
+                self.sidebar.grid()
+                self.unfold_button.grid_remove()
+            else:
+                self.sidebar.grid_remove()
+                self.unfold_button.grid()
+            self.main.configure(padding=self._main_padding())
 
     def toggle_fullscreen(self) -> None:
         """Full screen on the monitor the window is on, or back to the window exactly as it was."""
@@ -1440,6 +1443,19 @@ class App:
         if self.fullscreen:
             self._rest_later()
 
+    @contextmanager
+    def _behind_curtain(self) -> Iterator[None]:
+        """Change the layout out of sight: the window's old picture stays in front until the new layout is drawn,
+        then dissolves into it."""
+        curtain = Curtain(self.root)
+        try:
+            yield
+            self.root.update_idletasks()
+        finally:
+            # Idle callbacks run once no event is left, and the paints that follow are idle callbacks too: the
+            # second one comes after them.
+            self.root.after_idle(self.root.after_idle, curtain.fade)
+
     def _repaint_everything(self) -> None:
         """After a big layout change: lay out now, then have every widget repaint where it now is, now and once
         more when the layout has settled, so none is left unpainted (black) or showing the old layout."""
@@ -1463,10 +1479,12 @@ class App:
                     pending.append(child)
 
     def _window_configured(self, event: tk.Event) -> None:
-        """The window moved or changed size (another monitor, restored from the taskbar): repaint it all once
-        it stops."""
+        """The window moved or changed size (another monitor, restored from the taskbar): lay it out at once, or
+        each level of nested widgets would wait for its own idle pass and what follows the right edge would trail
+        it by several steps of a drag, then repaint it all once it stops."""
         if event.widget is not self.root:
             return
+        self.root.update_idletasks()
         if self._repaint_job is not None:
             self.root.after_cancel(self._repaint_job)
         self._repaint_job = self.root.after(REPAINT_SETTLE_MS, self._repaint_widgets)
@@ -1626,12 +1644,12 @@ class App:
 
     def toggle_log(self) -> None:
         self.log_visible = not self.log_visible
-        if self.log_visible and not self.fullscreen:
-            self.log_panel.grid()
-        else:
-            self.log_panel.grid_remove()
-        self.log_button.configure(text="Hide log" if self.log_visible else "Show log")
-        self._repaint_everything()
+        with self._behind_curtain():
+            if self.log_visible and not self.fullscreen:
+                self.log_panel.grid()
+            else:
+                self.log_panel.grid_remove()
+            self.log_button.configure(text="Hide log" if self.log_visible else "Show log")
 
     def _close_requested(self) -> None:
         """The window's close button: a whole-file upscale in progress would be lost, so ask first."""

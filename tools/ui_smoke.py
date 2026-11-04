@@ -406,9 +406,18 @@ def main() -> int:
         root.state("normal")
         root.geometry(windowed)
         yield 0.6
+        redraw_styles = ui_window.CS_HREDRAW | ui_window.CS_VREDRAW
+        classes = [ui_window.user32.GetClassLongPtrW(handle, ui_window.GCL_STYLE)
+                   for handle in (root.winfo_id(), ui_window.frame_handle(root))]
+        check(not any(style & redraw_styles for style in classes), f"a size change repaints no widget: {classes}")
+        curtains = []
+        make_curtain = ui.Curtain
+        ui.Curtain = lambda window: curtains.append(make_curtain(window)) or curtains[-1]
         fold_place = app.fold_button.winfo_rootx(), app.fold_button.winfo_rooty()
         app.toggle_sidebar()
         yield 0.6
+        ui.Curtain = make_curtain
+        check(len(curtains) == 1 and curtains[0].closed, "the fold's curtain fades and is gone")
         check(not app.sidebar.winfo_ismapped(), "sidebar folds away")
         unfold_place = app.unfold_button.winfo_rootx(), app.unfold_button.winfo_rooty()
         check(fold_place == unfold_place, f"its button stays in place ({fold_place}, then {unfold_place})")

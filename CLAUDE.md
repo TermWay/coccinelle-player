@@ -41,6 +41,11 @@ Python package stay `fsr4`.
   Its presets go to a scratch file in `--out`, never the user's `%APPDATA%` one. The window pops up on the desktop
   while it runs; the usual clip is a 1080p60 WMV with WMA audio. The saved outputs it makes are deleted once
   checked (a default output name never replaces a file, so each run would add one).
+- `python tools/ui_flicker.py --video <clip> --frames out/ui/flicker` samples the screen on every composed frame
+  while the sidebar folds, a repaint runs and the window changes size: stray pixels, blinks, how far what follows
+  the right edge lags. PrintWindow never shows these. The window pops up and must be left alone: the run refuses if
+  someone folds the sidebar or another window comes over it. It cannot drive a real mouse drag: Tk runs its events
+  inside window messages then, and a ctypes call that triggers that crashes Python (no thread state to come back to).
 - `tests/test_render.py` (GPU) checks that pieces rendered around seeks join into exactly the single-pass video;
   `tests/test_audio.py` needs a sound device and skips without one.
 - `tests/test_formats.py` builds one small file per container/codec family with ffmpeg and round-trips it;
@@ -83,12 +88,20 @@ Python package stay `fsr4`.
   `player.BUFFER_MAX_SECONDS` (tested), or a reverse stall never ends. `_Stream.put_back` returns frames taken for a tick that cannot be shown yet: in
   frame-by-frame mode a released frame would never come back. Backwards, `ReverseFrameStream` decodes chunks
   and the window sets the renderer's target just behind the ready stretch behind the playhead.
-- After a big layout change (sidebar folded or unfolded, full screen, log, the window moved or resized) the
-  window repaints every widget through Windows (`ui_window.repaint`) and through Tk (an Expose each), now and
-  again `REPAINT_SETTLE_MS` later. Maximizing loses what the widgets had drawn (black until redrawn), and with
-  slow element redraws (see the theme note) they stayed black 1 to 2 s; a whole repaint now takes about 20 ms
-  (70 ms at 3440 wide). Measure repaints with a probe that counts black pixels on screen from another thread
-  (keep no frames: Windows' maximize animation draws other things there).
+- After full screen, or once the window has moved or changed size, it repaints every widget through Windows
+  (`ui_window.repaint`) and through Tk (an Expose each), `REPAINT_SETTLE_MS` later (and at once for full screen).
+  Maximizing used to lose what the widgets had drawn (black until redrawn, 1 to 2 s with slow element redraws, see
+  the theme note); now it measures no black pixel. A whole repaint takes about 100 ms and shows no change. Measure
+  repaints with a probe that counts black pixels on screen from another thread (keep no frames: Windows' maximize
+  animation draws other things there).
+- Tk registers its window classes with CS_HREDRAW and CS_VREDRAW: each size change repainted every widget once per
+  level of nesting (390 Expose events, 360 ms a step). `ui_window.keep_contents_on_resize` takes them off (8 events,
+  40 ms); the frame's class can only be reached once Tk has created the frame, at the first map. The root's Configure
+  runs `update_idletasks`, or each level of nesting waits for its own idle pass and the right side trails the edge.
+- Tk moves a parent window first and its children in later passes, and Windows shows every stage (the right side of
+  the toolbar rode 340 px away with `main` for 5 frames). Folding the sidebar and toggling the log change the layout
+  behind a `ui_window.Curtain`: a layered popup with the window's old picture, faded once the new layout is drawn
+  (two idle passes later: the paints are idle callbacks too). Copying the screen needs CAPTUREBLT to see it.
 - While playing, a layer whose decoder still works at the previous zoom or position is drawn with `reframe`
   (its picture resampled to where it belongs), never stretched: both sides of the divider must move together.
 - `tools/window_capture.py` can capture what the screen shows (`screen=True`; `settle=False` to see paints Tk

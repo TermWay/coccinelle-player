@@ -873,11 +873,8 @@ class Player:
 
     def _finish(self) -> None:
         """Playback reached the end (or the start, backwards): stop there."""
-        end = self.total - 1 if self.speed > 0 else 0
+        self.position = self.total - 1 if self.speed > 0 else 0
         self._stop_playback()
-        self.position = end
-        self._still_wanted = end
-        self._position_event(force=True)
         self.on_event("ended")
 
     def _stop_playback(self) -> None:
