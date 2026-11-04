@@ -247,14 +247,16 @@ optical flow is fastest with about 8 threads here (47 fps; 32 threads: 39 fps), 
 
 Quality lab (`python tools/lab_quality.py`, PSNR against the original after a 2x area downscale):
 
-| Content                                   | Lanczos | AMD HQ scaler | FSR 4                      |
-|-------------------------------------------|---------|---------------|----------------------------|
-| Still image, smooth CGI wallpaper         | 42.06   | 43.25         | 42.32                      |
-| Still image, aliased fractal              | 26.38   | 26.26         | 25.98                      |
-| Panning fractal clip, no motion vectors   | 26.42   | 26.34         | 25.59                      |
-| Panning fractal clip, DIS fast flow       | 26.42   | 26.34         | 26.82 (negated flow 25.63) |
-| Panning fractal clip, DIS medium flow     | 26.42   | 26.34         | 27.10                      |
-| Natural footage, DIS fast flow            | 44.90   | 44.32         | 44.46                      |
+| Content                                   | Lanczos | AMD HQ scaler | Real-ESRGAN | FSR 4                      |
+|-------------------------------------------|---------|---------------|-------------|----------------------------|
+| Still image, smooth CGI wallpaper         | 42.06   | 43.25         | 36.02       | 42.32                      |
+| Still image, aliased fractal              | 26.38   | 26.26         | 24.27       | 25.98                      |
+| Panning fractal clip, no motion vectors   | 26.42   | 26.34         | 24.35       | 25.59                      |
+| Panning fractal clip, DIS fast flow       | 26.42   | 26.34         | 24.35       | 26.82 (negated flow 25.63) |
+| Panning fractal clip, DIS medium flow     | 26.42   | 26.34         | 24.35       | 27.10                      |
+| Natural footage, DIS fast flow            | 44.90   | 44.32         | 34.36       | 44.46                      |
+| Same, small clip through H.264 CRF 28     | 40.78   | 40.84         | 34.91       | 40.84                      |
+| Screen recording, DIS fast flow           | 26.89   | 27.20         | 26.67       | 26.64                      |
 
 Things the lab settled: motion vectors from optical flow help (+1.2 dB over zero flow, and the sign is
 verified by the negated run); faking the camera jitter by resampling the input costs 2 to 8 dB and is not
@@ -267,6 +269,13 @@ flow. It wins on the smooth still, is level with FSR 4 on natural footage, and l
 where FSR 4 gathers detail across frames. Lanczos leads on natural footage only because PSNR rewards softness: on
 one frame it keeps 43% of the original's detail energy, the HQ scaler 99%, FSR 4 112%. Video SR 1.0 scores a little
 higher on stills (43.81) but leaves stair steps on diagonal edges.
+
+Real-ESRGAN (`realesrgan-ncnn-vulkan`, its 2x video model; the lab's `--realesrgan`) was measured too and is not
+used. It looks much crisper and removes compression artifacts, but it repaints the picture rather than recovering
+it: on one frame of natural footage, 4.5 times the original's detail energy and SSIM 0.979 against 0.995 for FSR 4.
+It comes out 2 to 3 levels brighter, and on small text it draws clean letters that are the wrong letters. It takes
+160 ms a frame at 2880x2160 (FSR 4: 19 ms). `realesrgan-x4plus` is no closer to the original and takes 4.4 s a frame.
+Animation, which that video model is made for, has not been measured.
 
 ## Layout
 - `fsr4/vk.py`, `fsr4/vk_types.py`, `fsr4/gpu.py`: ctypes Vulkan binding, generated structs, device and copies.
