@@ -10,10 +10,13 @@ during a whole-file upscale) shows what it has and never holds playback up.
 
 Playback runs at any `speed`: from 0.25x to 2x the sound plays, its pitch kept (ffmpeg's atempo), the sound
 card is the clock and late frames are dropped to stay with it. Slower, the sound is off and the system clock
-runs. Faster than 2x and backwards (negative speeds) the sound is off too and every frame is shown in order:
-when the decoders cannot keep up, playback slows down rather than skip to frames nobody decoded. Backwards,
+runs. Faster than 2x and backwards (negative speeds) the sound is off too and frames are shown in order, every
+frame backwards and every second or third one above 2x (drawing a frame costs more than decoding one): when the
+decoders cannot keep up, playback slows down rather than skip to frames nobody decoded. Backwards,
 each decoder works in short chunks that it hands over last frame first, and the window has the renderer work
-behind the playhead.
+behind the playhead. A new speed in the same direction leaves the decoders running and the system clock takes
+over until the speed has settled, then the sound comes back: a drag on the speed slider does not hold the
+picture up. A speed of 0 pauses, and the next speed plays on from there.
 
 Everything runs on the player's own thread; the window sends commands and receives events through
 `on_event(kind, *values)`: "position" (frame shown), "state" (playing, buffering), "ended", "end" (the
@@ -313,6 +316,8 @@ class Player:
         self.follow_live = False
         self._commands: queue.Queue = queue.Queue()
         self._deferred: deque[tuple] = deque()
+        self._paused_by_speed = False  # a speed of 0 stopped playback: the next speed plays on
+        self._sound_settle: float | None = None  # after a new speed, when the sound starts again at it
         self._still_wanted: int | None = None
         self._audio: AudioPlayer | None = None
         # Opening the sound device takes about half a second: do it now, not when Play is pressed.
@@ -364,22 +369,25 @@ class Player:
 
     def _next_command(self, timeout: float | None) -> tuple | None:
         """The next command, waiting up to `timeout` (None: forever, 0: not at all). Consecutive seeks queued
-        behind each other become the last one, so a drag never leaves a backlog."""
+        behind each other become the last one, and so do speeds, so a drag never leaves a backlog."""
         if self._deferred:
             return self._deferred.popleft()
         try:
             command = self._commands.get(timeout=timeout) if timeout != 0.0 else self._commands.get_nowait()
         except queue.Empty:
             return None
-        while command[0] in ("seek", "step"):
+        while command[0] in ("seek", "step", "speed"):
             try:
                 following = self._commands.get_nowait()
             except queue.Empty:
                 break
-            if following[0] not in ("seek", "step"):
+            if command[0] == following[0] == "speed":
+                command = following
+            elif command[0] != "speed" and following[0] in ("seek", "step"):
+                command = merge_seeks(command, following)
+            else:
                 self._deferred.append(following)
                 break
-            command = merge_seeks(command, following)
         return command
 
     def pause(self) -> None:
@@ -395,9 +403,8 @@ class Player:
         self._commands.put(("step", frames))
 
     def set_speed(self, speed: float) -> None:
-        """Playing speed: 1 is real time, 0.5 half speed, -1 backwards in real time (never 0)."""
-        if speed == 0:
-            raise ValueError("a speed of 0 is a pause")
+        """Playing speed: 1 is real time, 0.5 half speed, -1 backwards in real time. 0 pauses, and whichever speed
+        comes next plays on from there."""
         self._commands.put(("speed", speed))
 
     def set_volume(self, volume: float, muted: bool) -> None:
@@ -515,10 +522,8 @@ class Player:
             else:
                 self._still_wanted = frame
             self._position_event(force=True)
-        elif kind == "speed" and command[1] != self.speed:
-            self.speed = command[1]
-            if self.playing:
-                self._restart(self.position)
+        elif kind == "speed":
+            self._change_speed(command[1])
         elif kind == "volume":
             _, self.volume, self.muted = command
             self._sound(lambda audio: audio.set_volume(0.0 if self.muted else self.volume))
@@ -542,6 +547,29 @@ class Player:
                 self._position_event(force=True)
 
     # ---- playback -------------------------------------------------------------------------------
+
+    def _change_speed(self, speed: float) -> None:
+        """Go on at `speed`. The decoders only start over for a change of direction: frames come in the same order
+        at any speed, so the clock goes on from where it is at the new pace. Each sound start takes a moment and
+        a drag sends many speeds, so the sound waits for the last one (`_sound_settle`)."""
+        if speed == 0:
+            if self.playing:
+                self._paused_by_speed = True
+                self._stop_playback()
+            return
+        turned = speed * self.speed < 0
+        retime = self.playing and not self.buffering and not turned and speed != self.speed
+        clock = self._clock_frame() if retime else 0.0
+        self.speed = speed
+        if self._paused_by_speed:
+            self._paused_by_speed = False
+            self._handle(("play",))
+        elif self.playing and turned:
+            self._restart(self.position)
+        elif retime:
+            self._sound(lambda audio: audio.pause())
+            self._clock_frame0, self._clock_perf0 = clock, time.perf_counter()
+            self._sound_settle = self._clock_perf0 + RESTART_SETTLE_SECONDS
 
     def _restart(self, frame: int) -> None:
         """(Re)start playing at `frame`: buffering first when it is not upscaled yet."""
@@ -685,14 +713,20 @@ class Player:
         """Whether the sound plays at this speed (and the sound card keeps time)."""
         return bool(self.info.audio) and SOUND_SPEEDS[0] <= self.speed <= SOUND_SPEEDS[1]
 
-    def _every_frame(self) -> bool:
-        """Whether every frame is shown in order (faster than the sound plays, and backwards), slowing down when
-        the decoders cannot keep up."""
+    def _in_order(self) -> bool:
+        """Whether frames are shown in order (faster than the sound plays, and backwards), slowing down when the
+        decoders cannot keep up."""
         return self.speed < 0 or self.speed > SOUND_SPEEDS[1]
 
-    def _start_clock(self, frame: int) -> None:
+    def _stride(self) -> int:
+        """Frames from one shown to the next when they are shown in order: as many as keep the frames drawn a second
+        near what 2x draws. Backwards every frame shows: the decoders are the limit there."""
+        return max(1, math.ceil(self.speed / SOUND_SPEEDS[1]))
+
+    def _start_clock(self, frame: float) -> None:
         self._clock_frame0 = frame
         self._clock_perf0 = time.perf_counter()
+        self._sound_settle = None
         self._last_audio = (None, 0.0)
         if self._sound_plays() and self._open_audio() is not None:
             self._sound(lambda audio: audio.start(frame / self.rate, self.speed))
@@ -735,7 +769,7 @@ class Player:
         """Frames since the start of the file: from the sound card while the sound plays, else from the system
         clock at the playing speed."""
         now = time.perf_counter()
-        audio = self._audio if self._sound_plays() else None
+        audio = self._audio if self._sound_plays() and self._sound_settle is None else None
         if audio is not None and audio.error is not None:
             self._drop_audio(audio.error)
             audio = None
@@ -774,19 +808,22 @@ class Player:
             return
         direction = self.direction
         clock = self._clock_frame()
+        if self._sound_settle is not None and time.perf_counter() >= self._sound_settle:
+            self._start_clock(clock)
         if direction > 0:
-            due = max(int(math.floor(clock + 1e-6)), self._clock_frame0)
+            due = int(math.floor(max(clock, self._clock_frame0) + 1e-6))
         else:
-            due = min(int(math.ceil(clock - 1e-6)), self._clock_frame0)
-        if self._every_frame():
-            following = self._resume_frame
-            if (due - following) * direction < 0:
-                self._wait((following - clock) * direction / (self.rate * abs(self.speed)))
-                return
-            if (due - following) * direction > 1:
+            due = int(math.ceil(min(clock, self._clock_frame0) - 1e-6))
+        following = self._resume_frame
+        if (due - following) * direction < 0:
+            self._wait((following - clock) * direction / (self.rate * abs(self.speed)))
+            return
+        if self._in_order():
+            stride = self._stride()
+            if (due - following) * direction > stride:
                 # Late (the decoders are slower than this speed): go on from this frame at the right pace.
                 self._clock_frame0, self._clock_perf0 = following, time.perf_counter()
-            due = following
+            due = following + (stride - 1) * direction
         if self._past_last(due):
             self._finish()
             return

@@ -34,6 +34,7 @@ import window_capture  # noqa: E402
 from fsr4 import media, ui, ui_theme, ui_window, usage  # noqa: E402
 from fsr4.presets import BEST, PresetStore  # noqa: E402
 from fsr4.realesrgan import REAL_ESRGAN  # noqa: E402
+from fsr4.ui_transport import KNOB_INSET, speed_fraction  # noqa: E402
 
 WM_DROPFILES = 0x0233
 WM_CLOSE = 0x0010
@@ -359,7 +360,24 @@ def main() -> int:
         yield 0.6
         check(app.player.position == start - 1, f"the previous-frame button steps one frame ({start} -> "
                                                 f"{app.player.position})")
-        app.transport.set_speed(-0.25, notify=True)
+        speed_bar = app.transport.speed_bar
+        volume_track = app.transport.volume_bar.winfo_rooty() + app.transport.volume_bar.winfo_height() // 2
+        speed_track = speed_bar.winfo_rooty() + speed_bar.winfo_height() // 2
+        check(volume_track == speed_track, f"the volume and speed tracks share a line ({volume_track}, {speed_track})")
+
+        def speed_x(speed: float) -> int:
+            inset = app.theme.px(KNOB_INSET)
+            return int(round(inset + (speed_bar.winfo_width() - 2 * inset) * speed_fraction(speed)))
+
+        def click_speed(speed: float) -> None:
+            for sequence in ("<ButtonPress-1>", "<ButtonRelease-1>"):
+                speed_bar.event_generate(sequence, x=speed_x(speed), y=speed_bar.winfo_height() // 2)
+
+        click_speed(0.25)
+        check(app.transport.speed == 0.25, f"a click on the ¼ mark plays at 0.25× ({app.transport.speed})")
+        app.transport.reverse_button.invoke()
+        check(app.transport.speed_label.cget("text") == "−0.25×",
+              f"the reverse toggle turns the speed round ({app.transport.speed_label.cget('text')})")
         app.toggle_play()
         yield lambda: app.player.playing and not app.player.buffering
         first = app.player.position
@@ -367,9 +385,28 @@ def main() -> int:
         back = first - app.player.position
         check(back >= rate / 4, f"plays backwards at a quarter speed ({back} frames back in 2 s)")
         shot("05g_backwards")
+        speed_bar.event_generate("<ButtonPress-1>", x=speed_x(0.5), y=4)
+        speed_bar.event_generate("<B1-Motion>", x=(speed_x(0.25) + speed_x(0.5)) // 2, y=4)
+        check(app.transport.speed == -0.35, f"a drag stops between the marks too ({app.transport.speed})")
+        shot("05g2_speed_dragged")
+        speed_bar.event_generate("<B1-Motion>", x=speed_x(0.0), y=4)
+        speed_bar.event_generate("<ButtonRelease-1>", x=speed_x(0.0), y=4)
+        yield lambda: not app.player.playing
+        check(app.transport.speed_label.cget("text") == "0×", "at 0 the video pauses")
+        shot("05g3_speed_at_0")
+        click_speed(0.5)
+        yield lambda: app.player.playing and not app.player.buffering
+        check(app.player.speed == -0.5, f"lifting the slider plays on, still backwards ({app.player.speed})")
+        click_speed(0.0)
+        yield lambda: not app.player.playing
+        app.toggle_play()
+        yield lambda: app.player.playing
+        check(app.transport.speed == -1.0, f"Play at 0 goes back to normal speed ({app.transport.speed})")
         app.player.pause()
         yield lambda: not app.player.playing
-        app.transport.set_speed(1.0, notify=True)
+        app.transport.speed_label.event_generate("<ButtonRelease-1>")
+        yield lambda: app.player.speed == 1.0
+        check(not app.transport.backwards, "a click on the value goes back to 1× forwards")
         choose("left", "off")
         yield 0.8
         check(app.view.single and app.view.needed_layers() == {app.view.sides["right"]},
@@ -567,6 +604,10 @@ def main() -> int:
         root.geometry(f"{minimum_width}x{minimum_height}")
         yield 1.0
         shot("11_minimum_size")
+        button = app.transport.fullscreen_button
+        check(button.winfo_x() + button.winfo_width() <= app.transport.controls.winfo_width(),
+              f"the playback controls all fit at the minimum size ({button.winfo_x() + button.winfo_width()} "
+              f"for {app.transport.controls.winfo_width()})")
         content, canvas = app.sidebar_content, app.sidebar_canvas
         fits = content.winfo_reqheight() <= canvas.winfo_height() + 1
         check(fits or app.sidebar_scrollbar.winfo_ismapped(),

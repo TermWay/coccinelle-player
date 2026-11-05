@@ -91,8 +91,12 @@ Python package stay `fsr4`.
   After either switch everything is repainted. The sidebar keeps its scrollbar column reserved: a canvas window
   does not always follow its canvas back to a narrower width.
 - Playing speed: the sound card is the clock from 0.25x to 2x (atempo) and late frames are dropped; slower,
-  the system clock runs and late frames are still dropped; faster than 2x and backwards every frame is shown
-  in order, the clock re-anchored when a decoder is late. `ui.REVERSE_AHEAD_SECONDS` must stay above
+  the system clock runs and late frames are still dropped; faster than 2x and backwards frames are shown in order
+  (every frame backwards, every `Player._stride` above 2x: drawing a frame costs more than decoding one), the clock
+  re-anchored when a decoder is late. A new speed in the same direction keeps the decoders and the clock's place,
+  on the system clock until `_sound_settle`: starting the sound at each step of a drag would stop the clock for
+  good. Speed 0 pauses and the next speed plays on (the player keeps its last real speed, so `direction` stays
+  valid). `ui.REVERSE_AHEAD_SECONDS` must stay above
   `player.BUFFER_MAX_SECONDS` (tested), or a reverse stall never ends. `_Stream.put_back` returns frames taken for a tick that cannot be shown yet: in
   frame-by-frame mode a released frame would never come back. Backwards, `ReverseFrameStream` decodes chunks
   and the window sets the renderer's target just behind the ready stretch behind the playhead.

@@ -3,9 +3,11 @@ or sound)."""
 import queue
 import sys
 import threading
+import time
 import unittest
 from fractions import Fraction
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import numpy as np
@@ -245,6 +247,123 @@ class EndTest(unittest.TestCase):
                 self.assertEqual(player.total, self.REAL)
             finally:
                 player.close()
+
+
+class PlayingView(FakeView):
+    """Records the frame number of each frame played."""
+
+    def __init__(self):
+        super().__init__()
+        self.played: list[int] = []
+
+    def present(self, source: np.ndarray, shown: dict) -> None:
+        self.played.append(int(source[0, 0, 0]))
+
+    def decode_target(self) -> tuple:
+        return "the view", None, (4, 2), None
+
+
+class SpeedTest(unittest.TestCase):
+    """Changing speed while playing a silent video of 200 frames a second, with fake decoders."""
+
+    FRAMES = 250
+
+    def setUp(self):
+        FakeReader.opened = []
+        self.view = PlayingView()
+        source = Path("clip.mkv")
+        info = MediaInfo(width=4, height=2, frame_rate=Fraction(200), frame_count=self.FRAMES, duration=1.25,
+                         codec="h264", container="matroska")
+        patches = (mock.patch.object(player_module, "FrameReader", self.reader),
+                   mock.patch.object(player_module, "read_frame",
+                                     lambda path, info, frame, keyframes, pixels: np.full((2, 4, 4), 0, np.uint8)),
+                   mock.patch.object(player_module, "AudioPlayer", side_effect=OSError("no sound in this test")))
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.player = Player(self.view, source, info, KeyframeIndex(source, info), lambda kind, *values: None)
+        self.addCleanup(self.player.close)
+        self.player.attach(SimpleNamespace(total=self.FRAMES, exact=True), (4, 2))
+
+    def reader(self, path, info, start_frame, keyframes, pixel_format):
+        return FakeReader(start_frame, self.FRAMES - start_frame)
+
+    def wait_for(self, condition, what: str) -> None:
+        deadline = time.monotonic() + 5
+        while not condition():
+            self.assertLess(time.monotonic(), deadline, f"waiting for {what}")
+            time.sleep(0.002)
+
+    def played_on(self) -> None:
+        count = len(self.view.played)
+        self.wait_for(lambda: len(self.view.played) >= count + 3, "more frames")
+
+    def test_a_new_speed_keeps_the_decoders(self):
+        self.player.play()
+        self.played_on()
+        opened = list(FakeReader.opened)
+        for speed in (0.5, 0.25, 0.1):
+            self.player.set_speed(speed)
+            self.wait_for(lambda: self.player.speed == speed, "the new speed")
+            self.played_on()
+        self.assertEqual(FakeReader.opened, opened)
+        frames = self.view.played
+        self.assertEqual(frames, sorted(frames))
+
+    def test_a_drag_on_the_speed_keeps_the_picture_moving(self):
+        self.player.play()
+        self.played_on()
+        played = len(self.view.played)
+        for step in range(150):  # a new speed every 2 ms is more often than any frame comes
+            self.player.set_speed(0.5 + step / 1000)
+            time.sleep(0.002)
+        self.assertGreater(len(self.view.played) - played, 10, "0.3 s at more than 100 frames a second")
+
+    def test_above_2x_frames_are_skipped_evenly(self):
+        self.player.set_speed(5.0)
+        self.player.play()
+        self.wait_for(lambda: len(self.view.played) >= 10, "frames")
+        frames = self.view.played[1:10]  # the first one starts the decoders
+        self.assertEqual({later - earlier for earlier, later in zip(frames, frames[1:])}, {3})
+
+    def test_a_turn_starts_the_decoders_over(self):
+        self.player.play()
+        self.played_on()
+        self.player.set_speed(0.5)
+        self.played_on()
+        opened = len(FakeReader.opened)
+        self.player.set_speed(-0.5)
+        self.wait_for(lambda: len(FakeReader.opened) > opened, "a decoder going backwards")
+        turned_at = len(self.view.played)
+        self.played_on()
+        frames = self.view.played[turned_at:]
+        self.assertEqual(frames, sorted(frames, reverse=True))
+
+    def test_a_speed_of_0_pauses_and_the_next_speed_plays_on(self):
+        self.player.play()
+        self.played_on()
+        self.player.set_speed(0)
+        self.wait_for(lambda: not self.player.playing, "the pause")
+        self.player.set_speed(0.5)
+        self.wait_for(lambda: self.player.playing, "playing again")
+        self.assertEqual(self.player.speed, 0.5)
+        self.played_on()
+
+    def test_a_speed_while_paused_does_not_play(self):
+        self.player.set_speed(0)
+        self.player.set_speed(0.5)
+        self.wait_for(lambda: self.player.speed == 0.5, "the new speed")
+        self.assertFalse(self.player.playing)
+
+    def test_speeds_queued_behind_each_other_become_the_last_one(self):
+        player = Player.__new__(Player)
+        player._commands, player._deferred = queue.Queue(), player_module.deque()
+        for command in (("speed", 0.5), ("speed", 0.6), ("speed", 0.7), ("seek", 3), ("seek", 4), ("pause",)):
+            player._commands.put(command)
+        self.assertEqual(player._next_command(0.0), ("speed", 0.7))
+        self.assertEqual(player._next_command(0.0), ("seek", 3), "kept in order")
+        self.assertEqual(player._next_command(0.0), ("seek", 4))
+        self.assertEqual(player._next_command(0.0), ("pause",))
 
 
 class TempoTest(unittest.TestCase):

@@ -596,13 +596,13 @@ class App:
         self._tip(self.transport.play_button, "Play or pause (Space). ← and → jump 5 seconds.")
         self._tip(self.transport.frame_back_button, "One frame back (,). Hold to keep stepping.")
         self._tip(self.transport.frame_forward_button, "One frame forward (.). Hold to keep stepping.")
-        self._tip(self.transport.speed_scale, "Playing speed, from 1× backwards to 4× forwards ([ and ] step it). "
-                                              "The sound plays from 0.25× to 2×, at its own pitch; otherwise it is "
-                                              "silent. Faster than 2× and backwards every frame is shown, so "
-                                              "playback slows down when decoding cannot keep up; FSR makes about "
-                                              "20 frames a second at 4K with its best motion, so fast speeds wait "
-                                              "more.")
-        self._tip(self.transport.speed_label, "Click to play at normal speed again (Backspace).")
+        self._tip(self.transport.speed_bar, "Playing speed: drag it, or click a mark ([, ] and the wheel go from "
+                                            "mark to mark). 0 pauses. The sound plays from 0.25× to 2×, at its own "
+                                            "pitch; otherwise it is silent. Faster than 2× and backwards, "
+                                            "playback slows down when decoding cannot keep up; FSR makes about 20 "
+                                            "frames a second at 4K with its best motion, so fast speeds wait more.")
+        self._tip(self.transport.reverse_button, "Play backwards at the speed of the slider (R).")
+        self._tip(self.transport.speed_label, "Click to play forwards at normal speed again (Backspace).")
         self._tip(self.transport.volume_button, "Mute (M). ↑ and ↓ change the volume.")
         self._tip(self.transport.volume_bar, "The volume: click or drag it; the wheel, ↑ and ↓ change it too.")
         self._tip(self.transport.fullscreen_button, "Full screen (F11 or F). Esc leaves it.")
@@ -693,8 +693,9 @@ class App:
                                  ("<m>", self.transport.toggle_mute),
                                  ("<Up>", lambda: self.transport.change_volume(0.1)),
                                  ("<Down>", lambda: self.transport.change_volume(-0.1)),
-                                 ("<bracketleft>", lambda: self.transport.change_speed(-1)),
-                                 ("<bracketright>", lambda: self.transport.change_speed(1)),
+                                 ("<bracketleft>", lambda: self.transport.change_speed(False)),
+                                 ("<bracketright>", lambda: self.transport.change_speed(True)),
+                                 ("<r>", self.transport.toggle_reverse),
                                  ("<BackSpace>", lambda: self.transport.set_speed(1.0, notify=True))):
             root.bind(sequence, self._shortcut(action))
         root.bind_all("<Motion>", self._pointer_moved, add="+")
@@ -1284,7 +1285,12 @@ class App:
     # ---- playback -------------------------------------------------------------------------------
 
     def toggle_play(self) -> None:
-        if self.player is not None:
+        if self.player is None:
+            return
+        if self.transport.speed == 0:
+            self.transport.set_pace(1.0)  # the slider stopped it: Play means normal speed
+            self.player.play()
+        else:
             self.player.toggle()
 
     def seek_to(self, frame: int, final: bool) -> None:

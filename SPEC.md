@@ -305,7 +305,9 @@ is its own version (§10).
 
 ### Playing a video
 - Controls under the picture: the filmstrip, the seek bar, then frame back, play/pause, frame forward, the time,
-  mute, the volume, the playback state, the speed slider with its value, and full screen.
+  mute, the volume, the playback state, the reverse toggle, the speed slider with its value, and full screen. In a
+  narrow window the speed slider gives up width first (down to 84 px, labelling only 0, ¼, 1× and 5), then the
+  volume slider, then the volume's percentage, so full screen stays in reach at the minimum size.
 - Play (Space) plays the upscaled video in real time with its sound. It stops on the last frame; Play there
   starts over (from the end when playing backwards). With nothing to play, the banner says why.
 - The seek bar shows the played part in the accent colour, what is upscaled lighter (ready in every version
@@ -322,12 +324,21 @@ is its own version (§10).
 - Volume: the speaker button or M mutes (the fill and the percentage turn grey); the 84 px slider fills up to its
   knob and shows its percentage; click or drag, the wheel moves it 5% and ↑ ↓ 10%, to the next multiple; raising
   it unmutes. 80% at launch, kept between files.
-- Speed: a slider snapping to −1, −0.5, −0.25, −0.1, 0.1, 0.25, 0.5, 1, 1.5, 2 and 4×, written with a real minus
-  sign; `[` and `]` step it, Backspace or a click on the value goes back to 1×, and each new file starts at 1×.
-  From 0.25× to 2× the sound plays at its own pitch and late frames are dropped; at 0.1× it is silent and late
-  frames are still dropped; at 4× and backwards it is silent and every frame is shown in order, playback slowing
-  down when decoding cannot keep up (backwards, 1080p60 with a 4K upscale shows about 40 frames a second,
-  *measured*).
+- Speed: a 176 px slider on a log scale from 0.05× to 5×, its track on the volume slider's line, marked .05, 0.1, ¼,
+  ½, 1×, 2 and 5 under the track, with 0 at its left end and no speed between 0 and 0.05×. A click or a drag goes
+  anywhere (two decimals below 1×, one above), landing on a mark within 4 px; `[`, `]` and the wheel go from mark to
+  mark. Backspace or a click on the value goes back to 1× forwards, and each new file starts there. At 0 playback
+  pauses and the next speed plays on; Play at 0 plays at 1×.
+- Backwards: the toggle beside the slider, or R, plays backwards at the slider's speed; the value then reads
+  −0.25×, with a real minus sign. At 0 it sets the direction of the next speed.
+- A new speed in the same direction leaves the decoders running: a change holds the picture less than 0.1 s, and a
+  drag does not stop it (*measured*). The sound starts again 0.15 s after the last change. Turning round starts the
+  decoders over.
+- From 0.25× to 2× the sound plays at its own pitch and late frames are dropped; slower it is silent and late frames
+  are still dropped. Above 2× it is silent and every second or third frame is shown; backwards it is silent and
+  every frame is shown. In both, playback slows down when decoding cannot keep up (*measured* with 1080p60: 3.6× at
+  5×, 2.6× with a 4K upscale shown; backwards 43 frames a second, 32 with a 4K upscale, so −0.5× to −0.7× from −1×
+  on).
 - Buffering: when a version being upscaled lacks the next frames, sound and clock stop, a spinner turns on the
   picture and the controls read "Buffering · upscaling ahead…". Playback resumes with 2 s ready ahead (or
   everything to the end); after catching up with an upscaler slower than the video it waits longer, clamp((1 − r)
@@ -391,7 +402,8 @@ is its own version (§10).
 | , . | one frame back / forward | Home End | first / last frame |
 | F, F11 | full screen | Esc | leave full screen, else stop the upscale |
 | M | mute | ↑ ↓ | volume ±10% |
-| [ ] | slower / faster | Backspace | 1× |
+| [ ] | slower / faster | Backspace | 1× forwards |
+| R | backwards / forwards | | |
 | Ctrl+O | open | Ctrl+Enter | upscale |
 | Ctrl+L | log | Ctrl+B | fold the settings |
 
@@ -400,7 +412,8 @@ is its own version (§10).
 - Mouse: a click on the empty picture opens a file; on the picture, a left press or drag moves the divider, the
   wheel zooms, a right or middle drag pans and a double-click switches Fit and 100%; a label opens its side's
   dropdown; the minimap, the seek bar and the filmstrip take clicks and drags; the frame buttons repeat while
-  held; the volume takes clicks, drags and the wheel; a click on the speed value resets it. Dropdowns ignore the
+  held; the volume and the speed slider take clicks, drags and the wheel; a click on the speed value resets it.
+  Dropdowns ignore the
   wheel, so scrolling the sidebar never changes a setting.
 
 ## 10. Behind the picture

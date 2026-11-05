@@ -55,12 +55,15 @@ sub-pixel camera jitter every frame. A video file has none of those, so this too
   shows the video, bright where it is upscaled. The buttons around Play step one frame back or forward (hold
   to keep stepping); the time shows the current frame's number and keeps one width, so the volume after it
   stays put. The volume slider fills up to its knob and shows its percentage (click, drag, the wheel, ↑ ↓).
-- **Speed:** the slider at the right of the controls plays from 1× backwards to 4× forwards (0.1×, 0.25×,
-  0.5×, 1.5× and 2× on the way; [ and ] step it, Backspace or a click on the speed goes back to 1×). The sound
-  plays from 0.25× to 2× at its own pitch and is silent otherwise. Faster than 2× and backwards every frame is
-  shown in order, so playback slows down when decoding cannot keep up: backwards, 1080p60 with a 4K upscale
-  runs at about 40 frames a second here (the source decodes in short chunks, last frame first), so −1× plays
-  at about two thirds of real time and −0.5× and slower play at their speed. Backwards, the upscaler works on
+- **Speed:** the slider at the right of the controls is a log scale from .05× to 5×, with 0 at its left end: 0
+  pauses, and the next speed plays on. A drag stops anywhere (0.35×) and lands on a mark when near one; [, ] and
+  the wheel go from mark to mark, Backspace or a click on the value goes back to 1× forwards. The ◀ button
+  beside it (R) plays backwards at the slider's speed. Dragging never interrupts the picture: the decoders keep
+  running and the sound follows when you stop. The sound plays from 0.25× to 2× at its own pitch and is silent
+  otherwise. Above 2× every second or third frame is shown, backwards every frame, and playback slows down when
+  decoding cannot keep up. 1080p60 reaches about 3.6× at 5× here (2.6× with a 4K upscale shown), and backwards
+  about 43 frames a second (32 with a 4K upscale; the source decodes in short chunks, last frame first), so −0.5×
+  and slower play at their speed and anything faster plays at −0.5× to −0.7×. Backwards, the upscaler works on
   the seconds just behind the playhead.
 - **Compare anything:** the divider splits the picture; the Left and Right dropdowns above it (or a click on
   the label in either top corner) choose what each side shows: a preset, or the source enlarged by a classic filter:
@@ -100,7 +103,8 @@ sub-pixel camera jitter every frame. A video file has none of those, so this too
 | , . | one frame back / forward | Home End | start / end |
 | F, F11 | full screen | Esc | leave full screen, else stop the upscale |
 | M | mute | ↑ ↓ | volume |
-| [ ] | slower / faster (backwards below 0.1×) | Backspace | normal speed |
+| [ ] | slower / faster | Backspace | normal speed, forwards |
+| R | play backwards / forwards | | |
 | Ctrl+B | settings sidebar | Ctrl+O, Ctrl+Enter, Ctrl+L | open, upscale, log |
 
 **Drag and drop on a script:** drop one or more files on `upscale.bat`: each is upscaled 2x with no questions

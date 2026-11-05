@@ -5,8 +5,10 @@ slider with its percentage (click, drag, the wheel, or up and down).
 The filmstrip shows the video as tiles in time order: upscaled tiles at full brightness, parts not upscaled
 yet dimmed (from the source). The seek bar marks what is upscaled (lighter track), what has played (accent),
 and where the renderer works (a small tick). Clicking or dragging either seeks; hovering shows the frame number
-and its time to the millisecond. Holding a frame step button repeats it; the speed slider goes from 1x
-backwards to 4x forwards in SPEEDS steps (clicking its value goes back to 1x).
+and its time to the millisecond. Holding a frame step button repeats it. The speed slider is a log scale with
+SPEED_TICKS under it and 0 (a pause) at its left end; the toggle beside it plays backwards at the slider's speed
+and clicking the value goes back to 1x. In a narrow window the row gives up, in this order, the speed slider's
+width, the volume slider's and the volume's percentage: the grid's column weights do that.
 """
 from __future__ import annotations
 
@@ -25,13 +27,26 @@ STRIP_HEIGHT = 50
 BAR_HEIGHT = 20
 TILE_GAP = 2
 DIM = 0.35
-SPEEDS = (-1.0, -0.5, -0.25, -0.1, 0.1, 0.25, 0.5, 1.0, 1.5, 2.0, 4.0)
+SPEED_TICKS = ((0.0, "0"), (0.05, ".05"), (0.1, "0.1"), (0.25, "¼"), (0.5, "½"), (1.0, "1×"), (2.0, "2"),
+               (5.0, "5"))
+SPEED_STOPS = tuple(stop for stop, _ in SPEED_TICKS)
+SLOWEST_SPEED, FASTEST_SPEED = SPEED_STOPS[1], SPEED_STOPS[-1]
+STOPPED_SHARE = 0.16  # of the speed slider, from 0 to the slowest speed: no speed lies in between
+SPEED_SNAP = 4  # 96 DPI pixels on either side of a tick where a drag lands on it
+SPEED_WIDTH = 176
+SPEED_MIN_WIDTH = 84
+SLIDER_HEIGHT = 36  # the volume's and the speed's, so their tracks share a line: the middle of the controls
+SPEED_ALL_LABELS_WIDTH = 150  # narrower, only NARROW_LABELS fit under the slider
+NARROW_LABELS = ("0", "¼", "1×", "5")
 REPEAT_DELAY_MS = 400
 REPEAT_INTERVAL_MS = 70
 VOLUME_WIDTH = 84
+VOLUME_MIN_WIDTH = 48
 VOLUME_WHEEL_STEP = 0.05
 KNOB_INSET = 8  # 96 DPI pixels between a slider's end and its track, for the knob
 BUTTON1_MASK = 0x100
+# The row's columns: the state takes all the spare room, and the others give it up in this order.
+STATE_WEIGHT, SPEED_WEIGHT, VOLUME_WEIGHT, PERCENT_WEIGHT = 100000, 100, 10, 1
 
 
 def format_time(seconds: float) -> str:
@@ -55,6 +70,32 @@ def format_precise(seconds: float) -> str:
 def format_speed(speed: float) -> str:
     """1×, 0.25×, −2× (a real minus sign)."""
     return ("\u2212" if speed < 0 else "") + f"{abs(speed):g}×"
+
+
+def speed_fraction(speed: float) -> float:
+    """Where `speed` (0, or SLOWEST_SPEED to FASTEST_SPEED) lies along the slider, from 0 to 1."""
+    if speed <= 0:
+        return 0.0
+    along_the_log = math.log(speed / SLOWEST_SPEED) / math.log(FASTEST_SPEED / SLOWEST_SPEED)
+    return STOPPED_SHARE + (1 - STOPPED_SHARE) * along_the_log
+
+
+def speed_at(fraction: float, snap: float) -> float:
+    """The speed at `fraction` of the slider: the tick within `snap` of it if there is one (0 or SLOWEST_SPEED in
+    the gap between them), else a speed rounded to what the value shows."""
+    fraction = min(1.0, max(0.0, fraction))
+    tick = min(SPEED_STOPS, key=lambda stop: abs(speed_fraction(stop) - fraction))
+    if fraction < STOPPED_SHARE or abs(speed_fraction(tick) - fraction) <= snap:
+        return tick
+    speed = SLOWEST_SPEED * (FASTEST_SPEED / SLOWEST_SPEED) ** ((fraction - STOPPED_SHARE) / (1 - STOPPED_SHARE))
+    return round(speed, 2 if speed < 1 else 1)
+
+
+def next_stop(speed: float, faster: bool) -> float:
+    """The tick after `speed` (0 or more, on a tick or between two) going up or down; `speed` past the last one."""
+    if faster:
+        return next((stop for stop in SPEED_STOPS if stop > speed), speed)
+    return next((stop for stop in reversed(SPEED_STOPS) if stop < speed), speed)
 
 
 def nearest(thumbnails: dict[int, np.ndarray], frame: int) -> tuple[int, np.ndarray] | None:
@@ -99,10 +140,12 @@ class Transport(ttk.Frame):
         self.dragging = False
         self._redraw_pending = False
         self._repeat_job: str | None = None
-        self.speed = 1.0
-        self.speed_index = tk.DoubleVar(value=SPEEDS.index(1.0))
+        self.speed = 1.0  # negative backwards, 0 stopped
+        self.backwards = False  # the reverse toggle: at 0, the direction the next speed takes
+        self._speed_active = False  # pointer over the speed slider or dragging it: a bigger knob
         self.icons = {name: self._icon(name) for name in ("play", "pause", "volume", "mute", "fullscreen", "windowed",
-                                                          "frame_back", "frame_forward")}
+                                                          "frame_back", "frame_forward", "reverse")}
+        self.icons["reverse_on"] = self._icon("reverse", palette.accent)
         self.columnconfigure(0, weight=1)
         self.strip = tk.Canvas(self, height=px(STRIP_HEIGHT), background=palette.background, highlightthickness=0,
                                borderwidth=0, cursor="hand2")
@@ -112,7 +155,6 @@ class Transport(ttk.Frame):
         self.bar.grid(row=1, column=0, sticky="ew")
         controls = self.controls = ttk.Frame(self)
         controls.grid(row=2, column=0, sticky="ew")
-        controls.columnconfigure(7, weight=1)
         self.frame_back_button = ttk.Button(controls, image=self.icons["frame_back"], style="Icon.TButton",
                                             takefocus=False)
         self.frame_back_button.grid(row=0, column=0)
@@ -133,34 +175,35 @@ class Transport(ttk.Frame):
         self.volume_button = ttk.Button(controls, image=self.icons["volume"], style="Icon.TButton", takefocus=False,
                                         command=self.toggle_mute)
         self.volume_button.grid(row=0, column=4)
-        self.volume_bar = tk.Canvas(controls, width=px(VOLUME_WIDTH), height=px(BAR_HEIGHT), highlightthickness=0,
+        self.volume_bar = tk.Canvas(controls, width=px(VOLUME_WIDTH), height=px(SLIDER_HEIGHT), highlightthickness=0,
                                     background=palette.background, borderwidth=0, cursor="hand2")
-        self.volume_bar.grid(row=0, column=5, padx=(px(2), px(6)))
-        self.volume_label = ttk.Label(controls, text="", style="Small.TLabel")
+        self.volume_bar.grid(row=0, column=5, sticky="ew", padx=(px(2), px(6)))
+        controls.columnconfigure(5, weight=VOLUME_WEIGHT, minsize=px(VOLUME_MIN_WIDTH) + px(8))
+        self.volume_label = ttk.Label(controls, text="", style="Small.TLabel", width=4)
         self.volume_label.grid(row=0, column=6, sticky="w", padx=(0, px(12)))
-        controls.columnconfigure(6, minsize=theme.fonts["small"].measure("100%") + px(12))
+        controls.columnconfigure(6, weight=PERCENT_WEIGHT)
         self.state_label = ttk.Label(controls, text="", style="Faint.TLabel")
         self.state_label.grid(row=0, column=7, sticky="w")
-        self.speed_scale = ttk.Scale(controls, from_=0, to=len(SPEEDS) - 1, variable=self.speed_index,
-                                     length=px(96), takefocus=False, command=lambda _: self._speed_moved())
-        self.speed_scale.grid(row=0, column=8, padx=(px(8), px(4)))
+        controls.columnconfigure(7, weight=STATE_WEIGHT)
+        self.reverse_button = ttk.Button(controls, image=self.icons["reverse"], style="Icon.TButton", takefocus=False,
+                                         command=self.toggle_reverse)
+        self.reverse_button.grid(row=0, column=8, padx=(px(8), 0))
+        self.speed_bar = tk.Canvas(controls, width=px(SPEED_WIDTH), height=px(SLIDER_HEIGHT), highlightthickness=0,
+                                   background=palette.background, borderwidth=0, cursor="hand2")
+        self.speed_bar.grid(row=0, column=9, sticky="ew", padx=(px(2), px(4)))
+        controls.columnconfigure(9, weight=SPEED_WEIGHT, minsize=px(SPEED_MIN_WIDTH) + px(6))
         self.speed_label = ttk.Label(controls, text=format_speed(1.0), style="Small.TLabel", width=6, anchor="w",
                                      cursor="hand2")
-        self.speed_label.grid(row=0, column=9, padx=(0, px(8)))
+        self.speed_label.grid(row=0, column=10, padx=(0, px(8)))
         self.speed_label.bind("<ButtonRelease-1>", lambda _: self.set_speed(1.0, notify=True))
         self.fullscreen_button = ttk.Button(controls, image=self.icons["fullscreen"], style="Icon.TButton",
                                             takefocus=False, command=self.on_fullscreen)
-        self.fullscreen_button.grid(row=0, column=10)
-        bar = self.volume_bar
-        bar.bind("<Configure>", lambda _: self._draw_volume())
-        bar.bind("<ButtonPress-1>", self._volume_dragged)
-        bar.bind("<B1-Motion>", self._volume_dragged)
-        bar.bind("<ButtonRelease-1>", lambda event: self._volume_hovered(0 <= event.x < bar.winfo_width()
-                                                                         and 0 <= event.y < bar.winfo_height()))
-        bar.bind("<Enter>", lambda _: self._volume_hovered(True))
-        bar.bind("<Leave>", lambda event: self._volume_hovered(bool(event.state & BUTTON1_MASK)))
-        bar.bind("<MouseWheel>", lambda event: self.change_volume(VOLUME_WHEEL_STEP if event.delta > 0
-                                                                  else -VOLUME_WHEEL_STEP))
+        self.fullscreen_button.grid(row=0, column=11)
+        self.volume_bar.bind("<Configure>", lambda _: self._draw_volume())
+        self._bind_slider(self.volume_bar, self._volume_dragged, self._volume_hovered,
+                          lambda up: self.change_volume(VOLUME_WHEEL_STEP if up else -VOLUME_WHEEL_STEP))
+        self.speed_bar.bind("<Configure>", lambda _: self._draw_speed())
+        self._bind_slider(self.speed_bar, self._speed_dragged, self._speed_hovered, self.change_speed)
         self._show_volume()
         for canvas in (self.strip, self.bar):
             canvas.bind("<Configure>", lambda _: self.request_redraw())
@@ -170,9 +213,21 @@ class Transport(ttk.Frame):
             canvas.bind("<Motion>", self._hover)
             canvas.bind("<Leave>", self._leave)
 
-    def _icon(self, name: str) -> tk.PhotoImage:
-        image = tk.PhotoImage(master=self, data=png_base64(icon(name, self.theme.px(20), self.theme.palette.text)))
-        return image
+    def _icon(self, name: str, color: str | None = None) -> tk.PhotoImage:
+        size, color = self.theme.px(20), color or self.theme.palette.text
+        return tk.PhotoImage(master=self, data=png_base64(icon(name, size, color)))
+
+    def _bind_slider(self, canvas: tk.Canvas, dragged: Callable[[tk.Event], None], hovered: Callable[[bool], None],
+                     wheel: Callable[[bool], None]) -> None:
+        """A slider's input: `dragged(event)` on a click or a drag, `hovered(active)` when the pointer comes over it
+        or leaves it (a drag stays active), `wheel(up)`."""
+        canvas.bind("<ButtonPress-1>", dragged)
+        canvas.bind("<B1-Motion>", dragged)
+        canvas.bind("<ButtonRelease-1>", lambda event: hovered(0 <= event.x < canvas.winfo_width()
+                                                               and 0 <= event.y < canvas.winfo_height()))
+        canvas.bind("<Enter>", lambda _: hovered(True))
+        canvas.bind("<Leave>", lambda event: hovered(bool(event.state & BUTTON1_MASK)))
+        canvas.bind("<MouseWheel>", lambda event: wheel(event.delta > 0))
 
     # ---- state from the window ------------------------------------------------------------------
 
@@ -223,24 +278,41 @@ class Transport(ttk.Frame):
         self.fullscreen_button.configure(image=self.icons["windowed" if fullscreen else "fullscreen"])
 
     def set_speed(self, speed: float, notify: bool = False) -> None:
-        """Show `speed` (one of SPEEDS) on the slider; `notify` tells the window, as a slider move does."""
+        """Show `speed` (negative: backwards, 0: stopped) on the slider and the reverse toggle; `notify` tells the
+        window, as a slider move does."""
         self.speed = speed
-        self.speed_index.set(SPEEDS.index(speed))
+        if speed != 0:
+            self.backwards = speed < 0
+        self.reverse_button.configure(image=self.icons["reverse_on" if self.backwards else "reverse"])
         self.speed_label.configure(text=format_speed(speed))
+        self._draw_speed()
         if notify:
             self.on_speed(speed)
 
-    def change_speed(self, steps: int) -> None:
-        """The next speed up (`steps` > 0) or down along SPEEDS."""
-        index = min(len(SPEEDS) - 1, max(0, SPEEDS.index(self.speed) + steps))
-        if SPEEDS[index] != self.speed:
-            self.set_speed(SPEEDS[index], notify=True)
+    def set_pace(self, pace: float) -> None:
+        """The slider's value `pace` (0 or more), in the reverse toggle's direction, told to the window."""
+        if pace != abs(self.speed):
+            self.set_speed(-pace if self.backwards else pace, notify=True)
 
-    def _speed_moved(self) -> None:
-        speed = SPEEDS[int(round(float(self.speed_index.get())))]
-        self.speed_index.set(SPEEDS.index(speed))  # the knob snaps to the step
-        if speed != self.speed:
-            self.set_speed(speed, notify=True)
+    def change_speed(self, faster: bool) -> None:
+        """The slider to the next tick up or down."""
+        self.set_pace(next_stop(abs(self.speed), faster))
+
+    def toggle_reverse(self) -> None:
+        """Forwards or backwards at the slider's speed; stopped, the next speed goes that way."""
+        self.backwards = not self.backwards
+        self.set_speed(-self.speed, notify=self.speed != 0)
+
+    def _speed_dragged(self, event: tk.Event) -> None:
+        inset = self.theme.px(KNOB_INSET)
+        length = max(1, self.speed_bar.winfo_width() - 2 * inset)
+        self._speed_hovered(True)
+        self.set_pace(speed_at((event.x - inset) / length, self.theme.px(SPEED_SNAP) / length))
+
+    def _speed_hovered(self, active: bool) -> None:
+        if active != self._speed_active:
+            self._speed_active = active
+            self._draw_speed()
 
     def _start_repeat(self, frames: int) -> None:
         """A frame step now, then repeated while the button is held."""
@@ -351,23 +423,43 @@ class Transport(ttk.Frame):
         canvas.create_oval(position - radius, middle - radius, position + radius, middle + radius,
                            fill=palette.accent, outline="")
 
-    def _draw_volume(self) -> None:
-        """The volume slider, drawn like the seek bar: the track filled up to the knob (grey while muted)."""
+    def _draw_slider(self, canvas: tk.Canvas, fraction: float, color: str, active: bool) -> None:
+        """A slider drawn like the seek bar: the track across its middle, filled up to the knob at `fraction`."""
         palette, px = self.theme.palette, self.theme.px
+        inset, right, thickness = px(KNOB_INSET), canvas.winfo_width() - px(KNOB_INSET), px(4)
+        middle = canvas.winfo_height() // 2
+        x = inset + (right - inset) * fraction
+        canvas.create_line(inset, middle, right, middle, fill=palette.field_hover, width=thickness, capstyle="round")
+        canvas.create_line(inset, middle, x, middle, fill=color, width=thickness, capstyle="round")
+        radius = px(7) if active else px(5.5)
+        canvas.create_oval(x - radius, middle - radius, x + radius, middle + radius, fill=color, outline="")
+
+    def _draw_volume(self) -> None:
+        """The volume slider (grey while muted)."""
         canvas = self.volume_bar
         canvas.delete("all")
-        width, height = canvas.winfo_width(), canvas.winfo_height()
-        inset = px(KNOB_INSET)
+        if canvas.winfo_width() > 2 * self.theme.px(KNOB_INSET):
+            palette = self.theme.palette
+            self._draw_slider(canvas, self.volume, palette.text_faint if self.muted else palette.accent,
+                              self._volume_active)
+
+    def _draw_speed(self) -> None:
+        """The speed slider with its ticks under it: the one the knob is on stands out, and 1× a little."""
+        palette, px = self.theme.palette, self.theme.px
+        canvas = self.speed_bar
+        canvas.delete("all")
+        width, inset = canvas.winfo_width(), px(KNOB_INSET)
         if width <= 2 * inset:
             return
-        middle, thickness = height // 2, px(4)
-        x = inset + (width - 2 * inset) * self.volume
-        color = palette.text_faint if self.muted else palette.accent
-        canvas.create_line(inset, middle, width - inset, middle, fill=palette.field_hover, width=thickness,
-                           capstyle="round")
-        canvas.create_line(inset, middle, x, middle, fill=color, width=thickness, capstyle="round")
-        radius = px(7) if self._volume_active else px(5.5)
-        canvas.create_oval(x - radius, middle - radius, x + radius, middle + radius, fill=color, outline="")
+        pace, middle = abs(self.speed), canvas.winfo_height() // 2
+        for stop, label in SPEED_TICKS:
+            x = inset + (width - 2 * inset) * speed_fraction(stop)
+            shown = stop == pace
+            color = palette.text if shown else palette.text_secondary if stop == 1.0 else palette.text_faint
+            canvas.create_line(x, middle + px(4), x, middle + px(7), fill=color)
+            if width >= px(SPEED_ALL_LABELS_WIDTH) or label in NARROW_LABELS or shown:
+                canvas.create_text(x, middle + px(13), text=label, fill=color, font=self.theme.fonts["small"])
+        self._draw_slider(canvas, speed_fraction(pace), palette.accent, self._speed_active)
 
     def _draw_strip(self) -> None:
         palette, px = self.theme.palette, self.theme.px

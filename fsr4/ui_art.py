@@ -216,19 +216,21 @@ def app_icon(size: int) -> np.ndarray:
     return sketch.rgba()
 
 
-ICON_NAMES = ("play", "pause", "volume", "mute", "fullscreen", "windowed", "sidebar", "add", "delete", "frame_back",
-              "frame_forward")
+ICON_NAMES = ("play", "reverse", "pause", "volume", "mute", "fullscreen", "windowed", "sidebar", "add", "delete",
+              "frame_back", "frame_forward")
 
 
 def icon(name: str, size: int, color: str) -> np.ndarray:
-    """A small control icon (straight RGBA) drawn on a 24-unit grid: play, pause, volume, mute, fullscreen,
-    windowed (leave full screen), sidebar, add (a plus), delete (a bin), frame_back or frame_forward (a step
-    of one frame: a triangle against a bar)."""
+    """A small control icon (straight RGBA) drawn on a 24-unit grid: play, reverse (play, mirrored), pause, volume,
+    mute, fullscreen, windowed (leave full screen), sidebar, add (a plus), delete (a bin), frame_back or
+    frame_forward (a step of one frame: a triangle against a bar)."""
     sketch = Sketch(size, size)
     unit = size / 24
     stroke = max(1.2, 1.9 * unit)
     if name == "play":
         sketch.fill(sketch.polygon([(8 * unit, 5.5 * unit), (19 * unit, 12 * unit), (8 * unit, 18.5 * unit)]), color)
+    elif name == "reverse":
+        sketch.fill(sketch.polygon([(16 * unit, 5.5 * unit), (5 * unit, 12 * unit), (16 * unit, 18.5 * unit)]), color)
     elif name == "pause":
         for left in (7, 13.5):
             sketch.fill(sketch.rounded_rect(left * unit, 5.5 * unit, (left + 3.5) * unit, 18.5 * unit, 1 * unit), color)

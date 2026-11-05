@@ -9,7 +9,8 @@ if not needs.HAS_OPENCV:
 import cv2
 import numpy as np
 
-from fsr4.ui_transport import format_precise, format_speed, format_time
+from fsr4.ui_transport import (FASTEST_SPEED, SLOWEST_SPEED, SPEED_STOPS, STOPPED_SHARE, format_precise, format_speed,
+                               format_time, next_stop, speed_at, speed_fraction)
 from fsr4.ui_art import Sketch
 from fsr4.ui_video import (VideoView, blend, blend_outline, block_view, compute_geometry, decode_request,
                            minimap_box, over, reference_view, reframe, step_zoom, upscaled_view)
@@ -24,6 +25,47 @@ def gradient(width: int, height: int) -> np.ndarray:
     picture[..., 2] = (ys * 17) % 256
     picture[..., 3] = 255
     return picture
+
+
+class SpeedSliderTest(unittest.TestCase):
+    def test_the_ticks_fill_the_slider_in_order(self):
+        fractions = [speed_fraction(stop) for stop in SPEED_STOPS]
+        self.assertEqual(fractions, sorted(set(fractions)))
+        self.assertEqual(fractions[0], 0.0)
+        self.assertAlmostEqual(fractions[-1], 1.0)
+
+    def test_the_scale_is_logarithmic(self):
+        self.assertAlmostEqual(speed_fraction(1.0) - speed_fraction(0.5), speed_fraction(0.5) - speed_fraction(0.25))
+
+    def test_every_tick_reads_back(self):
+        for stop in SPEED_STOPS:
+            self.assertEqual(speed_at(speed_fraction(stop), 0.0), stop)
+
+    def test_between_ticks_the_speed_is_what_the_value_shows(self):
+        between = speed_at((speed_fraction(0.25) + speed_fraction(0.5)) / 2, 0.0)
+        self.assertEqual(between, 0.35)
+        self.assertEqual(speed_at((speed_fraction(2.0) + speed_fraction(5.0)) / 2, 0.0), 3.2)
+
+    def test_a_drag_near_a_tick_lands_on_it(self):
+        beside = speed_fraction(1.0) + 0.02
+        self.assertEqual(speed_at(beside, 0.03), 1.0)
+        self.assertNotEqual(speed_at(beside, 0.01), 1.0)
+
+    def test_nothing_lies_between_0_and_the_slowest_speed(self):
+        self.assertEqual(speed_at(STOPPED_SHARE * 0.4, 0.0), 0.0)
+        self.assertEqual(speed_at(STOPPED_SHARE * 0.6, 0.0), SLOWEST_SPEED)
+
+    def test_past_the_ends_stays_at_the_ends(self):
+        self.assertEqual(speed_at(-0.5, 0.0), 0.0)
+        self.assertEqual(speed_at(1.5, 0.0), FASTEST_SPEED)
+
+    def test_the_keys_go_from_tick_to_tick(self):
+        self.assertEqual(next_stop(1.0, True), 2.0)
+        self.assertEqual(next_stop(1.0, False), 0.5)
+        self.assertEqual(next_stop(0.37, True), 0.5)
+        self.assertEqual(next_stop(0.37, False), 0.25)
+        self.assertEqual(next_stop(FASTEST_SPEED, True), FASTEST_SPEED)
+        self.assertEqual(next_stop(0.0, False), 0.0)
 
 
 class GeometryTest(unittest.TestCase):
@@ -252,6 +294,7 @@ class CompositingTest(unittest.TestCase):
         self.assertEqual(format_precise(3725.0006), "1:02:05.001")
         self.assertEqual(format_speed(1.0), "1×")
         self.assertEqual(format_speed(-0.25), "−0.25×")
+        self.assertEqual(format_speed(-0.0), "0×")
 
 
 if __name__ == "__main__":
