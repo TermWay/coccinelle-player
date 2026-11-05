@@ -52,6 +52,7 @@ AMF_SETTINGS = [
 REALESRGAN_SETTINGS = [
     ("real-esrgan animevideo v3", "realesr-animevideov3", 2),
     ("real-esrgan x4plus", "realesrgan-x4plus", 4),
+    ("real-esrgan x4plus anime", "realesrgan-x4plus-anime", 4),
 ]
 
 

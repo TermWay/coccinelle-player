@@ -123,7 +123,10 @@ Python package stay `fsr4`.
   `upscale_stream` reads one frame ahead. Chunks stop at 16 frames: a seek waits for the chunk being read. It leaves
   out `-g`: the program picks the discrete card, and an index would not match `Gpu`'s choice. Which pipeline an
   upscaler gets is `fsr4/upscalers.py`; `EXTERNAL_UPSCALERS` are the ones with no DLL, device or motion here, and
-  `keeps_history = False` spares them the frames before a seek.
+  `keeps_history = False` spares them the frames before a seek. Each model is an upscaler value of its own
+  (`realesrgan.MODELS`), so settings, presets and the command line need no new field. `STILL_ONLY` models take seconds
+  a picture: `plan_from_info` refuses them for a video, and `RealEsrganPipeline.stop` (`ImagePreviewer`'s, a job's
+  cancel) ends a picture at once: closing a previewer joins its worker on the Tk thread.
 - FSR 4 ignores the SDK's upscale tuning keys (verified bit-identical); `ffx.Upscaler(provider=...)` selects the
   DLL's FSR 3.1.6 or 2.3.4 through `ffxOverrideVersion` for comparisons. The frame count from the probe is an
   estimate until a read reaches the end (`Timeline.exact`); never stop rendering at the estimate.

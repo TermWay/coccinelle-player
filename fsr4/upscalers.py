@@ -5,10 +5,10 @@ from pathlib import Path
 
 from .hq_scaler import HQ_SCALER, HqPipeline
 from .pipeline import Pipeline
-from .realesrgan import REAL_ESRGAN, RealEsrganPipeline
+from .realesrgan import MODELS, RealEsrganPipeline
 
 # Run by ffmpeg or a program of their own: no FSR DLL, no device here, no motion vectors.
-EXTERNAL_UPSCALERS = frozenset({HQ_SCALER, REAL_ESRGAN})
+EXTERNAL_UPSCALERS = frozenset({HQ_SCALER, *MODELS})
 
 
 def create_pipeline(gpu, render_size: tuple[int, int], output_size: tuple[int, int], sdk_dir: Path | None, flow,
@@ -18,6 +18,6 @@ def create_pipeline(gpu, render_size: tuple[int, int], output_size: tuple[int, i
     `sdk_dir` and ignore `flow`; `options` go to `Pipeline`."""
     if upscaler == HQ_SCALER:
         return HqPipeline(render_size, output_size, sharpness)
-    if upscaler == REAL_ESRGAN:
-        return RealEsrganPipeline(render_size, output_size)
+    if upscaler in MODELS:
+        return RealEsrganPipeline(render_size, output_size, upscaler)
     return Pipeline(gpu, render_size, output_size, sdk_dir, flow, sharpness=sharpness, provider=upscaler, **options)

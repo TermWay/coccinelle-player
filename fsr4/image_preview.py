@@ -3,7 +3,8 @@
 Like a video, an image is upscaled as soon as it is open, with the current settings and with each preset a
 side of the picture shows, so they can be compared before saving (saving runs the job, which gives the same
 picture). The worker has its own GPU device and keeps one FSR context per size and upscaler while a shown
-version needs it; results are kept for the settings shown and the KEPT_RESULTS most recent others.
+version needs it; results are kept for the settings shown and the KEPT_RESULTS most recent others. A picture
+no longer shown stops at once when its upscaler can, which matters for those that take seconds.
 
 Events reach the window through `on_event(kind, *values)`, from the worker thread: "ready" (settings) when a
 picture is done, "error" (settings, exception) when one cannot be made, "failed" (exception) when the worker
@@ -22,6 +23,7 @@ from . import log
 from .flow import create_flow
 from .upscalers import create_pipeline
 from .media import read_image
+from .realesrgan import Stopped
 from .render import RenderSettings
 
 KEPT_RESULTS = 4
@@ -39,6 +41,8 @@ class ImagePreviewer:
         self._results: dict[RenderSettings, np.ndarray] = {}
         self._errors: dict[RenderSettings, Exception] = {}
         self._closing = False
+        self._making: RenderSettings | None = None
+        self._stop = threading.Event()
         self._thread = threading.Thread(target=self._main, name="image-preview", daemon=True)
         self._thread.start()
 
@@ -48,6 +52,8 @@ class ImagePreviewer:
             self._wanted = list(dict.fromkeys(wanted))
             for settings in self._wanted:
                 self._errors.pop(settings, None)
+            if self._making not in self._wanted:
+                self._stop.set()
             self._condition.notify_all()
 
     def result(self, settings: RenderSettings) -> np.ndarray | None:
@@ -64,6 +70,7 @@ class ImagePreviewer:
     def close(self) -> None:
         with self._condition:
             self._closing = True
+            self._stop.set()
             self._condition.notify_all()
         self._thread.join()
 
@@ -74,6 +81,8 @@ class ImagePreviewer:
                 missing = [settings for settings in self._wanted
                            if settings not in self._results and settings not in self._errors]
                 if missing:
+                    self._making = missing[0]
+                    self._stop.clear()
                     return missing[0], {(settings.output_size, settings.upscaler) for settings in self._wanted}
                 self._condition.wait()
             return None
@@ -105,7 +114,10 @@ class ImagePreviewer:
                                                    create_flow("zero", width, height), None, settings.upscaler)
                         pipelines[key] = pipeline
                     pipeline.sharpness = settings.sharpness
+                    pipeline.stop = self._stop  # only the slow ones read it
                     picture = cv2.cvtColor(pipeline.picture(source), cv2.COLOR_RGBA2BGRA)
+                except Stopped:
+                    continue
                 except Exception as error:  # noqa: BLE001 - reported; the other pictures can still be made
                     with self._condition:
                         self._errors[settings] = error

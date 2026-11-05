@@ -8,6 +8,9 @@ chunk is done, and `process` then hands over the upscaled frame.
 
 Two runs overlap, 27% faster than one at a time (a third adds nothing, measured). The first chunks are short so
 that a picture comes soon after a seek; the longest is short too, because a seek waits for the chunk being read.
+
+Still images have two more models (`STILL_ONLY`), a general one and one for drawings. They take seconds a picture, so
+`RealEsrganPipeline.stop` ends one from another thread.
 """
 from __future__ import annotations
 
@@ -15,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -30,15 +34,17 @@ from .media import _popen, tool_path
 from .pipeline import Timings
 
 REAL_ESRGAN = "realesrgan"
+REAL_ESRGAN_X4PLUS = "realesrgan-x4plus"
+REAL_ESRGAN_ANIME = "realesrgan-x4plus-anime"
 PROGRAM = "realesrgan-ncnn-vulkan.exe"
 # Where the program goes, next to the exe or the package; PATH works too. Its `models` folder sits beside it.
 FOLDER = Path("bin") / "realesrgan"
 DOWNLOAD = "https://github.com/xinntao/Real-ESRGAN/releases/tag/v0.2.5.0"
 NOT_INSTALLED = (f"Real-ESRGAN is not installed: unzip realesrgan-ncnn-vulkan-20220424-windows.zip from {DOWNLOAD} "
                  f"into {FOLDER}")
-# The model made for video; `realesrgan-x4plus` is 27 times slower (4.4 s a frame, measured).
-MODEL = "realesr-animevideov3"
-MODEL_SCALES = (2, 3, 4)
+# 9.5 s and 4.2 s a 1080p picture (measured): in a video, a seek would wait minutes for its chunk.
+STILL_ONLY = frozenset({REAL_ESRGAN_X4PLUS, REAL_ESRGAN_ANIME})
+STILL_ONLY_NOTE = "This Real-ESRGAN model takes seconds a picture: it is for still images. Use Real-ESRGAN for a video."
 FIRST_CHUNKS = (4, 8)
 CHUNK_FRAMES = 16
 # The program's default: one thread to load, two to run, two to save. Under a lower cap it gets one of each.
@@ -50,24 +56,46 @@ LOG_TAIL_CHARACTERS = 600
 # Windows can hold a file for a moment after the program that wrote it was killed (seen once in about 60 stops).
 REMOVE_ATTEMPTS = 10
 REMOVE_WAIT_SECONDS = 0.1
+STOP_POLL_SECONDS = 0.05
 
 
-def find_program() -> Path | None:
-    """Real-ESRGAN's program, with its models beside it, or None when it is not installed."""
+@dataclass(frozen=True)
+class Model:
+    """A network of the program: its name, the scales it draws at, its weights' file in the `models` folder, and the
+    filter that takes its picture down to the output size (each is the one that measured best for that model)."""
+    name: str
+    scales: tuple[int, ...]
+    weights: str
+    resize: str
+
+
+MODELS = {
+    REAL_ESRGAN: Model("realesr-animevideov3", (2, 3, 4), "realesr-animevideov3-x2.bin", "lanczos"),
+    REAL_ESRGAN_X4PLUS: Model("realesrgan-x4plus", (4,), "realesrgan-x4plus.bin", "area"),
+    REAL_ESRGAN_ANIME: Model("realesrgan-x4plus-anime", (4,), "realesrgan-x4plus-anime.bin", "area"),
+}
+
+
+class Stopped(Exception):
+    """`RealEsrganPipeline.stop` ended the picture being made."""
+
+
+def find_program(upscaler: str = REAL_ESRGAN) -> Path | None:
+    """Real-ESRGAN's program, with the model of `upscaler` beside it, or None when it is not installed."""
     places = [Path(__file__).resolve().parent.parent / FOLDER / PROGRAM]
     if getattr(sys, "frozen", False):
         places.insert(0, Path(sys.executable).parent / FOLDER / PROGRAM)
     found = shutil.which(PROGRAM)
     if found is not None:
         places.append(Path(found))
-    return next((path for path in places if path.is_file() and (path.parent / "models" / f"{MODEL}-x2.bin").is_file()),
-                None)
+    weights = MODELS[upscaler].weights
+    return next((path for path in places if path.is_file() and (path.parent / "models" / weights).is_file()), None)
 
 
-def model_scale(render_size: tuple[int, int], output_size: tuple[int, int]) -> int:
-    """The smallest scale of the model that reaches `output_size` on both sides, else its largest."""
+def model_scale(render_size: tuple[int, int], output_size: tuple[int, int], model: Model) -> int:
+    """The smallest scale of `model` that reaches `output_size` on both sides, else its largest."""
     needed = max(output / source for output, source in zip(output_size, render_size))
-    return next((scale for scale in MODEL_SCALES if scale >= needed - 1e-6), MODEL_SCALES[-1])
+    return next((scale for scale in model.scales if scale >= needed - 1e-6), model.scales[-1])
 
 
 def chunk_lengths() -> Iterator[int]:
@@ -126,15 +154,17 @@ class RealEsrganPipeline:
     keeps_history = False
     encoder_scale = None
 
-    def __init__(self, render_size: tuple[int, int], output_size: tuple[int, int]):
-        program = find_program()
+    def __init__(self, render_size: tuple[int, int], output_size: tuple[int, int], upscaler: str = REAL_ESRGAN):
+        program = find_program(upscaler)
         if program is None:
             raise FileNotFoundError(NOT_INSTALLED)
         self.program = program
         self.render_size = render_size
         self.output_size = output_size
         self.sharpness = None
-        self.scale = model_scale(render_size, output_size)
+        self.model = MODELS[upscaler]
+        self.scale = model_scale(render_size, output_size, self.model)
+        self.stop = threading.Event()  # set from another thread, it ends the run with `Stopped`
         self.flow = ZeroFlow(*render_size)
         self.timings = Timings()
         self.upscaled: deque[np.ndarray] = deque()
@@ -226,18 +256,27 @@ class RealEsrganPipeline:
     def _program_command(self, pictures: Path, output: Path) -> list[str]:
         threads = usage.current().ffmpeg_threads
         few = threads is not None and threads < PROGRAM_THREADS
-        return [str(self.program), "-i", str(pictures), "-o", str(output), "-n", MODEL, "-s", str(self.scale),
+        return [str(self.program), "-i", str(pictures), "-o", str(output), "-n", self.model.name, "-s", str(self.scale),
                 "-m", str(self.program.parent / "models"), *(["-j", "1:1:1"] if few else [])]
+
+    def _wait(self, chunk: _Chunk) -> int:
+        """The exit code of `chunk`'s program; raises `Stopped` when `stop` comes first."""
+        while True:
+            try:
+                return chunk.program.wait(STOP_POLL_SECONDS)
+            except subprocess.TimeoutExpired:
+                if self.stop.is_set():
+                    raise Stopped from None
 
     def _read_chunk(self, chunk: _Chunk) -> Iterator[np.ndarray]:
         """Wait for `chunk` and yield its sources, each with its upscaled frame read back, at the output size."""
-        if chunk.program.wait() != 0:
+        if self._wait(chunk) != 0:
             raise chunk.failure(f"Real-ESRGAN failed ({chunk.program.returncode})")
         width, height = self.output_size
         source_width, source_height = self.render_size
         resize = []
         if (source_width * self.scale, source_height * self.scale) != self.output_size:
-            resize = ["-vf", f"scale={width}:{height}:flags=lanczos+accurate_rnd+full_chroma_int+full_chroma_inp"]
+            resize = ["-vf", f"scale={width}:{height}:flags={self.model.resize}+accurate_rnd+full_chroma_int+full_chroma_inp"]
         command = [tool_path("ffmpeg"), "-v", "error", "-nostdin", *_ffmpeg_threads(), "-i",
                    _frames_pattern(chunk.folder / "out"), *resize, "-f", "rawvideo", "-pix_fmt", "rgba", "-"]
         if not self.buffers:

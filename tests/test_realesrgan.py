@@ -2,6 +2,7 @@
 import queue
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -14,14 +15,19 @@ import numpy as np
 
 import needs
 from fsr4 import media, realesrgan
+from fsr4.image_preview import ImagePreviewer
 from fsr4.job import JobOptions, plan_from_info, run_job
 from fsr4.pipeline import upscale_stream
 from fsr4.presets import BUILTIN, preset_from_json
-from fsr4.realesrgan import REAL_ESRGAN, RealEsrganPipeline, chunk_lengths, model_scale
+from fsr4.realesrgan import (MODELS, REAL_ESRGAN, REAL_ESRGAN_X4PLUS, STILL_ONLY, RealEsrganPipeline, Stopped,
+                             chunk_lengths, model_scale)
 from fsr4.render import RenderSettings, Renderer
 
 WIDTH, HEIGHT, RATE, SECONDS = 320, 180, 30, 2
 TIMEOUT = 120
+VIDEO_MODEL = MODELS[REAL_ESRGAN]
+SLOW_SIZE = (1280, 720)  # seconds with x4plus, so a stop can come in the middle
+STOP_SECONDS = 2.0
 
 
 def info(width: int, height: int) -> media.MediaInfo:
@@ -35,14 +41,18 @@ def psnr(first: np.ndarray, second: np.ndarray) -> float:
 
 class ChoicesTest(unittest.TestCase):
     def test_the_model_runs_at_the_smallest_scale_that_reaches_the_output(self):
-        self.assertEqual(model_scale((1920, 1080), (3840, 2160)), 2)
-        self.assertEqual(model_scale((1920, 1080), (1920, 1080)), 2)
-        self.assertEqual(model_scale((1000, 1000), (2001, 2000)), 3)
-        self.assertEqual(model_scale((1000, 1000), (3000, 3000)), 3)
+        self.assertEqual(model_scale((1920, 1080), (3840, 2160), VIDEO_MODEL), 2)
+        self.assertEqual(model_scale((1920, 1080), (1920, 1080), VIDEO_MODEL), 2)
+        self.assertEqual(model_scale((1000, 1000), (2001, 2000), VIDEO_MODEL), 3)
+        self.assertEqual(model_scale((1000, 1000), (3000, 3000), VIDEO_MODEL), 3)
 
     def test_the_wider_side_decides_and_the_largest_scale_is_the_limit(self):
-        self.assertEqual(model_scale((720, 480), (2560, 1440)), 4)
-        self.assertEqual(model_scale((100, 100), (900, 900)), 4)
+        self.assertEqual(model_scale((720, 480), (2560, 1440), VIDEO_MODEL), 4)
+        self.assertEqual(model_scale((100, 100), (900, 900), VIDEO_MODEL), 4)
+
+    def test_the_models_for_still_images_only_draw_at_4x(self):
+        for upscaler in STILL_ONLY:
+            self.assertEqual(model_scale((1920, 1080), (2880, 1620), MODELS[upscaler]), 4)
 
     def test_chunks_start_short_and_stop_growing(self):
         lengths = list(islice(chunk_lengths(), 5))
@@ -59,8 +69,9 @@ class ChoicesTest(unittest.TestCase):
                     mock.patch.object(realesrgan, "FOLDER", Path("no such folder")):
                 self.assertIsNone(realesrgan.find_program(), "without its models it cannot run")
                 (program.parent / "models").mkdir()
-                (program.parent / "models" / f"{realesrgan.MODEL}-x2.bin").touch()
+                (program.parent / "models" / VIDEO_MODEL.weights).touch()
                 self.assertEqual(realesrgan.find_program(), program)
+                self.assertIsNone(realesrgan.find_program(REAL_ESRGAN_X4PLUS), "each model has its own weights")
 
 
 class PlanTest(unittest.TestCase):
@@ -82,6 +93,16 @@ class PlanTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "do not apply"):
                     plan_from_info(self.options(**values), info(640, 360))
 
+    def test_the_models_for_still_images_refuse_a_video(self):
+        with mock.patch("fsr4.job.find_program", return_value=Path("program.exe")):
+            for upscaler in STILL_ONLY:
+                with self.assertRaisesRegex(ValueError, "still images"):
+                    plan_from_info(JobOptions(input=Path("clip.mp4"), output=Path("out.mp4"), upscaler=upscaler),
+                                   info(640, 360))
+                plan = plan_from_info(JobOptions(input=Path("still.png"), output=Path("out.png"), upscaler=upscaler),
+                                      info(640, 360))
+                self.assertTrue(plan.image_mode)
+
 
 class PresetTest(unittest.TestCase):
     def test_the_builtin_preset_is_named_without_motion(self):
@@ -90,10 +111,16 @@ class PresetTest(unittest.TestCase):
         self.assertEqual((settings.flow, settings.flow_preset, settings.sharpness), ("zero", "fast", None))
         self.assertEqual(settings.describe(), "Real-ESRGAN")
 
+    def test_every_model_has_a_builtin_preset_with_its_name(self):
+        for upscaler in MODELS:
+            preset = next(preset for preset in BUILTIN if preset.upscaler == upscaler)
+            self.assertEqual(preset.applied_to(RenderSettings((1280, 720))).describe(), preset.name)
+
     def test_a_saved_preset_never_holds_motion_or_sharpening(self):
-        preset = preset_from_json({"name": "Mine", "upscaler": REAL_ESRGAN, "flow": "dis", "flow_preset": "medium",
-                                   "sharpness": 0.5})
-        self.assertEqual((preset.flow, preset.flow_preset, preset.sharpness), ("zero", "fast", None))
+        for upscaler in MODELS:
+            preset = preset_from_json({"name": "Mine", "upscaler": upscaler, "flow": "dis", "flow_preset": "medium",
+                                       "sharpness": 0.5})
+            self.assertEqual((preset.flow, preset.flow_preset, preset.sharpness), ("zero", "fast", None))
 
 
 @needs.ffmpeg
@@ -214,6 +241,78 @@ class UpscaleTest(unittest.TestCase):
             self.assertEqual(picture.shape, (size[1], size[0], 4))
             self.assertTrue((picture[..., 3] == 255).all())
             self.assertGreater(psnr(picture, self.reference(self.frames[0], size)), 20.0, f"{size}")
+
+    def test_the_models_for_still_images_draw_a_picture(self):
+        for upscaler in STILL_ONLY:
+            pipeline = RealEsrganPipeline((WIDTH, HEIGHT), self.output_size, upscaler)
+            self.assertIn(MODELS[upscaler].name, pipeline._program_command(Path("in"), Path("out")))
+            picture = pipeline.picture(self.frames[0])
+            self.assertEqual(picture.shape, (self.output_size[1], self.output_size[0], 4))
+            self.assertGreater(psnr(picture, self.reference(self.frames[0])), 20.0, upscaler)
+
+    def slow_still(self) -> Path:
+        """A picture x4plus takes seconds on."""
+        path = self.temporary / "slow.png"
+        media.write_image(path, self.reference(self.frames[0], SLOW_SIZE))
+        return path
+
+    def assert_nothing_is_left(self) -> None:
+        self.assertEqual([path.name for path in self.temporary.iterdir() if path.name.startswith("fsr4-")], [])
+
+    def test_stop_ends_a_picture_at_once(self):
+        pipeline = RealEsrganPipeline(SLOW_SIZE, (SLOW_SIZE[0] * 2, SLOW_SIZE[1] * 2), REAL_ESRGAN_X4PLUS)
+        picture = media.read_image(self.slow_still())
+        timer = threading.Timer(0.5, pipeline.stop.set)
+        timer.start()
+        started = time.perf_counter()
+        with self.assertRaises(Stopped):
+            pipeline.picture(picture)
+        timer.join()
+        self.assertLess(time.perf_counter() - started, STOP_SECONDS)
+        self.assert_nothing_is_left()
+
+    def test_cancelling_an_image_job_stops_the_picture_and_writes_nothing(self):
+        output = self.temporary / "slow_up.png"
+        cancel = threading.Event()
+        timer = threading.Timer(0.5, cancel.set)
+        timer.start()
+        started = time.perf_counter()
+        result = run_job(JobOptions(input=self.slow_still(), output=output, scale=2.0, upscaler=REAL_ESRGAN_X4PLUS,
+                                    verbose=False), cancel=cancel)
+        timer.join()
+        self.assertLess(time.perf_counter() - started, STOP_SECONDS)
+        self.assertEqual((result.cancelled, result.frames, output.exists()), (True, 0, False))
+        self.assert_nothing_is_left()
+
+    def previewer(self) -> tuple[ImagePreviewer, queue.Queue]:
+        needs.require_fsr()
+        events: queue.Queue = queue.Queue()
+        return ImagePreviewer(self.slow_still(), Path("unused"), lambda kind, *values: events.put((kind, values))), events
+
+    def test_closing_the_previewer_stops_its_picture(self):
+        previewer, events = self.previewer()
+        previewer.request([RenderSettings((SLOW_SIZE[0] * 2, SLOW_SIZE[1] * 2), flow="zero", upscaler=REAL_ESRGAN_X4PLUS)])
+        time.sleep(1.0)
+        started = time.perf_counter()
+        previewer.close()
+        self.assertLess(time.perf_counter() - started, STOP_SECONDS)
+        self.assertTrue(events.empty(), "a stop is no error")
+        self.assert_nothing_is_left()
+
+    def test_a_picture_no_longer_shown_makes_way(self):
+        previewer, events = self.previewer()
+        output_size = (SLOW_SIZE[0] * 2, SLOW_SIZE[1] * 2)
+        slow = RenderSettings(output_size, flow="zero", upscaler=REAL_ESRGAN_X4PLUS)
+        fast = RenderSettings(output_size, flow="zero", upscaler=REAL_ESRGAN)
+        try:
+            previewer.request([slow])
+            time.sleep(1.0)
+            previewer.request([fast])
+            self.assertEqual(events.get(timeout=TIMEOUT), ("ready", (fast,)))
+            self.assertIsNone(previewer.result(slow))
+            self.assertFalse(previewer.working)
+        finally:
+            previewer.close()
 
     def test_resizing_keeps_the_colours(self):
         exact = RealEsrganPipeline((WIDTH, HEIGHT), self.output_size).picture(self.frames[0])

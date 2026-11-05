@@ -19,7 +19,7 @@ from .hq_scaler import HQ_SCALER, MIN_SIZE as HQ_MIN_SIZE
 from .media import (ENCODER_LIMITS, ENCODER_NAMES, FrameReader, FrameWriter, MediaInfo, describe_audio, is_image,
                     partial_path, probe, read_image, write_image)
 from .pipeline import upscale_stream
-from .realesrgan import NOT_INSTALLED, REAL_ESRGAN, find_program
+from .realesrgan import MODELS, NOT_INSTALLED, STILL_ONLY, STILL_ONLY_NOTE, Stopped, find_program
 from .upscalers import EXTERNAL_UPSCALERS, create_pipeline
 
 VIDEO_SUFFIX = ".mp4"
@@ -156,7 +156,9 @@ def check_realesrgan(options: JobOptions) -> None:
     if (options.sharpness is not None or options.debug_view or options.debug_checking or options.validate
             or options.gpu is not None):
         raise ValueError("--sharpness, --debug-view, --debug-checking, --validate and --gpu do not apply to Real-ESRGAN")
-    if find_program() is None:
+    if options.upscaler in STILL_ONLY and not is_image(options.input):
+        raise ValueError(STILL_ONLY_NOTE)
+    if find_program(options.upscaler) is None:
         raise ValueError(NOT_INSTALLED)
 
 
@@ -165,7 +167,7 @@ def plan_from_info(options: JobOptions, info: MediaInfo) -> JobPlan:
     an output that would overwrite the input."""
     if options.upscaler == HQ_SCALER:
         check_hq_scaler(options, info)
-    elif options.upscaler == REAL_ESRGAN:
+    elif options.upscaler in MODELS:
         check_realesrgan(options)
     output = options.output or default_output(options.input)
     check_output(output, options.input)
@@ -229,14 +231,22 @@ def run_job(options: JobOptions, progress: ProgressCallback | None = None,
         cancelled = False
         if job.image_mode:
             source = read_image(options.input)
-            upscaled = pipeline.picture(source)
-            transparent = bool((source[..., 3] < 255).any())
-            write_image(job.output, upscaled, alpha_source=options.input if transparent else None)
-            frames_done = 1
-            if preview:
-                preview(source, upscaled.copy(), 1)
-            if progress:
-                progress(1, 1, 1 / max(time.perf_counter() - started, 1e-6))
+            if cancel is not None:
+                pipeline.stop = cancel  # only the slow ones read it
+            try:
+                upscaled = pipeline.picture(source)
+            except Stopped:
+                upscaled = None
+            if upscaled is None:
+                cancelled, frames_done = True, 0
+            else:
+                transparent = bool((source[..., 3] < 255).any())
+                write_image(job.output, upscaled, alpha_source=options.input if transparent else None)
+                frames_done = 1
+                if preview:
+                    preview(source, upscaled.copy(), 1)
+                if progress:
+                    progress(1, 1, 1 / max(time.perf_counter() - started, 1e-6))
         else:
             frames_done, cancelled = _run_video(options, job, pipeline, progress, preview, cancel, started)
         elapsed = time.perf_counter() - started

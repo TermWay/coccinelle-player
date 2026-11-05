@@ -36,7 +36,7 @@ from . import log, system, usage
 from .ffx import find_sdk_dir
 from .image_preview import ImagePreviewer
 from .hq_scaler import HQ_SCALER
-from .realesrgan import REAL_ESRGAN
+from .realesrgan import MODELS, REAL_ESRGAN, REAL_ESRGAN_ANIME, REAL_ESRGAN_X4PLUS, STILL_ONLY
 from .upscalers import EXTERNAL_UPSCALERS
 from .job import JobOptions, JobPlan, JobResult, default_output, plan_from_info, run_job
 from .media import (COPY_ANY_AUDIO_SUFFIXES, IMAGE_SUFFIXES, MP4_AUDIO_COPY, VIDEO_SUFFIXES, KeyframeIndex, MediaInfo,
@@ -119,8 +119,12 @@ UPSCALER_CHOICES = [
     ("Real-ESRGAN · slow, redraws detail", REAL_ESRGAN,
      "A neural network that draws each frame again: crisp, about 5 frames a second at 4K, and it can change faces and "
      "small text. A separate program: see the README."),
+    ("Real-ESRGAN x4plus · general, stills only", REAL_ESRGAN_X4PLUS,
+     "Its general model, for still images: about 10 s for a 1080p picture. It can change faces and small text."),
+    ("Real-ESRGAN anime · drawings, stills only", REAL_ESRGAN_ANIME,
+     "Its model for drawings, for still images: about 4 s for a 1080p picture, and it keeps the colours better."),
 ]
-NO_MOTION_NOTES = {HQ_SCALER: "Not used by the HQ scaler.", REAL_ESRGAN: "Not used by Real-ESRGAN."}
+NO_MOTION_NOTES = {HQ_SCALER: "Not used by the HQ scaler.", **dict.fromkeys(MODELS, "Not used by Real-ESRGAN.")}
 FILTER_HELP = {"nearest": "every source pixel as a block, exactly what the file holds",
                "linear": "smooth, what most players do", "cubic": "a little sharper, the usual photo editor filter",
                "lanczos": "the sharpest classic filter (mpv, madVR)"}
@@ -481,7 +485,8 @@ class App:
         self.upscaler_choice.bind("<<ComboboxSelected>>", lambda _: self._settings_changed())
         self._tip(self.upscaler_choice, "AMD's FSR DLL holds three upscalers. FSR 4 is the one this tool is for; "
                                         "FSR 3.1 and 2.3 are there to compare. The HQ scaler comes with AMD's "
-                                        "driver and runs in ffmpeg. Real-ESRGAN is a separate program. Measured on "
+                                        "driver and runs in ffmpeg. Real-ESRGAN is a separate program, with two "
+                                        "slower models for still images. Measured on "
                                         "a test clip (PSNR against the original, higher is better): FSR 4 26.8 dB, "
                                         "FSR 2.3 26.5, Lanczos 26.4, HQ scaler 26.3, FSR 3.1 25.9, Real-ESRGAN 24.4 "
                                         "(crisper, but what it draws is not the original). To see them side by "
@@ -824,7 +829,7 @@ class App:
 
     def _sharpening(self, upscaler: str | None) -> bool:
         """Whether the switch asks for sharpening and `upscaler` has it."""
-        return self.sharpen_var.get() and upscaler != REAL_ESRGAN
+        return self.sharpen_var.get() and upscaler not in MODELS
 
     def _plan(self) -> JobPlan | None:
         if self.info is None or self.input_path is None:
@@ -928,7 +933,7 @@ class App:
         upscaler = UPSCALER_CHOICES[self.upscaler_choice.current()][1]
         self._set_state(self.motion_choice, idle and not image and upscaler not in NO_MOTION_NOTES)
         self._set_state(self.encoder_choice, idle and not image)
-        self._set_state(self.sharpen_switch, idle and upscaler != REAL_ESRGAN)
+        self._set_state(self.sharpen_switch, idle and upscaler not in MODELS)
         self._set_state(self.sharpness_scale, idle and self._sharpening(upscaler))
         self.sharpness_label.configure(text=f"{self.sharpness_var.get():.2f}" if self._sharpening(upscaler) else "off")
         self.motion_note.configure(text="Not used for images." if image else NO_MOTION_NOTES.get(
@@ -1034,15 +1039,18 @@ class App:
                               options.upscaler)
 
     def _side_entries(self) -> list[tuple[str, str]]:
-        """(label, choice) of the side dropdowns: the current settings, every preset, the source filters, off."""
+        """(label, choice) of the side dropdowns: the current settings, the presets this file can show, the source
+        filters, off."""
+        still = self.input_path is None or is_image(self.input_path)
         return ([("Current settings", "current")]
-                + [(preset.name, f"preset:{preset.name}") for preset in self.presets.all]
+                + [(preset.name, f"preset:{preset.name}") for preset in self.presets.all
+                   if still or preset.upscaler not in STILL_ONLY]
                 + [(SOURCE_LABELS[name], name) for name in REFERENCE_FILTERS]
                 + [("Off", OFF)])
 
     def _update_preset_lists(self) -> None:
-        """The dropdowns' lists after presets changed; a side that showed a preset now gone shows the current
-        settings."""
+        """The dropdowns' lists after presets or the file changed; a side that showed a preset now gone shows the
+        current settings."""
         self.preset_choice.configure(values=[preset.name for preset in self.presets.all])
         entries = self._side_entries()
         for side, choice in self.side_choices.items():
@@ -1238,6 +1246,7 @@ class App:
         self._close_media()
         self.load_token += 1
         self.input_path, self.info, self.last_saved = path, None, None
+        self._update_preset_lists()
         self.output_custom = False
         self._hide_banner()
         self.source_name.configure(text=path.name)
@@ -1835,6 +1844,7 @@ class App:
         if token != self.load_token:
             return
         self.input_path, self.info = None, None
+        self._update_preset_lists()
         self._clear_output()
         self.source_name.configure(text="No file yet")
         self.source_details.configure(text="Drop a file anywhere on this window, or choose one.")

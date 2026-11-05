@@ -489,6 +489,13 @@ def main() -> int:
                   f"without its program the window says how to install it: {app.size_note.cget('text')}")
             shot("08d_realesrgan_missing")
         app._refresh()
+        app.preset_choice.set("Real-ESRGAN x4plus")
+        app._preset_chosen()
+        yield 0.5
+        check("still images" in app.size_note.cget("text") and app.start_button.instate(["disabled"]),
+              f"a model for still images is refused for a video: {app.size_note.cget('text')}")
+        check("Real-ESRGAN x4plus" not in app.side_boxes["left"].cget("values"), "the sides of a video do not offer it")
+        shot("08e_still_model_on_video")
         app.preset_choice.set("FSR 4")
         app._preset_chosen()
         app.load(args.image)
@@ -507,6 +514,11 @@ def main() -> int:
         yield lambda: side_ready("left")
         yield 0.5
         shot("09a_image_realesrgan")
+        for name, screenshot in (("Real-ESRGAN x4plus", "09a_image_x4plus"), ("Real-ESRGAN anime", "09a_image_anime")):
+            choose("left", f"preset:{name}")
+            yield lambda: side_ready("left")
+            yield 0.5
+            shot(screenshot)
         app.start()
         yield lambda: not app.busy and app.last_saved is not None
         check(app.last_saved.exists(), "image job finished")
@@ -520,8 +532,10 @@ def main() -> int:
         shot("10_error")
         check("Cannot open" in app.banner_label.cget("text"), "bad file shows the error banner")
         app._hide_banner()
+        choose("left", "preset:Real-ESRGAN anime")
         app.load(args.video)
         yield lambda: app.info is not None
+        check(app.side_choices["left"] == "current", "opening a video takes a model for still images off its side")
         minimum_width, minimum_height = root.minsize()
         root.geometry(f"{minimum_width}x{minimum_height}")
         yield 1.0

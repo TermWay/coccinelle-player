@@ -39,7 +39,7 @@ from . import log, usage
 from .flow import create_flow
 from .hq_scaler import HQ_SCALER, EncoderScale
 from .media import FrameReader, FrameWriter, IndexClosed, KeyframeIndex, MediaInfo, join_pieces, last_frame_before
-from .realesrgan import REAL_ESRGAN
+from .realesrgan import REAL_ESRGAN, REAL_ESRGAN_ANIME, REAL_ESRGAN_X4PLUS
 from .timeline import Piece, Timeline, keep_going, next_start, piece_lengths
 from .upscalers import EXTERNAL_UPSCALERS, create_pipeline
 
@@ -66,7 +66,8 @@ EventCallback = Callable[..., None]
 
 
 UPSCALER_NAMES = {None: "FSR 4", "3.1.6": "FSR 3.1", "2.3.4": "FSR 2.3", HQ_SCALER: "AMD HQ scaler",
-                  REAL_ESRGAN: "Real-ESRGAN"}
+                  REAL_ESRGAN: "Real-ESRGAN", REAL_ESRGAN_X4PLUS: "Real-ESRGAN x4plus",
+                  REAL_ESRGAN_ANIME: "Real-ESRGAN anime"}
 MOTION_NAMES = {"ultrafast": "rough motion", "medium": "best motion"}
 
 

@@ -14,7 +14,7 @@ from pathlib import Path
 
 from . import log
 from .hq_scaler import HQ_SCALER
-from .realesrgan import REAL_ESRGAN
+from .realesrgan import MODELS, REAL_ESRGAN, REAL_ESRGAN_ANIME, REAL_ESRGAN_X4PLUS
 from .upscalers import EXTERNAL_UPSCALERS
 from .render import UPSCALER_NAMES, RenderSettings
 
@@ -52,6 +52,8 @@ BUILTIN = (
     Preset("FSR 2.3", upscaler="2.3.4", builtin=True),
     Preset("AMD HQ scaler", upscaler=HQ_SCALER, flow="zero", builtin=True),
     Preset("Real-ESRGAN", upscaler=REAL_ESRGAN, flow="zero", builtin=True),
+    Preset("Real-ESRGAN x4plus", upscaler=REAL_ESRGAN_X4PLUS, flow="zero", builtin=True),
+    Preset("Real-ESRGAN anime", upscaler=REAL_ESRGAN_ANIME, flow="zero", builtin=True),
 )
 
 
@@ -81,7 +83,7 @@ def preset_from_json(entry: dict) -> Preset:
     sharpness = entry.get("sharpness")
     if sharpness is not None and (not isinstance(sharpness, (int, float)) or not 0.0 <= sharpness <= 1.0):
         raise ValueError(f"preset {name}: sharpening {sharpness!r} is not between 0 and 1")
-    if sharpness is None or upscaler == REAL_ESRGAN:  # it has no sharpening
+    if sharpness is None or upscaler in MODELS:  # it has no sharpening
         return Preset(name.strip(), upscaler, flow, flow_preset)
     return Preset(name.strip(), upscaler, flow, flow_preset, float(sharpness))
 

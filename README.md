@@ -69,7 +69,7 @@ sub-pixel camera jitter every frame. A video file has none of those, so this too
   against FSR 3.1, sit side by side, paused or playing (two versions share the GPU, so playing them waits
   more). Off turns a side off: the other one fills the picture, without the divider.
 - **Presets** hold how the video is upscaled: the upscaler, the motion vectors and the sharpening (the size and
-  the encoder stay the file's). Eight are built in (FSR 4, sharpened, best motion, no motion, FSR 3.1, FSR 2.3, AMD HQ scaler, Real-ESRGAN);
+  the encoder stay the file's). Ten are built in (FSR 4, sharpened, best motion, no motion, FSR 3.1, FSR 2.3, AMD HQ scaler, Real-ESRGAN, and for still images Real-ESRGAN x4plus and anime);
   + saves the current settings as your own (kept in `%APPDATA%\Coccinelle Player\presets.json`), the bin deletes
   one, and choosing one in the Preset dropdown loads it into the settings.
 - **Zoom:** Fit shows the whole picture; Original size shows the source at its own pixel size (the upscaled
@@ -130,7 +130,8 @@ ultra 3x. `--sharpness 0..1` enables FSR's RCAS pass (with `--upscaler hq`, the 
 `av1_amf`, `h264_amf`, `x264`, `x265`. `--upscaler 3.1` or `2.3` uses AMD's older upscalers instead of FSR 4,
 `--upscaler hq` AMD's HQ scaler (ffmpeg 8.0 or later): faster, no motion vectors, each frame on its own.
 `--upscaler realesrgan` Real-ESRGAN (installed apart, see Requirements): it redraws each frame, about 10 times slower
-than FSR 4, with no motion vectors and no sharpening.
+than FSR 4, with no motion vectors and no sharpening. `--upscaler realesrgan-x4plus` (general) and
+`realesrgan-x4plus-anime` (drawings) are its slower models, for still images only: a video is refused.
 
 **Settings, all of them:** FSR 4 itself takes the output size, the optional RCAS sharpening, and per frame a
 colour image, depth, motion vectors, camera jitter, exposure and a reset flag. Depth, jitter and exposure have
@@ -138,8 +139,9 @@ no meaning for a video, so they are fixed (table above); the motion vectors are 
 (optical flow presets or off). The SDK's five tuning keys (velocity factor, reactiveness, shading change,
 accumulation per frame, minimum disocclusion accumulation) change nothing in FSR 4: its output stayed identical
 to the bit when they were tried here; they only act on FSR 3.1. The HQ scaler takes the output size and sharpening;
-its algorithm stays Video SR 1.1, the best of the filter's five. Real-ESRGAN takes nothing here: one model, run at the
-smallest of its scales (2, 3, 4) that reaches the output size, then resized to it. The DLL also holds FSR 3.1.6 and 2.3.4, offered as the Upscaler setting
+its algorithm stays Video SR 1.1, the best of the filter's five. Real-ESRGAN takes only its model, offered as the Upscaler setting: the
+video model runs at the smallest of its scales (2, 3, 4) that reaches the output size, the two for still images at 4x, then the
+picture is resized to the output size. The DLL also holds FSR 3.1.6 and 2.3.4, offered as the Upscaler setting
 to compare. Measured on the panning fractal clip (PSNR against the original after a 2x downscale, DIS fast):
 
 | Upscaler | PSNR | GPU time per frame (1600x900 to 3200x1800) |
@@ -218,6 +220,9 @@ default `fast` preset, HEVC AMF output:
 
 The 3840x2160 rows: `python -m fsr4 upscale <clip> --scale 2 --frames 600`, plus the option named.
 
+One 1920x1080 picture to 3840x2160, the whole command (`python -m fsr4 upscale <image> --scale 2 --upscaler <name>`):
+`realesrgan` 1.8 s, `realesrgan-x4plus-anime` 4.3 s, `realesrgan-x4plus` 10.1 s.
+
 The FSR dispatch itself is about 2 ms at 1440p and 4.5 ms at 4K including the copies; optical flow on the
 CPU is what limits the rate. So 1080p30 content upscales in real time, 1080p60 at about three quarters of real time.
 
@@ -289,11 +294,27 @@ Real-ESRGAN (`realesrgan-ncnn-vulkan`, its video model; `--upscaler realesrgan`)
 It looks much crisper and removes compression artifacts, but it repaints the picture rather than recovering
 it: on one frame of natural footage, 4.5 times the original's detail energy and SSIM 0.979 against 0.995 for FSR 4.
 It comes out 2 to 3 levels brighter, and on small text it draws clean letters that are the wrong letters. It takes
-160 ms a frame at 2880x2160 (FSR 4: 19 ms). `realesrgan-x4plus` is no closer to the original and takes 4.4 s a frame,
-so the tool uses the video model only. On a drawn clip (made for the lab: flat colours, black outlines, a panning background) it scores below the HQ scaler when the file is clean, and first of the three once H.264 at CRF 26 has marked it up, because it wipes the artifacts; it also flickers least there (temporal PSNR 46.8, HQ scaler 45.9, FSR 4 41.0).
+160 ms a frame at 2880x2160 (FSR 4: 19 ms). On a drawn clip (made for the lab: flat colours, black outlines, a panning background) it scores below the HQ scaler when the file is clean, and first of the three once H.264 at CRF 26 has marked it up, because it wipes the artifacts; it also flickers least there (temporal PSNR 46.8, HQ scaler 45.9, FSR 4 41.0).
 The program only takes files and each run costs 0.34 s to start, so frames go through it in chunks of up to 16 PNG
 files in a temporary folder (about 400 MB at 4K), two runs overlapping. A seek waits for the chunk being read, up to
 about 3 s at 4K.
+
+Its two slower models are for still images only, since in a video a seek would wait minutes. They are there for their
+look: on clean pictures they stay below FSR 4 and Lanczos, and neither leads the other. No real photograph was at hand
+to measure, so nothing here says how they do on one.
+
+| Still image (2x, PSNR)                | Video model | `x4plus` | `x4plus-anime` | FSR 4 | Lanczos |
+|---------------------------------------|-------------|----------|----------------|-------|---------|
+| Drawn frame (flat colours, outlines)  | 33.40       | 34.68    | 35.24          | 34.03 | 35.24   |
+| Smooth CGI wallpaper                  | 34.85       | 36.09    | 35.72          | 39.59 | 39.05   |
+| Rendered landscape                    | 39.46       | 38.49    | 40.14          | 44.13 | 44.99   |
+| Soft frame of natural footage         | 35.06       | 34.06    | 32.64          | 47.39 | 49.41   |
+| Aliased fractal                       | 24.27       | 24.06    | 23.54          | 25.98 | 26.38   |
+
+On the drawn frame the anime model keeps the colours closest (at most 1.7 levels off on average, the video model 4.7,
+`x4plus` 4.0), with a thin halo along the outlines that comes from the model, not from the resizing; `x4plus` leaves
+blotches in flat colours. Both run at 4x, so their picture nearly always comes down to the output size: with an area
+filter, which scores 0.1 to 0.5 dB above Lanczos for these two (the video model keeps Lanczos, 0.05 to 0.1 dB above area).
 
 ## Layout
 - `fsr4/vk.py`, `fsr4/vk_types.py`, `fsr4/gpu.py`: ctypes Vulkan binding, generated structs, device and copies.

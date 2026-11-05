@@ -75,6 +75,11 @@ has none of those; the tool substitutes, as the quality lab (§14) settled:
   a picture comes about 2.5 s after a seek at 4K; a seek or a stop waits for the chunk being read, up to about 3 s. A
   program that fails or leaves frames out is an error quoting its output. It refuses `--sharpness`, `--debug-view`,
   `--debug-checking`, `--validate` and `--gpu`; it picks the discrete card itself.
+- Two more Real-ESRGAN models are offered for still images only, since a 1080p picture takes them seconds (*measured*:
+  `realesrgan-x4plus`, the general one, 10 s; `realesrgan-x4plus-anime`, for drawings, 4.3 s; the video model 1.8 s). A
+  video is refused with a plain reason. They run at 4x and the picture comes down to the output size with an area
+  filter. A picture being made stops at once when the job is cancelled, when no side shows it any more and when the
+  file closes.
 - Sharpening: strength 0 to 1, off by default: FSR's RCAS pass, or the HQ scaler's own, where off and 0 keep the
   source's detail and 1 is the filter's strongest. Real-ESRGAN has none.
 - Each frame is uploaded, dispatched and read back through cached host memory (93 ms to 1.4 ms, *measured*). The
@@ -168,7 +173,7 @@ has none of those; the tool substitutes, as the quality lab (§14) settled:
 | `--flow-scale N` | 1 | compute the flow at 1/N of the size |
 | `--sharpness S` | off | sharpening strength, 0 to 1 (§4) |
 | `--codec` | `amf` | §6 |
-| `--upscaler 4\|3.1\|2.3\|hq\|realesrgan` | 4 | §4; `hq` and `realesrgan` ignore the `--flow` options |
+| `--upscaler 4\|3.1\|2.3\|hq\|realesrgan\|realesrgan-x4plus\|realesrgan-x4plus-anime` | 4 | §4; `hq` and the `realesrgan` ones ignore the `--flow` options; the last two are for images |
 | `--frames N` | all | stop after N frames (audio cut to match) |
 | `--gpu I`, `--sdk FOLDER` | automatic, `bin\` | device index; folder holding both FSR DLLs |
 | `--validate`, `--debug-checking`, `--debug-view` | off | validation layer, FSR's checks (logged), FSR's debug overlay |
@@ -233,10 +238,11 @@ has none of those; the tool substitutes, as the quality lab (§14) settled:
 3. **Preset**: a dropdown showing the preset the settings match, or "Custom settings"; + saves them as a preset;
    a bin, shown for the user's own presets, deletes the one shown.
 4. **Upscaler**: "FSR 4 · machine learning" (default), "FSR 3.1 · older, hand-tuned", "FSR 2.3 · older,
-   hand-tuned", "AMD HQ scaler · faster, no motion", "Real-ESRGAN · slow, redraws detail", with a note under the
+   hand-tuned", "AMD HQ scaler · faster, no motion", "Real-ESRGAN · slow, redraws detail", "Real-ESRGAN x4plus · general, stills
+   only", "Real-ESRGAN anime · drawings, stills only", with a note under the
    dropdown for each; the tooltip quotes the lab's PSNR (FSR 4 26.8 dB, FSR 2.3 26.5, Lanczos 26.4, HQ scaler 26.3,
    FSR 3.1 25.9, Real-ESRGAN 24.4). Without Real-ESRGAN's program, choosing it shows how to install it under the
-   size, and Upscale stays disabled.
+   size, and Upscale stays disabled; so does choosing a model for still images with a video open, which says why there.
 5. **Motion vectors**: "Optical flow · fast" (default), "Optical flow · ultrafast", "Optical flow · medium,
    best", "Off", with a note for each; the tooltip says a video carries no motion data, so it is measured, and
    better motion gives more detail. Disabled for images ("Not used for images."), with the HQ scaler ("Not
@@ -352,7 +358,9 @@ is its own version (§10).
 ### Presets
 - Built in: "FSR 4" (fast flow, no sharpening), "FSR 4 · sharpened" (0.5), "FSR 4 · best motion" (medium flow),
   "FSR 4 · no motion", "FSR 3.1" and "FSR 2.3" (fast flow, no sharpening), "AMD HQ scaler" (no sharpening),
-  "Real-ESRGAN". A preset
+  "Real-ESRGAN", and for still images "Real-ESRGAN x4plus" and "Real-ESRGAN anime": the sides of a video do not offer
+  these two (or a preset of the user's with those models), and a side showing one when a video opens goes back to the
+  current settings. A preset
   holds the upscaler, the motion vectors and the sharpening only; the size and the encoder stay the file's.
 - Choosing one in the Preset dropdown loads it into the settings. + opens a row with a name (the settings'
   description, or "My preset"), Save and Cancel: Enter saves, Escape cancels. Refused: an empty name, more than
