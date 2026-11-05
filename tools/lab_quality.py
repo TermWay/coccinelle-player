@@ -3,7 +3,7 @@
 Image lab (`--image ref.png`): the reference is downscaled by `--scale` (area filter), upscaled back with
 and without sharpening, and compared to the reference. Bicubic and Lanczos (ffmpeg) are the baselines; AMD's
 HQ scaler (`AMF_SETTINGS`, ffmpeg's `sr_amf`) is measured beside them when this ffmpeg has it, and Real-ESRGAN
-(`REALESRGAN_SETTINGS`) when `--realesrgan` names its realesrgan-ncnn-vulkan.exe (not a dependency of the tool).
+(`REALESRGAN_SETTINGS`) when `--realesrgan` names its realesrgan-ncnn-vulkan.exe.
 Alongside PSNR, the table shows the mean per-channel bias and the best PSNR over small integer shifts, which
 separates "blurry" from "misaligned" and from "wrong colour transform".
 

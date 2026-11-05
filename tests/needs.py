@@ -51,6 +51,13 @@ def require_hq_scaler() -> None:
         raise unittest.SkipTest(f"AMD's HQ scaler cannot run here: {reason}")
 
 
+def require_realesrgan() -> None:
+    """Skip the test class when Real-ESRGAN's program is not installed."""
+    from fsr4 import realesrgan
+    if realesrgan.find_program() is None:
+        raise unittest.SkipTest(realesrgan.NOT_INSTALLED)
+
+
 def require_fsr() -> None:
     """Skip the calling test (or class, from `setUpClass`) unless FSR 4 runs on this machine."""
     reason = fsr_unavailable()

@@ -37,9 +37,11 @@ import numpy as np
 
 from . import log, usage
 from .flow import create_flow
-from .hq_scaler import HQ_SCALER, EncoderScale, create_pipeline
+from .hq_scaler import HQ_SCALER, EncoderScale
 from .media import FrameReader, FrameWriter, IndexClosed, KeyframeIndex, MediaInfo, join_pieces, last_frame_before
+from .realesrgan import REAL_ESRGAN
 from .timeline import Piece, Timeline, keep_going, next_start, piece_lengths
+from .upscalers import EXTERNAL_UPSCALERS, create_pipeline
 
 PREROLL_FRAMES = 8
 LIVE_INTERVAL = 0.5
@@ -63,15 +65,16 @@ MIN_FREE_BYTES = 2 * 1024 ** 3
 EventCallback = Callable[..., None]
 
 
-UPSCALER_NAMES = {None: "FSR 4", "3.1.6": "FSR 3.1", "2.3.4": "FSR 2.3", HQ_SCALER: "AMD HQ scaler"}
+UPSCALER_NAMES = {None: "FSR 4", "3.1.6": "FSR 3.1", "2.3.4": "FSR 2.3", HQ_SCALER: "AMD HQ scaler",
+                  REAL_ESRGAN: "Real-ESRGAN"}
 MOTION_NAMES = {"ultrafast": "rough motion", "medium": "best motion"}
 
 
 @dataclass(frozen=True)
 class RenderSettings:
     """Everything the upscaled pieces depend on; each distinct value has its own version. `upscaler` names
-    one of the FSR DLL's upscalers ("3.1.6", "2.3.4") or AMD's HQ scaler (`HQ_SCALER`, always with `flow` "zero");
-    None is FSR 4."""
+    one of the FSR DLL's upscalers ("3.1.6", "2.3.4"), AMD's HQ scaler (`HQ_SCALER`) or Real-ESRGAN (`REAL_ESRGAN`),
+    both always with `flow` "zero"; None is FSR 4."""
     output_size: tuple[int, int]
     flow: str = "dis"
     flow_preset: str = "fast"
@@ -82,7 +85,7 @@ class RenderSettings:
     def describe(self) -> str:
         """A short name: the upscaler, plus the motion and the sharpening when they are not the defaults."""
         parts = [UPSCALER_NAMES.get(self.upscaler, f"FSR {self.upscaler}")]
-        if self.upscaler != HQ_SCALER:  # it never takes motion: nothing to say
+        if self.upscaler not in EXTERNAL_UPSCALERS:  # they never take motion: nothing to say
             if self.flow == "zero":
                 parts.append("no motion")
             elif self.flow_preset in MOTION_NAMES:
@@ -459,7 +462,7 @@ class Renderer:
         usage.lower_current_thread()
         timeline = version.timeline
         pipeline.reset()
-        preroll_start = max(0, start - PREROLL_FRAMES)
+        preroll_start = max(0, start - PREROLL_FRAMES) if pipeline.keeps_history else start
         gap_end = timeline.gap_end(start)
         open_end = gap_end >= timeline.total
         keyframes = self.keyframes.get() if preroll_start > 0 else None

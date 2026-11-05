@@ -20,7 +20,7 @@ import numpy as np
 
 from . import log
 from .flow import create_flow
-from .hq_scaler import create_pipeline
+from .upscalers import create_pipeline
 from .media import read_image
 from .render import RenderSettings
 

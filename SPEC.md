@@ -40,6 +40,9 @@ CLAUDE.md the design notes for working on the code.
   processes, found next to the executable or on PATH. They are never bundled (GPL). A missing one is named with
   how to install it (`winget install Gyan.FFmpeg.Essentials`); when ffmpeg rejects an option as unknown, the error
   says this ffmpeg is too old and which version is needed.
+- Real-ESRGAN is optional and never bundled: `realesrgan-ncnn-vulkan.exe` with its `models` folder, tested with
+  the release of 2022-04-24 (v0.2.5.0), looked for in `bin\realesrgan\` next to the packaged executable, then in
+  the repository's, then on PATH. Without it the error says where to get it and where to put it.
 - The window is plain tkinter (DPI aware) with ctypes calls into Win32; no GUI package.
 - Every message goes through one logging module, which the window shows. No log file is ever written.
 - No silent failure: an error is logged and stops the work with a plain reason on one line.
@@ -65,8 +68,15 @@ has none of those; the tool substitutes, as the quality lab (§14) settled:
   history, each frame on its own. It runs in the encoder's ffmpeg, so a video's frames reach it at their own size
   and only the encoded file holds them upscaled. It needs an ffmpeg that has the filter (without one, an error
   says so), takes at least 32 × 32, and refuses `--debug-view`, `--debug-checking`, `--validate` and `--gpu`.
+- Real-ESRGAN (its `realesr-animevideov3` model) is offered too: a neural network that redraws each frame on its own,
+  crisper but not the same picture, and about 10 times slower than FSR 4. It runs at the smallest of its scales (2, 3,
+  4) that reaches the output size, then the result is resized to it (Lanczos). Frames go through its program in
+  chunks of PNG files in a temporary folder, removed afterwards: 4, then 8, then 16 frames, two runs overlapping, so
+  a picture comes about 2.5 s after a seek at 4K; a seek or a stop waits for the chunk being read, up to about 3 s. A
+  program that fails or leaves frames out is an error quoting its output. It refuses `--sharpness`, `--debug-view`,
+  `--debug-checking`, `--validate` and `--gpu`; it picks the discrete card itself.
 - Sharpening: strength 0 to 1, off by default: FSR's RCAS pass, or the HQ scaler's own, where off and 0 keep the
-  source's detail and 1 is the filter's strongest.
+  source's detail and 1 is the filter's strongest. Real-ESRGAN has none.
 - Each frame is uploaded, dispatched and read back through cached host memory (93 ms to 1.4 ms, *measured*). The
   resource states told to FSR match the layouts the images are really in; `selftest --validate` runs the Vulkan
   path under the validation layer without errors.
@@ -158,7 +168,7 @@ has none of those; the tool substitutes, as the quality lab (§14) settled:
 | `--flow-scale N` | 1 | compute the flow at 1/N of the size |
 | `--sharpness S` | off | sharpening strength, 0 to 1 (§4) |
 | `--codec` | `amf` | §6 |
-| `--upscaler 4\|3.1\|2.3\|hq` | 4 | §4; `hq` ignores the `--flow` options |
+| `--upscaler 4\|3.1\|2.3\|hq\|realesrgan` | 4 | §4; `hq` and `realesrgan` ignore the `--flow` options |
 | `--frames N` | all | stop after N frames (audio cut to match) |
 | `--gpu I`, `--sdk FOLDER` | automatic, `bin\` | device index; folder holding both FSR DLLs |
 | `--validate`, `--debug-checking`, `--debug-view` | off | validation layer, FSR's checks (logged), FSR's debug overlay |
@@ -223,14 +233,17 @@ has none of those; the tool substitutes, as the quality lab (§14) settled:
 3. **Preset**: a dropdown showing the preset the settings match, or "Custom settings"; + saves them as a preset;
    a bin, shown for the user's own presets, deletes the one shown.
 4. **Upscaler**: "FSR 4 · machine learning" (default), "FSR 3.1 · older, hand-tuned", "FSR 2.3 · older,
-   hand-tuned", "AMD HQ scaler · faster, no motion", with a note under the dropdown for each; the tooltip quotes
-   the lab's PSNR (FSR 4 26.8 dB, FSR 2.3 26.5, Lanczos 26.4, HQ scaler 26.3, FSR 3.1 25.9).
+   hand-tuned", "AMD HQ scaler · faster, no motion", "Real-ESRGAN · slow, redraws detail", with a note under the
+   dropdown for each; the tooltip quotes the lab's PSNR (FSR 4 26.8 dB, FSR 2.3 26.5, Lanczos 26.4, HQ scaler 26.3,
+   FSR 3.1 25.9, Real-ESRGAN 24.4). Without Real-ESRGAN's program, choosing it shows how to install it under the
+   size, and Upscale stays disabled.
 5. **Motion vectors**: "Optical flow · fast" (default), "Optical flow · ultrafast", "Optical flow · medium,
    best", "Off", with a note for each; the tooltip says a video carries no motion data, so it is measured, and
-   better motion gives more detail. Disabled for images ("Not used for images.") and with the HQ scaler ("Not
-   used by the HQ scaler.").
+   better motion gives more detail. Disabled for images ("Not used for images."), with the HQ scaler ("Not
+   used by the HQ scaler.") and with Real-ESRGAN ("Not used by Real-ESRGAN.").
 6. **Sharpening**: a switch (off), a slider from 0 to 1 (0.40) and its value; the tooltip says it is the upscaler's
-   own (RCAS, or the HQ scaler's): 0.2 to 0.5 gives crisper edges, high values leave halos.
+   own (RCAS, or the HQ scaler's; Real-ESRGAN has none, and the row is disabled with it): 0.2 to 0.5 gives crisper
+   edges, high values leave halos.
 7. **Output**: the output path (§6; tooltip: .mp4 plays everywhere, .mkv keeps every audio track), "…" for a
    Save-as dialog (MP4, Matroska, QuickTime; PNG, JPEG, WebP for images), the encoder ("HEVC · GPU (AMF)"
    default, "AV1 · GPU (AMF)", "H.264 · GPU (AMF)", "H.264 · CPU (x264)", "HEVC · CPU (x265)") with a note on
@@ -338,7 +351,8 @@ is its own version (§10).
 
 ### Presets
 - Built in: "FSR 4" (fast flow, no sharpening), "FSR 4 · sharpened" (0.5), "FSR 4 · best motion" (medium flow),
-  "FSR 4 · no motion", "FSR 3.1" and "FSR 2.3" (fast flow, no sharpening), "AMD HQ scaler" (no sharpening). A preset
+  "FSR 4 · no motion", "FSR 3.1" and "FSR 2.3" (fast flow, no sharpening), "AMD HQ scaler" (no sharpening),
+  "Real-ESRGAN". A preset
   holds the upscaler, the motion vectors and the sharpening only; the size and the encoder stay the file's.
 - Choosing one in the Preset dropdown loads it into the settings. + opens a row with a name (the settings'
   description, or "My preset"), Save and Cancel: Enter saves, Escape cancels. Refused: an empty name, more than
@@ -476,7 +490,7 @@ is its own version (§10).
   FSR 4 with DIS fast flow 26.82 dB (medium 27.10), Lanczos 26.42, HQ scaler 26.34, Real-ESRGAN 24.35, FSR 4
   without motion vectors 25.59, with the flow negated 25.63.
 - Speed, end to end (decode, flow, upscale, encode), *measured*: 720p60 to 1440p at 85 fps, 1080p60 to 4K at
-  47 fps, 60 fps without motion vectors, 72 fps with the HQ scaler. In the window a 1080p60 file plays at 60 fps once a few
+  47 fps, 60 fps without motion vectors, 72 fps with the HQ scaler, 4.8 fps with Real-ESRGAN. In the window a 1080p60 file plays at 60 fps once a few
   seconds are ready, about 0.3 s after Play.
 - `tools/ui_smoke.py` drives the real window through every state (a real drop, the first upscaled frame, a
   tooltip, a dropdown, the file dialog, playback, the seek bar's hover, buffering after a seek, zoom with

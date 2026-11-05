@@ -36,6 +36,8 @@ from . import log, system, usage
 from .ffx import find_sdk_dir
 from .image_preview import ImagePreviewer
 from .hq_scaler import HQ_SCALER
+from .realesrgan import REAL_ESRGAN
+from .upscalers import EXTERNAL_UPSCALERS
 from .job import JobOptions, JobPlan, JobResult, default_output, plan_from_info, run_job
 from .media import (COPY_ANY_AUDIO_SUFFIXES, IMAGE_SUFFIXES, MP4_AUDIO_COPY, VIDEO_SUFFIXES, KeyframeIndex, MediaInfo,
                     is_image, probe, read_frame, read_thumbnail)
@@ -114,7 +116,11 @@ UPSCALER_CHOICES = [
     ("AMD HQ scaler · faster, no motion", HQ_SCALER,
      "AMD's video scaler, run by ffmpeg 8.0 or later. Faster than FSR 4 with motion, but each frame stands alone: "
      "it gathers no detail across frames."),
+    ("Real-ESRGAN · slow, redraws detail", REAL_ESRGAN,
+     "A neural network that draws each frame again: crisp, about 5 frames a second at 4K, and it can change faces and "
+     "small text. A separate program: see the README."),
 ]
+NO_MOTION_NOTES = {HQ_SCALER: "Not used by the HQ scaler.", REAL_ESRGAN: "Not used by Real-ESRGAN."}
 FILTER_HELP = {"nearest": "every source pixel as a block, exactly what the file holds",
                "linear": "smooth, what most players do", "cubic": "a little sharper, the usual photo editor filter",
                "lanczos": "the sharpest classic filter (mpv, madVR)"}
@@ -475,10 +481,11 @@ class App:
         self.upscaler_choice.bind("<<ComboboxSelected>>", lambda _: self._settings_changed())
         self._tip(self.upscaler_choice, "AMD's FSR DLL holds three upscalers. FSR 4 is the one this tool is for; "
                                         "FSR 3.1 and 2.3 are there to compare. The HQ scaler comes with AMD's "
-                                        "driver and runs in ffmpeg. Measured on a test clip (PSNR against the "
-                                        "original, higher is better): FSR 4 26.8 dB, FSR 2.3 26.5, Lanczos 26.4, "
-                                        "HQ scaler 26.3, FSR 3.1 25.9. To see them side by side, show a preset "
-                                        "on each side of the picture.")
+                                        "driver and runs in ffmpeg. Real-ESRGAN is a separate program. Measured on "
+                                        "a test clip (PSNR against the original, higher is better): FSR 4 26.8 dB, "
+                                        "FSR 2.3 26.5, Lanczos 26.4, HQ scaler 26.3, FSR 3.1 25.9, Real-ESRGAN 24.4 "
+                                        "(crisper, but what it draws is not the original). To see them side by "
+                                        "side, show a preset on each side of the picture.")
         self.upscaler_note = ttk.Label(sidebar, text="", style="Faint.TLabel", wraplength=wrap, justify="left")
         self.upscaler_note.grid(row=row + 1, column=0, sticky="w", pady=(px(4), 0))
 
@@ -508,8 +515,9 @@ class App:
         self.sharpness_scale.grid(row=0, column=1, sticky="ew")
         self.sharpness_label = ttk.Label(sharpen_row, text="off", style="Small.TLabel", width=5, anchor="e")
         self.sharpness_label.grid(row=0, column=2, padx=(px(8), 0))
-        sharpen_tip = ("The upscaler's own sharpening (FSR's RCAS, or the HQ scaler's). Off keeps its natural look; "
-                       "0.2 to 0.5 makes edges crisper; high values also sharpen noise and can leave halos.")
+        sharpen_tip = ("The upscaler's own sharpening (FSR's RCAS, or the HQ scaler's; Real-ESRGAN has none). Off "
+                       "keeps its natural look; 0.2 to 0.5 makes edges crisper; high values also sharpen noise and "
+                       "can leave halos.")
         self._tip(self.sharpen_switch, sharpen_tip)
         self._tip(self.sharpness_scale, sharpen_tip)
 
@@ -804,15 +812,19 @@ class App:
     def _options(self) -> JobOptions:
         _, flow, preset, _ = MOTION_CHOICES[self.motion_choice.current()]
         upscaler = UPSCALER_CHOICES[self.upscaler_choice.current()][1]
-        if upscaler == HQ_SCALER:
-            flow, preset = "zero", "fast"  # it takes no motion
+        if upscaler in EXTERNAL_UPSCALERS:
+            flow, preset = "zero", "fast"  # they take no motion
         output = self.output_var.get().strip().strip('"')
         return JobOptions(
             input=self.input_path, output=Path(output) if output else None, scale=self._scale_for(self.size_var.get()),
             flow=flow, flow_preset=preset,
-            sharpness=round(float(self.sharpness_var.get()), 2) if self.sharpen_var.get() else None,
+            sharpness=round(float(self.sharpness_var.get()), 2) if self._sharpening(upscaler) else None,
             codec=ENCODER_CHOICES[self.encoder_choice.current()][1],
             upscaler=upscaler)
+
+    def _sharpening(self, upscaler: str | None) -> bool:
+        """Whether the switch asks for sharpening and `upscaler` has it."""
+        return self.sharpen_var.get() and upscaler != REAL_ESRGAN
 
     def _plan(self) -> JobPlan | None:
         if self.info is None or self.input_path is None:
@@ -913,13 +925,14 @@ class App:
         else:
             self.custom_row.grid_remove()
         self.custom_label.configure(text=f"{self.custom_scale.get():.2f}×")
-        no_motion = UPSCALER_CHOICES[self.upscaler_choice.current()][1] == HQ_SCALER
-        self._set_state(self.motion_choice, idle and not image and not no_motion)
+        upscaler = UPSCALER_CHOICES[self.upscaler_choice.current()][1]
+        self._set_state(self.motion_choice, idle and not image and upscaler not in NO_MOTION_NOTES)
         self._set_state(self.encoder_choice, idle and not image)
-        self._set_state(self.sharpness_scale, idle and self.sharpen_var.get())
-        self.sharpness_label.configure(text=f"{self.sharpness_var.get():.2f}" if self.sharpen_var.get() else "off")
-        self.motion_note.configure(text="Not used for images." if image else "Not used by the HQ scaler." if no_motion
-                                   else MOTION_CHOICES[self.motion_choice.current()][3])
+        self._set_state(self.sharpen_switch, idle and upscaler != REAL_ESRGAN)
+        self._set_state(self.sharpness_scale, idle and self._sharpening(upscaler))
+        self.sharpness_label.configure(text=f"{self.sharpness_var.get():.2f}" if self._sharpening(upscaler) else "off")
+        self.motion_note.configure(text="Not used for images." if image else NO_MOTION_NOTES.get(
+            upscaler, MOTION_CHOICES[self.motion_choice.current()][3]))
         self.encoder_note.configure(text="" if image else ENCODER_CHOICES[self.encoder_choice.current()][2])
         self.upscaler_note.configure(text=UPSCALER_CHOICES[self.upscaler_choice.current()][2])
         match = self.presets.matching(self._how_settings())
@@ -945,7 +958,8 @@ class App:
             self.audio_note.configure(text="" if image else describe_audio_plan(self.info, plan.output))
         else:
             self.size_label.configure(style="Faint.TLabel",
-                                      text="Reading the file…" if self.input_path is not None
+                                      text="Cannot upscale with these settings." if problem
+                                      else "Reading the file…" if self.input_path is not None
                                       else "The output size appears once a file is loaded.")
             self.size_note.configure(text="")
             self.audio_note.configure(text="")

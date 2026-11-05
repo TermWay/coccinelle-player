@@ -20,6 +20,8 @@ Python package stay `fsr4`.
   The window needs OpenCV (it resizes and filters every preview frame with it).
 - No C++ toolchain on this machine: the Vulkan structs in `fsr4/vk_types.py` are generated from the vendored
   `third_party/vulkan_core.h` by `tools/gen_vk_types.py`. Regenerate instead of editing by hand.
+- Real-ESRGAN's program is optional and never bundled: `bin/realesrgan/` (git-ignored) or PATH. Tests that need it
+  skip without it.
 - The FSR binaries (`bin/*.dll`) are AMD's signed DLLs from the FidelityFX SDK tag pinned in
   `tools/fetch_sdk.py`; they are not committed. `bin/license.md` must ship with them.
 - Branch: `main`. Commit at the end of every prompt that changed files; never push unless asked. The
@@ -114,6 +116,14 @@ Python package stay `fsr4`.
   unchanged, so the renderer has no upscaled frame of it: no "live" event, thumbnails from the source. `sr_amf` and an
   AMF encoder deadlock at random on one shared device: `DEVICE_ARGUMENTS` declares a second, unused device, so ffmpeg
   gives the encoder none and it opens its own. Never reduce that to one device.
+- Real-ESRGAN (`fsr4/realesrgan.py`) only takes files and costs 0.34 s a run, so `RealEsrganPipeline.feed` stands
+  between the reader and `upscale_stream`, which stays the one frame loop: it runs chunks of PNG files through the
+  program, two overlapping (27% faster than one; a third adds nothing), and holds a frame back until its upscaled
+  frame waits for `process`. The sources stay in a ring and the upscaled frames in two buffers, because
+  `upscale_stream` reads one frame ahead. Chunks stop at 16 frames: a seek waits for the chunk being read. It leaves
+  out `-g`: the program picks the discrete card, and an index would not match `Gpu`'s choice. Which pipeline an
+  upscaler gets is `fsr4/upscalers.py`; `EXTERNAL_UPSCALERS` are the ones with no DLL, device or motion here, and
+  `keeps_history = False` spares them the frames before a seek.
 - FSR 4 ignores the SDK's upscale tuning keys (verified bit-identical); `ffx.Upscaler(provider=...)` selects the
   DLL's FSR 3.1.6 or 2.3.4 through `ffxOverrideVersion` for comparisons. The frame count from the probe is an
   estimate until a read reaches the end (`Timeline.exact`); never stop rendering at the estimate.

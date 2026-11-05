@@ -15,10 +15,12 @@ import numpy as np
 from . import log
 from .ffx import QUALITY_MODE_SCALES, find_sdk_dir
 from .flow import create_flow
-from .hq_scaler import HQ_SCALER, MIN_SIZE as HQ_MIN_SIZE, create_pipeline
+from .hq_scaler import HQ_SCALER, MIN_SIZE as HQ_MIN_SIZE
 from .media import (ENCODER_LIMITS, ENCODER_NAMES, FrameReader, FrameWriter, MediaInfo, describe_audio, is_image,
                     partial_path, probe, read_image, write_image)
 from .pipeline import upscale_stream
+from .realesrgan import NOT_INSTALLED, REAL_ESRGAN, find_program
+from .upscalers import EXTERNAL_UPSCALERS, create_pipeline
 
 VIDEO_SUFFIX = ".mp4"
 MIN_SCALE = 1.0
@@ -149,11 +151,22 @@ def check_hq_scaler(options: JobOptions, info: MediaInfo) -> None:
         raise ValueError("--debug-view, --debug-checking, --validate and --gpu do not apply to AMD's HQ scaler")
 
 
+def check_realesrgan(options: JobOptions) -> None:
+    """Raise ValueError when Real-ESRGAN is not installed, and for the options that do not apply to it."""
+    if (options.sharpness is not None or options.debug_view or options.debug_checking or options.validate
+            or options.gpu is not None):
+        raise ValueError("--sharpness, --debug-view, --debug-checking, --validate and --gpu do not apply to Real-ESRGAN")
+    if find_program() is None:
+        raise ValueError(NOT_INSTALLED)
+
+
 def plan_from_info(options: JobOptions, info: MediaInfo) -> JobPlan:
     """Resolve the output path and sizes for an already probed input; raises ValueError for bad scales and for
     an output that would overwrite the input."""
     if options.upscaler == HQ_SCALER:
         check_hq_scaler(options, info)
+    elif options.upscaler == REAL_ESRGAN:
+        check_realesrgan(options)
     output = options.output or default_output(options.input)
     check_output(output, options.input)
     width, height = info.width, info.height
@@ -192,7 +205,7 @@ def run_job(options: JobOptions, progress: ProgressCallback | None = None,
     """
     from .gpu import Gpu
     job = plan(options)
-    uses_fsr = options.upscaler != HQ_SCALER
+    uses_fsr = options.upscaler not in EXTERNAL_UPSCALERS
     sdk_dir = find_sdk_dir(options.sdk) if uses_fsr else None
     width, height = job.render_size
     out_width, out_height = job.output_size

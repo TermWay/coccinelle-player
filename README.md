@@ -27,6 +27,10 @@ sub-pixel camera jitter every frame. A video file has none of those, so this too
   and `opencv-python` for the window and the optical flow; without OpenCV the command line still runs with
   `--flow zero`), plus the FSR DLLs in `bin/`: `python tools/fetch_sdk.py` downloads them from AMD's GitHub
   (tag v2.4.0) and checks their pinned SHA-256.
+- Optional, for the Real-ESRGAN upscaler: `realesrgan-ncnn-vulkan-20220424-windows.zip` from
+  [Real-ESRGAN's release v0.2.5.0](https://github.com/xinntao/Real-ESRGAN/releases/tag/v0.2.5.0), unzipped into
+  `bin\realesrgan\` in the folder of `fsr4.exe` (or the repository), or on PATH with its `models` folder beside it.
+  It is a separate program under its own license (BSD 3-Clause) and is not included.
 
 ## Platforms
 - **Windows:** supported. Tested on Windows 11 with an RX 9070 XT; AMD's requirements also name the RX 7000
@@ -65,7 +69,7 @@ sub-pixel camera jitter every frame. A video file has none of those, so this too
   against FSR 3.1, sit side by side, paused or playing (two versions share the GPU, so playing them waits
   more). Off turns a side off: the other one fills the picture, without the divider.
 - **Presets** hold how the video is upscaled: the upscaler, the motion vectors and the sharpening (the size and
-  the encoder stay the file's). Seven are built in (FSR 4, sharpened, best motion, no motion, FSR 3.1, FSR 2.3, AMD HQ scaler);
+  the encoder stay the file's). Eight are built in (FSR 4, sharpened, best motion, no motion, FSR 3.1, FSR 2.3, AMD HQ scaler, Real-ESRGAN);
   + saves the current settings as your own (kept in `%APPDATA%\Coccinelle Player\presets.json`), the bin deletes
   one, and choosing one in the Preset dropdown loads it into the settings.
 - **Zoom:** Fit shows the whole picture; Original size shows the source at its own pixel size (the upscaled
@@ -125,13 +129,17 @@ Scale is 1x to 3x (FSR's limit); the modes are native 1x, quality 1.5x, balanced
 ultra 3x. `--sharpness 0..1` enables FSR's RCAS pass (with `--upscaler hq`, the HQ scaler's own). Video encoders: `amf` (HEVC on the GPU, default),
 `av1_amf`, `h264_amf`, `x264`, `x265`. `--upscaler 3.1` or `2.3` uses AMD's older upscalers instead of FSR 4,
 `--upscaler hq` AMD's HQ scaler (ffmpeg 8.0 or later): faster, no motion vectors, each frame on its own.
+`--upscaler realesrgan` Real-ESRGAN (installed apart, see Requirements): it redraws each frame, about 10 times slower
+than FSR 4, with no motion vectors and no sharpening.
 
 **Settings, all of them:** FSR 4 itself takes the output size, the optional RCAS sharpening, and per frame a
 colour image, depth, motion vectors, camera jitter, exposure and a reset flag. Depth, jitter and exposure have
 no meaning for a video, so they are fixed (table above); the motion vectors are the one input worth a choice
 (optical flow presets or off). The SDK's five tuning keys (velocity factor, reactiveness, shading change,
 accumulation per frame, minimum disocclusion accumulation) change nothing in FSR 4: its output stayed identical
-to the bit when they were tried here; they only act on FSR 3.1. The DLL also holds FSR 3.1.6 and 2.3.4, offered as the Upscaler setting
+to the bit when they were tried here; they only act on FSR 3.1. The HQ scaler takes the output size and sharpening;
+its algorithm stays Video SR 1.1, the best of the filter's five. Real-ESRGAN takes nothing here: one model, run at the
+smallest of its scales (2, 3, 4) that reaches the output size, then resized to it. The DLL also holds FSR 3.1.6 and 2.3.4, offered as the Upscaler setting
 to compare. Measured on the panning fractal clip (PSNR against the original after a 2x downscale, DIS fast):
 
 | Upscaler | PSNR | GPU time per frame (1600x900 to 3200x1800) |
@@ -206,6 +214,7 @@ default `fast` preset, HEVC AMF output:
 | same, `--flow-preset ultrafast`    | 3840x2160  | 55   | 8.8 ms                | 8 ms                 |
 | same, `--flow zero`                | 3840x2160  | 60   | 8.5 ms                | 0                    |
 | same, `--upscaler hq`              | 3840x2160  | 72   | in the encoder        | 0                    |
+| same, `--upscaler realesrgan`      | 3840x2160  | 4.8  | in its program        | 0                    |
 
 The 3840x2160 rows: `python -m fsr4 upscale <clip> --scale 2 --frames 600`, plus the option named.
 
@@ -261,6 +270,8 @@ Quality lab (`python tools/lab_quality.py`, PSNR against the original after a 2x
 | Natural footage, DIS fast flow            | 44.90   | 44.32         | 34.36       | 44.46                      |
 | Same, small clip through H.264 CRF 28     | 40.78   | 40.84         | 34.91       | 40.84                      |
 | Screen recording, DIS fast flow           | 26.89   | 27.20         | 26.67       | 26.64                      |
+| Drawn clip (flat colours, outlines)       | 35.31   | 36.76         | 33.42       | 33.20                      |
+| Same, small clip through H.264 CRF 26     | 33.06   | 34.07         | 34.28       | 31.75                      |
 
 Things the lab settled: motion vectors from optical flow help (+1.2 dB over zero flow, and the sign is
 verified by the negated run); faking the camera jitter by resampling the input costs 2 to 8 dB and is not
@@ -274,18 +285,22 @@ where FSR 4 gathers detail across frames. Lanczos leads on natural footage only 
 one frame it keeps 43% of the original's detail energy, the HQ scaler 99%, FSR 4 112%. Video SR 1.0 scores a little
 higher on stills (43.81) but leaves stair steps on diagonal edges.
 
-Real-ESRGAN (`realesrgan-ncnn-vulkan`, its 2x video model; the lab's `--realesrgan`) was measured too and is not
-used. It looks much crisper and removes compression artifacts, but it repaints the picture rather than recovering
+Real-ESRGAN (`realesrgan-ncnn-vulkan`, its video model; `--upscaler realesrgan`) is there for those who want its look.
+It looks much crisper and removes compression artifacts, but it repaints the picture rather than recovering
 it: on one frame of natural footage, 4.5 times the original's detail energy and SSIM 0.979 against 0.995 for FSR 4.
 It comes out 2 to 3 levels brighter, and on small text it draws clean letters that are the wrong letters. It takes
-160 ms a frame at 2880x2160 (FSR 4: 19 ms). `realesrgan-x4plus` is no closer to the original and takes 4.4 s a frame.
-Animation, which that video model is made for, has not been measured.
+160 ms a frame at 2880x2160 (FSR 4: 19 ms). `realesrgan-x4plus` is no closer to the original and takes 4.4 s a frame,
+so the tool uses the video model only. On a drawn clip (made for the lab: flat colours, black outlines, a panning background) it scores below the HQ scaler when the file is clean, and first of the three once H.264 at CRF 26 has marked it up, because it wipes the artifacts; it also flickers least there (temporal PSNR 46.8, HQ scaler 45.9, FSR 4 41.0).
+The program only takes files and each run costs 0.34 s to start, so frames go through it in chunks of up to 16 PNG
+files in a temporary folder (about 400 MB at 4K), two runs overlapping. A seek waits for the chunk being read, up to
+about 3 s at 4K.
 
 ## Layout
 - `fsr4/vk.py`, `fsr4/vk_types.py`, `fsr4/gpu.py`: ctypes Vulkan binding, generated structs, device and copies.
 - `fsr4/ffx.py`: the FSR API (`amd_fidelityfx_loader_vk.dll`) and the upscaling context.
 - `fsr4/media.py`: ffmpeg frame reader and writer. `fsr4/flow.py`: motion vectors. `fsr4/pipeline.py`: a frame.
-  `fsr4/hq_scaler.py`: AMD's HQ scaler, run by the encoder's ffmpeg.
+  `fsr4/hq_scaler.py`: AMD's HQ scaler, run by the encoder's ffmpeg. `fsr4/realesrgan.py`: Real-ESRGAN, frames in
+  chunks through its program. `fsr4/upscalers.py`: which pipeline an upscaler uses.
 - `fsr4/job.py`: one pass over a file with progress and cancel, used by `fsr4/cli.py` (command line) and for
   images in the window; `fsr4/pipeline.py`'s `upscale_stream` is the frame loop both it and the renderer use.
 - `fsr4/render.py` (versions upscaled into pieces around the playhead, saving), `fsr4/timeline.py` (pieces

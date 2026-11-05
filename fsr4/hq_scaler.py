@@ -11,13 +11,13 @@ from __future__ import annotations
 import functools
 import subprocess
 from dataclasses import dataclass
-from pathlib import Path
+from typing import Iterator
 
 import numpy as np
 
 from .flow import ZeroFlow
 from .media import _CREATE_NO_WINDOW, ffmpeg_failure, tool_path
-from .pipeline import Pipeline, Timings
+from .pipeline import Timings
 
 HQ_SCALER = "amf-hq"
 FIRST_FFMPEG = "8.0"
@@ -77,6 +77,7 @@ def upscale_picture(rgba: np.ndarray, output_size: tuple[int, int], sharpness: f
 class HqPipeline:
     """Stands in for `Pipeline` with the HQ scaler: `process` hands a frame on as it is, to be upscaled by the
     encoder's ffmpeg (`encoder_scale`), and `picture` upscales here."""
+    keeps_history = False
 
     def __init__(self, render_size: tuple[int, int], output_size: tuple[int, int], sharpness: float | None = None):
         if not available():
@@ -95,6 +96,10 @@ class HqPipeline:
     def reset(self) -> None:
         """Nothing to do: the scaler keeps no history."""
 
+    def feed(self, frames: Iterator[np.ndarray]) -> Iterator[np.ndarray]:
+        """`frames` as they are; see `realesrgan.RealEsrganPipeline`."""
+        yield from frames
+
     def process(self, rgba: np.ndarray, motion: np.ndarray | None = None) -> np.ndarray:
         """The frame itself; see the class."""
         self.timings.frames += 1
@@ -107,12 +112,3 @@ class HqPipeline:
 
     def destroy(self) -> None:
         """Nothing to free: ffmpeg holds what the scaler uses."""
-
-
-def create_pipeline(gpu, render_size: tuple[int, int], output_size: tuple[int, int], sdk_dir: Path | None, flow,
-                    sharpness: float | None, upscaler: str | None, **options) -> Pipeline | HqPipeline:
-    """The pipeline of `upscaler`, a `RenderSettings.upscaler` value. The HQ scaler needs neither `gpu` nor `sdk_dir`
-    and takes no motion, so it ignores `flow`; `options` go to `Pipeline`."""
-    if upscaler == HQ_SCALER:
-        return HqPipeline(render_size, output_size, sharpness)
-    return Pipeline(gpu, render_size, output_size, sdk_dir, flow, sharpness=sharpness, provider=upscaler, **options)

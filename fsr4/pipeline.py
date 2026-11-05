@@ -51,6 +51,7 @@ class Pipeline:
     """Upscales RGBA frames of one fixed size through an FSR 4 context."""
 
     encoder_scale = None  # frames leave here upscaled; see `hq_scaler.HqPipeline`
+    keeps_history = True  # a frame depends on the ones before it: a run after a seek starts a few frames early
 
     def __init__(self, gpu: Gpu, render_size: tuple[int, int], output_size: tuple[int, int], sdk_dir: Path,
                  flow, sharpness: float | None = None, frame_time_ms: float = 1000 / 30,
@@ -107,6 +108,10 @@ class Pipeline:
         """Start a new sequence: the next frame does not blend with history."""
         self.flow.reset()
         self.frame_index = 0
+
+    def feed(self, frames: Iterator[np.ndarray]) -> Iterator[np.ndarray]:
+        """`frames` as they are; see `realesrgan.RealEsrganPipeline`."""
+        yield from frames
 
     def process(self, rgba: np.ndarray, motion: np.ndarray | None = None) -> np.ndarray:
         """Upscale one frame. Returns a view of an internal buffer, valid until the next call.
@@ -186,7 +191,8 @@ def upscale_stream(frames: Iterator[np.ndarray], pipeline: Pipeline,
     The optical flow of the next frame runs on `executor`'s single worker while the current frame is on the GPU
     and with the consumer (OpenCV and the Vulkan waits release the GIL). `frames` must keep the previous frame
     valid while it reads the next one (FrameReader double-buffers). Closing the generator early waits for the
-    pending flow, so the worker never reads a buffer that is being overwritten.
+    pending flow, so the worker never reads a buffer that is being overwritten. `pipeline.feed` stands between
+    `frames` and this loop, for an upscaler that needs frames ahead of the one it gives back.
     """
     flow = pipeline.flow
 
@@ -196,12 +202,13 @@ def upscale_stream(frames: Iterator[np.ndarray], pipeline: Pipeline,
         pipeline.timings.add("flow (worker thread)", time.perf_counter() - started)
         return motion
 
-    frame = next(frames, None)
+    fed = pipeline.feed(frames)
+    frame = next(fed, None)
     pending = executor.submit(compute_flow, frame) if frame is not None else None
     try:
         while frame is not None:
             motion = pending.result()
-            following = next(frames, None)
+            following = next(fed, None)
             pending = executor.submit(compute_flow, following) if following is not None else None
             upscaled = pipeline.process(frame, motion)
             yield frame, upscaled
@@ -209,3 +216,4 @@ def upscale_stream(frames: Iterator[np.ndarray], pipeline: Pipeline,
     finally:
         if pending is not None and not pending.done():
             pending.result()
+        fed.close()

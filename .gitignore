@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 bin/*.dll
+bin/realesrgan/
 build/
 dist/
 out/

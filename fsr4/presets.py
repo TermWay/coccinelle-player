@@ -14,6 +14,8 @@ from pathlib import Path
 
 from . import log
 from .hq_scaler import HQ_SCALER
+from .realesrgan import REAL_ESRGAN
+from .upscalers import EXTERNAL_UPSCALERS
 from .render import UPSCALER_NAMES, RenderSettings
 
 MAX_NAME_LENGTH = 40
@@ -49,6 +51,7 @@ BUILTIN = (
     Preset("FSR 3.1", upscaler="3.1.6", builtin=True),
     Preset("FSR 2.3", upscaler="2.3.4", builtin=True),
     Preset("AMD HQ scaler", upscaler=HQ_SCALER, flow="zero", builtin=True),
+    Preset("Real-ESRGAN", upscaler=REAL_ESRGAN, flow="zero", builtin=True),
 )
 
 
@@ -71,14 +74,16 @@ def preset_from_json(entry: dict) -> Preset:
     flow, flow_preset = entry.get("flow"), entry.get("flow_preset")
     if flow not in ("dis", "zero") or flow_preset not in FLOW_PRESETS:
         raise ValueError(f"preset {name}: unknown motion {flow!r} {flow_preset!r}")
-    if upscaler == HQ_SCALER:
-        flow = "zero"  # it takes no motion
+    if upscaler in EXTERNAL_UPSCALERS:
+        flow = "zero"  # they take no motion
     if flow == "zero":
         flow_preset = "fast"  # unused without motion; the settings call "no motion" this way
     sharpness = entry.get("sharpness")
     if sharpness is not None and (not isinstance(sharpness, (int, float)) or not 0.0 <= sharpness <= 1.0):
         raise ValueError(f"preset {name}: sharpening {sharpness!r} is not between 0 and 1")
-    return Preset(name.strip(), upscaler, flow, flow_preset, None if sharpness is None else float(sharpness))
+    if sharpness is None or upscaler == REAL_ESRGAN:  # it has no sharpening
+        return Preset(name.strip(), upscaler, flow, flow_preset)
+    return Preset(name.strip(), upscaler, flow, flow_preset, float(sharpness))
 
 
 class PresetStore:

@@ -8,7 +8,8 @@ original pixels on the left, the zoom slider and wheel, a side's dropdown opened
 and two presets upscaled side by side (paused and playing), a frame step, playing backwards at a quarter speed, a
 side turned off, full screen on the window's own monitor (the second one when there is one) with its controls
 showing near the bottom and hiding at rest, then back where the window was, the folded sidebar, the whole-file
-upscale and save, AMD's HQ scaler beside FSR 4 and through a whole-file upscale, an image compared with a preset,
+upscale and save, AMD's HQ scaler beside FSR 4 and through a whole-file upscale, Real-ESRGAN beside FSR 4 (a
+whole-file upscale stopped midway, and the note when it is not installed), an image compared with a preset,
 the error banner for a bad file, and the minimum window size. Presets go to a scratch file in `--out`, not the
 user's. Screenshots go through PrintWindow, so the window may be covered; it does pop up on the desktop.
 """
@@ -24,6 +25,7 @@ import time
 import tkinter as tk
 from ctypes import wintypes
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -459,6 +461,34 @@ def main() -> int:
               f"saved {saved.frame_count} of {total} frames at {saved.width} wide "
               f"in {time.monotonic() - started:.1f} s")
         app.last_saved.unlink()
+        app.preset_choice.set("Real-ESRGAN")
+        app._preset_chosen()
+        check(app.motion_note.cget("text") == "Not used by Real-ESRGAN." and app.sharpen_switch.instate(["disabled"])
+              and app.sharpness_scale.instate(["disabled"]), "Real-ESRGAN has no motion and no sharpening to set")
+        yield 0.8  # the new settings apply after a moment
+        choose("left", "preset:FSR 4")
+        choose("right", "current")
+        yield lambda: side_ready("left") and side_ready("right")
+        app.view.set_zoom(2, anchor=center())
+        yield 0.8
+        check(app.view.side_labels == {"left": "FSR 4", "right": "Real-ESRGAN"},
+              f"labels name the upscalers: {app.view.side_labels}")
+        shot("08c_realesrgan_beside_fsr4")
+        app.view.set_zoom("fit")
+        app.start()
+        yield 6.0
+        check(app.batch and app.renderer.timeline.ready_until(0) >= 0, "a whole-file upscale with Real-ESRGAN runs")
+        stopped = time.monotonic()
+        app.cancel()
+        yield lambda: not app.busy
+        check(time.monotonic() - stopped < 8.0, f"it stops in {time.monotonic() - stopped:.1f} s")
+        with mock.patch("fsr4.job.find_program", return_value=None):
+            app._refresh()
+            yield 0.5
+            check("not installed" in app.size_note.cget("text") and app.start_button.instate(["disabled"]),
+                  f"without its program the window says how to install it: {app.size_note.cget('text')}")
+            shot("08d_realesrgan_missing")
+        app._refresh()
         app.preset_choice.set("FSR 4")
         app._preset_chosen()
         app.load(args.image)
@@ -473,6 +503,10 @@ def main() -> int:
         yield lambda: side_ready("left")
         yield 0.5
         shot("09a_image_hq_scaler")
+        choose("left", "preset:Real-ESRGAN")
+        yield lambda: side_ready("left")
+        yield 0.5
+        shot("09a_image_realesrgan")
         app.start()
         yield lambda: not app.busy and app.last_saved is not None
         check(app.last_saved.exists(), "image job finished")
