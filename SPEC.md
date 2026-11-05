@@ -235,27 +235,25 @@ has none of those; the tool substitutes, as the quality lab (§14) settled:
    Ultra Performance). Under them "1920 × 1080 → 3840 × 2160" and "2.00× per side · 4.0× the pixels" ("2.37× by
    2.00×" for anamorphic sources), or why that size cannot be made, or "The output size appears once a file is
    loaded."
-3. **Preset**: a dropdown showing the preset the settings match, or "Custom settings"; + saves them as a preset;
-   a bin, shown for the user's own presets, deletes the one shown.
-4. **Upscaler**: "FSR 4 · machine learning" (default), "FSR 3.1 · older, hand-tuned", "FSR 2.3 · older,
-   hand-tuned", "AMD HQ scaler · faster, no motion", "Real-ESRGAN · slow, redraws detail", "Real-ESRGAN x4plus · general, stills
-   only", "Real-ESRGAN anime · drawings, stills only", with a note under the
-   dropdown for each; the tooltip quotes the lab's PSNR (FSR 4 26.8 dB, FSR 2.3 26.5, Lanczos 26.4, HQ scaler 26.3,
-   FSR 3.1 25.9, Real-ESRGAN 24.4). Without Real-ESRGAN's program, choosing it shows how to install it under the
-   size, and Upscale stays disabled; so does choosing a model for still images with a video open, which says why there.
-5. **Motion vectors**: "Optical flow · fast" (default), "Optical flow · ultrafast", "Optical flow · medium,
-   best", "Off", with a note for each; the tooltip says a video carries no motion data, so it is measured, and
-   better motion gives more detail. Disabled for images ("Not used for images."), with the HQ scaler ("Not
-   used by the HQ scaler.") and with Real-ESRGAN ("Not used by Real-ESRGAN.").
-6. **Sharpening**: a switch (off), a slider from 0 to 1 (0.40) and its value; the tooltip says it is the upscaler's
-   own (RCAS, or the HQ scaler's; Real-ESRGAN has none, and the row is disabled with it): 0.2 to 0.5 gives crisper
-   edges, high values leave halos.
-7. **Output**: the output path (§6; tooltip: .mp4 plays everywhere, .mkv keeps every audio track), "…" for a
+3. **Each side's settings**: one block per side showing an upscaler, titled "Right · FSR", only while there is
+   something to set, and only the rows that apply; a side showing a filter or Off has none.
+   FSR: Version ("FSR 4 · machine learning", "FSR 3.1 · older, hand-tuned", "FSR 2.3 · older, hand-tuned"), Motion
+   ("Optical flow · medium, best", "· fast", "· ultrafast", "Off"; not for images) and Sharpening. AMD HQ scaler:
+   Sharpening. Real-ESRGAN: Model ("Video model · fastest", "x4plus · general, slow", "anime · drawings, slow") for
+   images; for a video nothing, so no block. A note says what the version and the motion do; the version's tooltip
+   quotes the lab's PSNR (FSR 4 26.8 dB, FSR 2.3 26.5, Lanczos 26.4, HQ scaler 26.3, FSR 3.1 25.9, Real-ESRGAN 24.4).
+   Sharpening is a switch (off), a slider from 0 to 1 (0.40) and its value: 0.2 to 0.5 gives crisper edges, high
+   values leave halos. + saves the settings as a preset; a bin, shown when they are one of the user's presets,
+   deletes it. Without Real-ESRGAN's program, a saved side showing it says how to install it under the size, and
+   Upscale stays disabled.
+4. **Output**: "Saves: Left side / Right side" (right by default), only when both sides are upscaled differently:
+   the side Upscale saves; with one side upscaled, that one; with none, a note says so and Upscale stays disabled. Then
+   the output path (§6; tooltip: .mp4 plays everywhere, .mkv keeps every audio track), "…" for a
    Save-as dialog (MP4, Matroska, QuickTime; PNG, JPEG, WebP for images), the encoder ("HEVC · GPU (AMF)"
    default, "AV1 · GPU (AMF)", "H.264 · GPU (AMF)", "H.264 · CPU (x264)", "HEVC · CPU (x265)") with a note on
    size, speed and the devices that play it, and what happens to the audio ("Audio: AAC copied as is; WMA
    converted to AAC (.mp4 cannot hold it)." or "No audio in this file."). Images disable the encoder.
-8. **Processor**: threads from 1 to every logical processor (default half, shown as "8 of 16") and the priority:
+5. **Processor**: threads from 1 to every logical processor (default half, shown as "8 of 16") and the priority:
    Normal, Low (default) or Background (quickest but other programs may stutter / other programs stay smooth /
    only spare time). They cap background work only (§10), stay usable while busy and reach the running upscale.
 
@@ -279,16 +277,18 @@ is its own version (§10).
   "Ready · press Upscale or Ctrl+Enter to save".
 
 ### Comparing
-- The divider splits the picture; the Left and Right dropdowns choose each side: Current settings (right by
-  default), every preset (the user's first), the source enlarged by a filter (original pixels, bilinear, bicubic
-  (left by default), Lanczos), or Off, so the other side fills the picture without the divider (turning both off
-  brings the other back to its default). Sides with the same settings share one version. A preset shown is
-  upscaled at the current size and encoder, paused or playing, so two FSR settings or FSR 4 and FSR 3.1 sit side
-  by side.
+- The divider splits the picture; the Left and Right dropdowns are the one list of what a side can show: the user's
+  presets, "FSR" (right by default), "AMD HQ scaler", "Real-ESRGAN", the source enlarged by a filter (original pixels,
+  bilinear, bicubic (left by default), Lanczos), or Off, so the other side fills the picture without the divider
+  (turning both off brings the other back to its default). An upscaler always starts from its best settings: FSR 4,
+  medium optical flow (*measured*, 27.10 dB against 26.82 for fast, at less than half the speed), no sharpening; the
+  HQ scaler without sharpening; Real-ESRGAN's video model. The list shows the preset the side's settings match, or
+  else the upscaler. Sides with the same settings share one version. Both are upscaled at the same size and encoder,
+  paused or playing, so two FSR settings or FSR 4 and FSR 3.1 sit side by side. With no side upscaled, nothing is.
 - The divider is a 2 px line with a round ‹› handle; a left press anywhere on the picture moves it there and
   dragging follows.
 - A label in each top corner names its side: the preset, the settings described ("FSR 3.1 · rough motion ·
-  sharpening 0.80") or the filter ("Source" at Fit while the source is not enlarged). Outside full screen it
+  sharpening 0.80"; best motion goes unsaid) or the filter ("Source" at Fit while the source is not enlarged). Outside full screen it
   ends in ▾ and clicking it opens that side's dropdown, on release (on press, the release would pick an entry).
   Where a version is not upscaled yet, its side shows the bicubic source at 45% brightness and its label adds
   "· upscaling…" or "· not upscaled here".
@@ -338,7 +338,7 @@ is its own version (§10).
 ### Upscale
 - Upscale (Ctrl+Enter) first checks the plan (a problem goes to the banner) and asks "<name> already exists.
   Replace it?" for an existing output the user typed.
-- Video: only the current settings' version is upscaled, from the playhead to the end, then from the start;
+- Video: only the saved side's version is upscaled, as it was when Upscale started, from the playhead to the end, then from the start;
   pieces already made with these settings are reused, so a finished version saves at once. While paused, the
   picture follows the upscaler's newest frame every 0.5 s until Play, a seek or a step (not with the HQ scaler,
   whose frames exist upscaled only in the encoder: the picture stays where it is). The status reads
@@ -348,7 +348,7 @@ is its own version (§10).
   go away at the next upscale or file.
 - Stop or Esc ends a whole-file upscale: "Stopped at 42% upscaled · Upscale carries on from there"; what is done
   stays while the file is open. Saving itself cannot be stopped.
-- Image: one pass with the current settings, "Upscaling the image…" then "Saved <name> · 3840 × 2160 in 1.2 s".
+- Image: one pass with the saved side's settings, "Upscaling the image…" then "Saved <name> · 3840 × 2160 in 1.2 s".
 - An upscaling error ends the whole-file upscale, pauses playback, shows "Upscaling stopped: <reason>" and opens
   the log. Each new piece needs 2 GB free in the temporary folder; below that the reason says how much is free and
   that 4K takes about 10 MB per second.
@@ -356,17 +356,14 @@ is its own version (§10).
   lose that work?"; during a save it closes once the video is saved.
 
 ### Presets
-- Built in: "FSR 4" (fast flow, no sharpening), "FSR 4 · sharpened" (0.5), "FSR 4 · best motion" (medium flow),
-  "FSR 4 · no motion", "FSR 3.1" and "FSR 2.3" (fast flow, no sharpening), "AMD HQ scaler" (no sharpening),
-  "Real-ESRGAN", and for still images "Real-ESRGAN x4plus" and "Real-ESRGAN anime": the sides of a video do not offer
-  these two (or a preset of the user's with those models), and a side showing one when a video opens goes back to the
-  current settings. A preset
-  holds the upscaler, the motion vectors and the sharpening only; the size and the encoder stay the file's.
-- Choosing one in the Preset dropdown loads it into the settings. + opens a row with a name (the settings'
-  description, or "My preset"), Save and Cancel: Enter saves, Escape cancels. Refused: an empty name, more than
-  40 characters, a built-in name (in any case). A user preset's name used again (in any case) replaces it. The
-  bin deletes the user preset shown, without asking; sides showing it go back to Current settings. Built-in
-  presets cannot be deleted.
+- A preset is the user's own: it holds the upscaler, the motion vectors and the sharpening only; the size and the
+  encoder stay the file's. None is built in: the upscalers' entries and their settings cover those choices.
+- Choosing one in a side's list loads it into that side's settings; changing them leaves the preset as it is, and the
+  list shows the upscaler again. A video does not offer a preset with a model for still images, and a side with such
+  a model when a video opens goes back to the video model. + opens a row with a name (the settings' description,
+  or "My preset"), Save and Cancel: Enter saves, Escape cancels. Refused: an empty name, more than 40 characters, an
+  entry of the side lists (in any case). A preset's name used again (in any case) replaces it. The bin deletes the
+  preset, without asking; the side keeps its settings.
 - Saved in `%APPDATA%\Coccinelle Player\presets.json` (`{"version": 1, "presets": [...]}`, written through a
   temporary file). A file that cannot be read is reported in the banner and never overwritten: the next save
   keeps it as `presets.unreadable`. Every save or delete reads the file again first, so two windows open at once
@@ -417,7 +414,7 @@ is its own version (§10).
   is upscaled, in turns: the one with the least ready ahead goes first, and a run yields once it is ahead of
   another by as much as that one has (half a second at first, so both show a frame soon after a seek, then up to
   2 s). Versions no longer shown are kept, the four most recent, so going back is instant. After Upscale only the
-  current settings' version is worked on; a preset shown then plays what it has.
+  saved version is worked on; another version shown then plays what it has.
 - Saving joins the pieces with ffmpeg's concat demuxer (no re-encoding) and adds the source's audio. The joined
   video must equal a single pass frame for frame, with the audio in sync and the colour tags kept.
 - Playback: one decoder per upscaled version shown (cropped to the view by ffmpeg) and one for the source. The

@@ -18,7 +18,7 @@ from fsr4 import media, realesrgan
 from fsr4.image_preview import ImagePreviewer
 from fsr4.job import JobOptions, plan_from_info, run_job
 from fsr4.pipeline import upscale_stream
-from fsr4.presets import BUILTIN, preset_from_json
+from fsr4.presets import FAMILY_BY_NAME, family_of, preset_from_json
 from fsr4.realesrgan import (MODELS, REAL_ESRGAN, REAL_ESRGAN_X4PLUS, STILL_ONLY, RealEsrganPipeline, Stopped,
                              chunk_lengths, model_scale)
 from fsr4.render import RenderSettings, Renderer
@@ -105,16 +105,14 @@ class PlanTest(unittest.TestCase):
 
 
 class PresetTest(unittest.TestCase):
-    def test_the_builtin_preset_is_named_without_motion(self):
-        preset = next(preset for preset in BUILTIN if preset.upscaler == REAL_ESRGAN)
-        settings = preset.applied_to(RenderSettings((1280, 720)))
+    def test_its_entry_of_the_side_lists_is_named_without_motion(self):
+        settings = FAMILY_BY_NAME["Real-ESRGAN"].best.applied_to(RenderSettings((1280, 720)))
         self.assertEqual((settings.flow, settings.flow_preset, settings.sharpness), ("zero", "fast", None))
         self.assertEqual(settings.describe(), "Real-ESRGAN")
 
-    def test_every_model_has_a_builtin_preset_with_its_name(self):
+    def test_every_model_is_offered_under_its_name(self):
         for upscaler in MODELS:
-            preset = next(preset for preset in BUILTIN if preset.upscaler == upscaler)
-            self.assertEqual(preset.applied_to(RenderSettings((1280, 720))).describe(), preset.name)
+            self.assertEqual(family_of(upscaler).name, "Real-ESRGAN")
 
     def test_a_saved_preset_never_holds_motion_or_sharpening(self):
         for upscaler in MODELS:

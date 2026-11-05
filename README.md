@@ -63,22 +63,22 @@ sub-pixel camera jitter every frame. A video file has none of those, so this too
   at about two thirds of real time and −0.5× and slower play at their speed. Backwards, the upscaler works on
   the seconds just behind the playhead.
 - **Compare anything:** the divider splits the picture; the Left and Right dropdowns above it (or a click on
-  the label in either top corner) choose what each side shows: the upscale with the current settings, any
-  preset, or the source enlarged by a classic filter: Original pixels (each source pixel as a block), Bilinear
-  (what most players do), Bicubic, or Lanczos. A preset shown is upscaled too, so two FSR settings, or FSR 4
-  against FSR 3.1, sit side by side, paused or playing (two versions share the GPU, so playing them waits
-  more). Off turns a side off: the other one fills the picture, without the divider.
-- **Presets** hold how the video is upscaled: the upscaler, the motion vectors and the sharpening (the size and
-  the encoder stay the file's). Ten are built in (FSR 4, sharpened, best motion, no motion, FSR 3.1, FSR 2.3, AMD HQ scaler, Real-ESRGAN, and for still images Real-ESRGAN x4plus and anime);
-  + saves the current settings as your own (kept in `%APPDATA%\Coccinelle Player\presets.json`), the bin deletes
-  one, and choosing one in the Preset dropdown loads it into the settings.
+  the label in either top corner) choose what each side shows: FSR, AMD HQ scaler, Real-ESRGAN, your presets, or
+  the source enlarged by a classic filter: Original pixels (each source pixel as a block), Bilinear (what most
+  players do), Bicubic, or Lanczos. An upscaler starts from its best settings (FSR: FSR 4, medium optical flow, no
+  sharpening) and shows what can be set in the sidebar; one with nothing to set shows nothing. Two sides upscaled sit
+  side by side, paused or playing (two versions share the GPU, so playing them waits more), and Output then
+  asks which one Upscale saves. Off turns a side off: the other one fills the picture, without the divider.
+- **Presets** are your own: + in a side's settings saves its upscaler, motion vectors and sharpening (the size and
+  the encoder stay the file's) in `%APPDATA%\Coccinelle Player\presets.json`, they join the Left and Right lists,
+  and the bin deletes one.
 - **Zoom:** Fit shows the whole picture; Original size shows the source at its own pixel size (the upscaled
   side shrunk to match); 100% to 800% show upscaled pixels 1:1 or enlarged, and the slider beside them goes
   anywhere from Fit to 800%, sticking a little at those steps. From 100% up every pixel is drawn as a block,
   exactly as the file holds it. All of it works while playing. Drag the divider; the wheel zooms around the
   pointer in finer steps (four per doubling); right-drag or the minimap moves the visible area; double-click
   switches between Fit and 100%.
-- **Upscale** (Ctrl+Enter) does the rest of the file with the current settings, starting at the playhead, and
+- **Upscale** (Ctrl+Enter) does the rest of the file the way the saved side says, starting at the playhead, and
   saves it: the pieces are joined without re-encoding and the source's audio is added. Stop (Esc) keeps what is
   done while the file stays open, and Upscale carries on from there. Changing a setting starts a new version
   from the playhead; the earlier ones are kept, so going back to them is instant.
@@ -188,7 +188,7 @@ pieces and decides where to work: ahead of the playhead in preview mode (from wh
 concat demuxer (stream copy) and adds the audio; `tests/test_render.py` checks that a joined video matches a
 single pass frame for frame, with the audio in sync and the colour tags kept.
 
-Each set of settings shown (the current one, presets) is a version with its own pieces. In preview mode the
+Each set of settings shown is a version with its own pieces. In preview mode the
 renderer upscales every version shown, taking turns: the one with the least ready ahead of the playhead goes
 first, and a run yields once it is ahead of another by as much as that one has (half a second at first, so
 both show their frame soon after a seek, then up to 2 s). Two versions of 1080p60 at 4K share the renderer's
@@ -214,6 +214,7 @@ default `fast` preset, HEVC AMF output:
 | 1280x720 60 fps screen recording   | 2560x1440  | 85   | 3.9 ms                | 9 ms                 |
 | 1920x1080 60 fps screen recording  | 3840x2160  | 47   | 9.1 ms                | 14 ms                |
 | same, `--flow-preset ultrafast`    | 3840x2160  | 55   | 8.8 ms                | 8 ms                 |
+| same, `--flow-preset medium`       | 3840x2160  | 21   | 9.0 ms                | 41 ms                |
 | same, `--flow zero`                | 3840x2160  | 60   | 8.5 ms                | 0                    |
 | same, `--upscaler hq`              | 3840x2160  | 72   | in the encoder        | 0                    |
 | same, `--upscaler realesrgan`      | 3840x2160  | 4.8  | in its program        | 0                    |

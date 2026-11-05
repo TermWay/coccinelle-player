@@ -6,8 +6,8 @@ every state (drop target, message, comparison of a still frame or of playing vid
 BGRA canvas with numpy (picture, divider, labels, minimap, spinner) and blitted. Composition runs on
 whichever thread presents (the Tk thread for interaction, the player thread for playback) under one lock.
 
-Each side of the divider shows a layer: an upscaled version (the window names them: current settings,
-presets) or the source enlarged by a filter (original pixels, bilinear, bicubic or Lanczos), all at the same
+Each side of the divider shows a layer: an upscaled version (the window names them) or the source
+enlarged by a filter (original pixels, bilinear, bicubic or Lanczos), all at the same
 geometry; clicking a side's label tells the window, which opens that side's dropdown. A side can be OFF: the
 other one fills the picture and there is no divider. Zoom is Fit, Original
 size (one screen pixel per source pixel, the upscaled side shrunk to match) or any scale from Fit to 800%; from
@@ -450,7 +450,7 @@ class VideoView(tk.Frame):
         self.zoom = "fit"
         self.center: tuple[float, float] | None = None
         self.split = 0.5
-        self.sides = {"left": "cubic", "right": "current"}
+        self.sides = {"left": "cubic", "right": "unavailable"}
         self.side_labels: dict[str, str] = {}
         self.fullscreen = False
         self.hover = False

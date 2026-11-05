@@ -68,16 +68,21 @@ Python package stay `fsr4`.
 - Videos in the window: `Renderer` (one thread, owns the GPU) writes pieces, `Timeline` (pure, tested) decides
   where to work, `Player` (its own thread) plays ready pieces with the waveOut clock, `VideoView` draws. They talk
   through the window's queue; only `VideoView.present/show_still/set_spinner` may be called off the Tk thread.
-- Every distinct `RenderSettings` is a `Version` (settings + timeline). The current settings' version is what
-  Upscale saves; `Renderer.show()` names the versions the view shows (the current settings or presets, see
-  `fsr4/presets.py`), which preview mode upscales in turns (fewest ready ahead first, yield after
-  `SWITCH_SECONDS`); batch mode does only the current one. Versions not shown are kept up to `KEPT_VERSIONS`.
-  A preset holds only upscaler, motion and sharpening: size and encoder always come from the current settings.
+- Every distinct `RenderSettings` is a `Version` (settings + timeline). The renderer's current version is what
+  Upscale saves: the saved side's (`App._saved_side`), frozen during a whole-file upscale (the sides stay free then,
+  `App._saved_how`). `Renderer.show()` names the versions the view shows, which preview mode upscales in turns (fewest
+  ready ahead first, yield after `SWITCH_SECONDS`), none when no side is upscaled; batch mode does only the current
+  one. Versions not shown are kept up to `KEPT_VERSIONS`.
+- There is one list of what a side shows: the user's presets, `presets.FAMILIES` (each with its `best` settings, which
+  choosing it always loads), the filters, Off. `ui_sides.SideBlock` holds a side's settings and reads back as a
+  `Preset`; it lays out only the rows that apply and disappears when there are none. FSR's best uses medium flow
+  in the window; the command line's default stays fast. A preset holds only upscaler, motion and sharpening: size and
+  encoder come from the saved side's settings.
 - Each side of the view shows a filter of the source or an upscaled layer (keyed by its settings, so two sides
   showing the same version share it). The player decodes only the layers shown; layers being upscaled pace
-  playback (buffering), the others (a preset during a whole-file upscale) show what they have. Images get an
+  playback (buffering), the others (during a whole-file upscale) show what they have. Images get an
   `ImagePreviewer` (own GPU device) for the layers shown; saving an image runs the job.
-- The side dropdowns, the Preset dropdown and every other choice are the same themed ttk Combobox; no native
+- The side dropdowns and every other choice are the same themed ttk Combobox; no native
   `tk.Menu` (it cannot be styled to match). A label on the picture opens its side's dropdown on release (on
   press, the release would land in the list and pick an entry).
 - Full screen goes through `fsr4/ui_window.py` (frame styles off, the window's own monitor covered, placement

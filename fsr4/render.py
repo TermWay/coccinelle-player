@@ -6,8 +6,8 @@ consecutive frames into piece files, and the player plays the finished pieces. A
 finish its current piece and start over at the new position, with a few frames of pre-roll so FSR's history
 and the optical flow are warm. Saving joins the pieces without re-encoding and adds the source's audio.
 
-Each set of settings has its own version (pieces and timeline). The current settings' version is the one
-saved; the view can show other versions (presets) beside it, and in preview mode the renderer upscales every
+Each set of settings has its own version (pieces and timeline). The current version is the one saved (the
+window's saved side); the view can show another beside it, and in preview mode the renderer upscales every
 version shown, taking turns: the one with the least upscaled ahead of the playhead goes first, and a run
 yields once it is ahead of another one by as much as that one has (at least FIRST_SWITCH_SECONDS, so each
 shows its first frames soon after a seek, at most SWITCH_SECONDS, so turns stay long while playing). Versions
@@ -68,7 +68,7 @@ EventCallback = Callable[..., None]
 UPSCALER_NAMES = {None: "FSR 4", "3.1.6": "FSR 3.1", "2.3.4": "FSR 2.3", HQ_SCALER: "AMD HQ scaler",
                   REAL_ESRGAN: "Real-ESRGAN", REAL_ESRGAN_X4PLUS: "Real-ESRGAN x4plus",
                   REAL_ESRGAN_ANIME: "Real-ESRGAN anime"}
-MOTION_NAMES = {"ultrafast": "rough motion", "medium": "best motion"}
+MOTION_NAMES = {"ultrafast": "rough motion", "fast": "fast motion"}
 
 
 @dataclass(frozen=True)
@@ -84,7 +84,7 @@ class RenderSettings:
     upscaler: str | None = None
 
     def describe(self) -> str:
-        """A short name: the upscaler, plus the motion and the sharpening when they are not the defaults."""
+        """A short name: the upscaler, plus the motion and the sharpening when they are not the best settings."""
         parts = [UPSCALER_NAMES.get(self.upscaler, f"FSR {self.upscaler}")]
         if self.upscaler not in EXTERNAL_UPSCALERS:  # they never take motion: nothing to say
             if self.flow == "zero":
@@ -165,7 +165,7 @@ class Renderer:
         self._generation = 0
         self._current = Version(settings, self._new_timeline(), 0, used=time.monotonic())
         self._versions: dict[RenderSettings, Version] = {settings: self._current}
-        self._shown: list[Version] = []
+        self._shown: list[Version] | None = None  # until the view says, the current version
         self._thumbnail_lock = threading.Lock()
         self.thumbnail_stride = max(1, int(round(self.rate)), (info.frame_count or 1) // MAX_THUMBNAILS)
         self.want_live = False
@@ -246,8 +246,8 @@ class Renderer:
         self._drop(dropped)
 
     def show(self, shown: list[RenderSettings]) -> None:
-        """The versions the view shows (any number, duplicates ignored); preview mode upscales those, or the
-        current version when the view shows none."""
+        """The versions the view shows (any number, duplicates ignored); preview mode upscales those, so nothing
+        when the view shows none."""
         with self._condition:
             versions = [self._version(settings) for settings in dict.fromkeys(shown)]
             if versions != self._shown:
@@ -271,7 +271,7 @@ class Renderer:
     def _evict(self) -> list[Version]:
         """Forget the versions beyond the KEPT_VERSIONS most recently used ones that are neither current nor
         shown; returns them. Call with the lock held."""
-        kept = [self._current] + self._shown
+        kept = [self._current] + (self._shown or [])
         others = sorted((version for version in self._versions.values() if version not in kept),
                         key=lambda version: version.used, reverse=True)
         dropped = others[KEPT_VERSIONS:]
@@ -375,8 +375,8 @@ class Renderer:
 
     def _active(self) -> list[Version]:
         """The versions to upscale: the current one in batch mode (it is what gets saved), else the ones the
-        view shows, or the current one when it shows none. Call with the lock held."""
-        if self._batch or not self._shown:
+        view shows; the current one until the view has said. Call with the lock held."""
+        if self._batch or self._shown is None:
             return [self._current]
         return list(self._shown)
 

@@ -32,7 +32,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import window_capture  # noqa: E402
 from fsr4 import media, ui, ui_theme, ui_window, usage  # noqa: E402
-from fsr4.presets import PresetStore  # noqa: E402
+from fsr4.presets import FAMILY_BY_NAME, PresetStore  # noqa: E402
+from fsr4.realesrgan import REAL_ESRGAN, REAL_ESRGAN_ANIME, REAL_ESRGAN_X4PLUS  # noqa: E402
 
 WM_DROPFILES = 0x0233
 WM_CLOSE = 0x0010
@@ -152,6 +153,12 @@ def main() -> int:
         """Pick an entry of a side's dropdown, as a click does."""
         app.side_boxes[side].current([value for _, value in app._side_entries()].index(choice))
         app._side_chosen(side)
+
+    def set_version(side: str, upscaler: str | None) -> None:
+        """Pick a version or a model in a side's settings, as a click does."""
+        block = app.side_blocks[side]
+        block.version_choice.current(block.upscalers.index(upscaler))
+        app._settings_changed()
 
     def side_ready(side: str) -> bool:
         """Whether the paused picture has the upscaled version that `side` shows."""
@@ -285,29 +292,40 @@ def main() -> int:
             app.view.event_generate(sequence, x=(left + right) // 2, y=(top + bottom) // 2)
         yield 0.5
         popdown = root.tk.call("ttk::combobox::PopdownWindow", app.side_boxes["right"])
-        check(root.tk.call("winfo", "ismapped", popdown) == 1 and app.side_choices["right"] == "current",
+        check(root.tk.call("winfo", "ismapped", popdown) == 1 and app.side_choices["right"] == "FSR",
               "a click on the label on the picture opens its side's dropdown")
         window_capture.save_handle(int(root.tk.call("wm", "frame", popdown), 16), args.out / "05c_side_dropdown.png")
         print("      screenshot 05c_side_dropdown.png", flush=True)
         root.tk.call("ttk::combobox::Unpost", app.side_boxes["right"])
         # a preset of one's own, compared with FSR 3.1
-        app.sharpen_var.set(True)
-        app.sharpness_var.set(0.8)
+        left_block, right_block = app.side_blocks["left"], app.side_blocks["right"]
+        check(right_block.winfo_ismapped() and not left_block.winfo_ismapped()
+              and right_block.how() == FAMILY_BY_NAME["FSR"].best,
+              "only the upscaled side has settings, the best ones to begin with")
+        right_block.sharpen_var.set(True)
+        right_block.sharpness_var.set(0.8)
         app._settings_changed()
-        app._begin_save_preset()
+        app._begin_save_preset("right")
         yield 0.3
         shot("05d_naming_a_preset")
-        app.preset_name_var.set("Smoke sharp")
-        app._finish_save_preset()
-        check(app.presets.find("Smoke sharp") is not None and app.preset_choice.get() == "Smoke sharp",
-              "a preset is saved and named in the settings")
+        right_block.name_var.set("Smoke sharp")
+        app._finish_save_preset("right")
+        check(app.presets.find("Smoke sharp") is not None and app.side_boxes["right"].get() == "Smoke sharp",
+              "a preset is saved and named in the side's list")
         yield 0.8
-        choose("left", "preset:FSR 3.1")
+        choose("left", "FSR")
+        set_version("left", "3.1.6")
+        yield 0.8  # the new settings apply after a moment
         yield lambda: side_ready("left") and side_ready("right")
         app.view.set_zoom(2, anchor=center())
         yield 0.8
         check(app.view.side_labels == {"left": "FSR 3.1", "right": "Smoke sharp"},
               f"labels name the presets: {app.view.side_labels}")
+        check(app.save_row.winfo_ismapped() and app._options().upscaler is None and app._options().sharpness == 0.8,
+              "with both sides upscaled the window asks which one to save, the right one to begin with")
+        app.save_side_var.set("left")
+        check(app._options().upscaler == "3.1.6", "the left side can be the saved one")
+        app.save_side_var.set("right")
         shot("05e_presets_side_by_side")
         app.view.set_zoom("fit")
         app.seek_to(int(app._total() * 0.6), True)  # the last 40%: a stall and the end, in seconds
@@ -322,14 +340,16 @@ def main() -> int:
         yield lambda: not app.player.playing or time.monotonic() > give_up
         check(not app.player.playing and app.player.position >= app._total() - 2,
               f"two versions play to the end, waiting for the upscaler on the way ({app.player.position} of {app._total()})")
-        app.preset_choice.set("FSR 4")
-        app._preset_chosen()
-        check(not app.sharpen_var.get() and app.preset_choice.get() == "FSR 4", "choosing a preset loads it")
-        app.preset_choice.set("Smoke sharp")
-        app._preset_chosen()
-        app._delete_preset()
-        check(app.presets.find("Smoke sharp") is None and app.preset_choice.get() != "Smoke sharp",
-              "a preset of one's own is deleted")
+        choose("right", "FSR")
+        check(right_block.how() == FAMILY_BY_NAME["FSR"].best and app.side_boxes["right"].get() == "FSR",
+              "choosing the upscaler goes back to its best settings")
+        choose("right", "preset:Smoke sharp")
+        check(right_block.how().sharpness == 0.8 and app.side_boxes["right"].get() == "Smoke sharp",
+              "choosing a preset loads it")
+        app._delete_preset("right")
+        check(app.presets.find("Smoke sharp") is None and app.side_boxes["right"].get() == "FSR"
+              and right_block.how().sharpness == 0.8, "a preset of one's own is deleted, the side keeps its settings")
+        choose("right", "FSR")
         choose("left", "cubic")
         yield 1.0
         start = app.player.position
@@ -356,7 +376,13 @@ def main() -> int:
         shot("05h_left_side_off")
         choose("right", "off")
         check(app.side_choices == {"left": "cubic", "right": "off"}, "turning the other side off brings the first back")
-        choose("right", "current")
+        check(app.start_button.instate(["disabled"]), "neither side upscaled: nothing to save")
+        yield 0.3
+        check(app.save_note.winfo_ismapped(), "the window says why Upscale is off")
+        yield lambda: app.render_position is None
+        check(app.status_var.get() == "Ready · neither side is upscaled", "with no side upscaled the upscaler rests")
+        shot("05i_nothing_upscaled")
+        choose("right", "FSR")
         yield 0.5
         app.seek_to(0, True)
         windowed = root.geometry()
@@ -438,13 +464,11 @@ def main() -> int:
         # A default name never replaces a file, so each run saves a new one: remove it once checked.
         app.last_saved.unlink()
         # AMD's HQ scaler: no motion to set, the encoder's ffmpeg upscales; beside FSR 4, then the whole file.
-        app.preset_choice.set("AMD HQ scaler")
-        app._preset_chosen()
-        check(app.motion_choice.instate(["disabled"]) and app.motion_note.cget("text") == "Not used by the HQ scaler.",
-              "the HQ scaler has no motion to set")
-        yield 0.8  # the new settings apply after a moment
-        choose("left", "preset:FSR 4")
-        choose("right", "current")
+        choose("right", "AMD HQ scaler")
+        yield 0.3
+        check(right_block.sharpen_row.winfo_ismapped() and not right_block.motion_choice.winfo_ismapped()
+              and not right_block.version_choice.winfo_ismapped(), "the HQ scaler shows its sharpening and nothing else")
+        choose("left", "FSR")
         yield lambda: side_ready("left") and side_ready("right")
         app.view.set_zoom(2, anchor=center())
         yield 0.8
@@ -461,13 +485,9 @@ def main() -> int:
               f"saved {saved.frame_count} of {total} frames at {saved.width} wide "
               f"in {time.monotonic() - started:.1f} s")
         app.last_saved.unlink()
-        app.preset_choice.set("Real-ESRGAN")
-        app._preset_chosen()
-        check(app.motion_note.cget("text") == "Not used by Real-ESRGAN." and app.sharpen_switch.instate(["disabled"])
-              and app.sharpness_scale.instate(["disabled"]), "Real-ESRGAN has no motion and no sharpening to set")
-        yield 0.8  # the new settings apply after a moment
-        choose("left", "preset:FSR 4")
-        choose("right", "current")
+        choose("right", "Real-ESRGAN")
+        yield 0.3
+        check(not right_block.winfo_ismapped(), "Real-ESRGAN has nothing to set for a video: no settings are shown")
         yield lambda: side_ready("left") and side_ready("right")
         app.view.set_zoom(2, anchor=center())
         yield 0.8
@@ -478,10 +498,15 @@ def main() -> int:
         app.start()
         yield 6.0
         check(app.batch and app.renderer.timeline.ready_until(0) >= 0, "a whole-file upscale with Real-ESRGAN runs")
+        choose("right", "nearest")
+        check(app.batch and app.renderer.settings.upscaler == REAL_ESRGAN and app._options().upscaler == REAL_ESRGAN,
+              "a side changed during a whole-file upscale leaves it as it started")
         stopped = time.monotonic()
         app.cancel()
         yield lambda: not app.busy
         check(time.monotonic() - stopped < 8.0, f"it stops in {time.monotonic() - stopped:.1f} s")
+        check(app.renderer.settings.upscaler is None, "once stopped, the side still upscaled is the saved one")
+        choose("right", "Real-ESRGAN")
         with mock.patch("fsr4.job.find_program", return_value=None):
             app._refresh()
             yield 0.5
@@ -489,33 +514,33 @@ def main() -> int:
                   f"without its program the window says how to install it: {app.size_note.cget('text')}")
             shot("08d_realesrgan_missing")
         app._refresh()
-        app.preset_choice.set("Real-ESRGAN x4plus")
-        app._preset_chosen()
-        yield 0.5
-        check("still images" in app.size_note.cget("text") and app.start_button.instate(["disabled"]),
-              f"a model for still images is refused for a video: {app.size_note.cget('text')}")
-        check("Real-ESRGAN x4plus" not in app.side_boxes["left"].cget("values"), "the sides of a video do not offer it")
-        shot("08e_still_model_on_video")
-        app.preset_choice.set("FSR 4")
-        app._preset_chosen()
+        check(right_block.upscalers == [REAL_ESRGAN], "a video is not offered the models for still images")
+        choose("right", "FSR")
+        choose("left", "cubic")
         app.load(args.image)
         yield lambda: app.info is not None
         yield lambda: side_ready("right")
         check(True, "the image is upscaled as soon as it opens")
-        choose("left", "preset:FSR 2.3")
+        check(right_block.version_choice.winfo_ismapped() and not right_block.motion_choice.winfo_ismapped(),
+              "an image has no motion to set")
+        choose("left", "FSR")
+        set_version("left", "2.3.4")
+        yield 0.8  # the new settings apply after a moment
         yield lambda: side_ready("left")
         yield 0.5
         shot("09_image_presets")
-        choose("left", "preset:AMD HQ scaler")
+        choose("left", "AMD HQ scaler")
         yield lambda: side_ready("left")
         yield 0.5
         shot("09a_image_hq_scaler")
-        choose("left", "preset:Real-ESRGAN")
+        choose("left", "Real-ESRGAN")
         yield lambda: side_ready("left")
         yield 0.5
+        check(left_block.version_choice.winfo_ismapped(), "Real-ESRGAN offers its models for an image")
         shot("09a_image_realesrgan")
-        for name, screenshot in (("Real-ESRGAN x4plus", "09a_image_x4plus"), ("Real-ESRGAN anime", "09a_image_anime")):
-            choose("left", f"preset:{name}")
+        for upscaler, screenshot in ((REAL_ESRGAN_X4PLUS, "09a_image_x4plus"), (REAL_ESRGAN_ANIME, "09a_image_anime")):
+            set_version("left", upscaler)
+            yield 0.8  # the new settings apply after a moment
             yield lambda: side_ready("left")
             yield 0.5
             shot(screenshot)
@@ -532,10 +557,12 @@ def main() -> int:
         shot("10_error")
         check("Cannot open" in app.banner_label.cget("text"), "bad file shows the error banner")
         app._hide_banner()
-        choose("left", "preset:Real-ESRGAN anime")
+        choose("left", "Real-ESRGAN")
+        set_version("left", REAL_ESRGAN_ANIME)
         app.load(args.video)
         yield lambda: app.info is not None
-        check(app.side_choices["left"] == "current", "opening a video takes a model for still images off its side")
+        check(left_block.how().upscaler == REAL_ESRGAN, "opening a video takes a model for still images off its side")
+        choose("left", "cubic")
         minimum_width, minimum_height = root.minsize()
         root.geometry(f"{minimum_width}x{minimum_height}")
         yield 1.0

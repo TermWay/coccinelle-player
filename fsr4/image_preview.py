@@ -1,7 +1,7 @@
 """Upscales the image open in the window with every set of settings the view shows, on a worker thread.
 
-Like a video, an image is upscaled as soon as it is open, with the current settings and with each preset a
-side of the picture shows, so they can be compared before saving (saving runs the job, which gives the same
+Like a video, an image is upscaled as soon as it is open, the way each side of the picture says, so the sides can
+be compared before saving (saving runs the job, which gives the same
 picture). The worker has its own GPU device and keeps one FSR context per size and upscaler while a shown
 version needs it; results are kept for the settings shown and the KEPT_RESULTS most recent others. A picture
 no longer shown stops at once when its upscaler can, which matters for those that take seconds.

@@ -4,7 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from fsr4.presets import BUILTIN, PresetStore
+from fsr4.presets import FAMILIES, FAMILY_BY_NAME, Preset, PresetStore, family_of
+from fsr4.render import UPSCALER_NAMES
 from fsr4.render import RenderSettings
 
 
@@ -18,7 +19,7 @@ class PresetTest(unittest.TestCase):
 
     def test_a_preset_keeps_the_size_and_the_encoder(self):
         current = RenderSettings((3840, 2160), sharpness=0.3, encoder="x265")
-        fsr3 = next(preset for preset in BUILTIN if preset.upscaler == "3.1.6")
+        fsr3 = Preset("FSR 3.1", upscaler="3.1.6")
         shown = fsr3.applied_to(current)
         self.assertEqual((shown.output_size, shown.encoder), ((3840, 2160), "x265"))
         self.assertEqual((shown.upscaler, shown.sharpness), ("3.1.6", None))
@@ -30,7 +31,7 @@ class PresetTest(unittest.TestCase):
         store.save("Crisp", RenderSettings((1, 1), flow_preset="medium", sharpness=0.35))
         again = PresetStore(self.path)
         self.assertIsNone(again.load_error)
-        self.assertEqual(again.all[0].name, "Crisp")
+        self.assertEqual(again.user[0].name, "Crisp")
         self.assertEqual(again.matching(RenderSettings((640, 360), flow_preset="medium", sharpness=0.35)).name, "Crisp")
         again.save("crisp", RenderSettings((1, 1)))  # same name, other case: replaces it
         self.assertEqual([preset.name for preset in again.user], ["Crisp"])
@@ -54,11 +55,13 @@ class PresetTest(unittest.TestCase):
     def test_names(self):
         store = PresetStore(self.path)
         self.assertIsNotNone(store.check_name("  "))
-        self.assertIsNotNone(store.check_name("fsr 4"), "a built-in name")
+        for taken in ("fsr", "amd hq scaler", "real-esrgan", "source · bicubic", "OFF"):
+            self.assertIsNotNone(store.check_name(taken), f"{taken} is in the side lists")
         self.assertIsNotNone(store.check_name("x" * 41))
         self.assertIsNone(store.check_name("Mine"))
+        self.assertIsNone(store.check_name("FSR 4"))
         with self.assertRaises(ValueError):
-            store.save("FSR 3.1", RenderSettings((1, 1)))
+            store.save("FSR", RenderSettings((1, 1)))
 
     def test_an_unreadable_file_is_kept_aside(self):
         self.path.write_text('{"presets": [{"name": "Odd", "upscaler": "9.9"}]}', encoding="utf-8")
@@ -94,10 +97,23 @@ class PresetTest(unittest.TestCase):
         self.assertEqual([preset.name for preset in PresetStore(self.path).user], ["Kept"])
 
     def test_descriptions(self):
-        self.assertEqual(RenderSettings((1, 1)).describe(), "FSR 4")
+        self.assertEqual(RenderSettings((1, 1)).describe(), "FSR 4 · fast motion")
         self.assertEqual(RenderSettings((1, 1), flow="zero", sharpness=0.5, upscaler="2.3.4").describe(),
                          "FSR 2.3 · no motion · sharpening 0.50")
-        self.assertEqual(RenderSettings((1, 1), flow_preset="medium").describe(), "FSR 4 · best motion")
+        self.assertEqual(RenderSettings((1, 1), flow_preset="medium").describe(), "FSR 4")
+
+    def test_fsr_starts_from_its_best_settings(self):
+        best = FAMILY_BY_NAME["FSR"].best
+        self.assertEqual((best.upscaler, best.flow, best.flow_preset, best.sharpness), (None, "dis", "medium", None))
+        self.assertEqual(best.applied_to(RenderSettings((1, 1))).describe(), "FSR 4")
+
+    def test_every_upscaler_is_in_one_family(self):
+        offered = [upscaler for family in FAMILIES for upscaler in family.upscalers]
+        self.assertCountEqual(offered, UPSCALER_NAMES)
+        for family in FAMILIES:
+            self.assertEqual(family.best.upscaler, family.upscalers[0], "the best comes first")
+            for upscaler in family.upscalers:
+                self.assertIs(family_of(upscaler), family)
 
 
 if __name__ == "__main__":

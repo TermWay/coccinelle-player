@@ -1,14 +1,14 @@
 """The window: open a video or an image, watch it upscaled while it is made, compare it, save it.
 
-Layout: a settings sidebar that folds away (its button at the top left, Ctrl+B) with the presets and, at its
-foot, the machine's status; the preview with its toolbar (what each side of the divider shows, zoom), the
+Layout: a settings sidebar that folds away (its button at the top left, Ctrl+B) with what can be set for each side
+and, at its foot, the machine's status; the preview with its toolbar (what each side of the divider shows, zoom), the
 playback controls with the filmstrip, an optional log, and a footer with the progress and the actions. Full screen (F11 or F) keeps
 the video; its controls come up when the mouse moves near the bottom and hide once it rests.
 
-Each side of the divider shows the current settings, a preset or the source through a filter. A loaded video
-gets a Renderer (fsr4.render), which upscales every version shown into pieces around the playhead, and a
-Player (fsr4.player), which plays the finished pieces in real time with sound. Upscale makes the renderer do
-the whole file with the current settings and joins the pieces into the output. An image gets an
+Each side of the divider shows an upscaler with its settings, a preset of the user's or the source through a filter.
+A loaded video gets a Renderer (fsr4.render), which upscales every version shown into pieces around the playhead, and
+a Player (fsr4.player), which plays the finished pieces in real time with sound. Upscale makes the renderer do the
+whole file the way the saved side says and joins the pieces into the output. An image gets an
 ImagePreviewer (fsr4.image_preview) for the versions shown; saving it runs the one-shot job. Workers reach the
 window through a queue polled every 30 ms. Files can be dropped anywhere on the window.
 """
@@ -35,17 +35,16 @@ import numpy as np
 from . import log, system, usage
 from .ffx import find_sdk_dir
 from .image_preview import ImagePreviewer
-from .hq_scaler import HQ_SCALER
-from .realesrgan import MODELS, REAL_ESRGAN, REAL_ESRGAN_ANIME, REAL_ESRGAN_X4PLUS, STILL_ONLY
-from .upscalers import EXTERNAL_UPSCALERS
+from .realesrgan import STILL_ONLY
 from .job import JobOptions, JobPlan, JobResult, default_output, plan_from_info, run_job
 from .media import (COPY_ANY_AUDIO_SUFFIXES, IMAGE_SUFFIXES, MP4_AUDIO_COPY, VIDEO_SUFFIXES, KeyframeIndex, MediaInfo,
                     is_image, probe, read_frame, read_thumbnail)
 from .player import Player
-from .presets import PresetStore
+from .presets import FAMILIES, FAMILY_BY_NAME, OFF_LABEL, SOURCE_LABELS, Preset, PresetStore, family_of
 from .render import RenderSettings, Renderer, clean_stale_directories
 from .timeline import intersect_ranges
 from .ui_art import icon, png_base64
+from .ui_sides import SideBlock, show_widget
 from .ui_theme import Theme, enable_dark_dialogs, style_title_bar
 from .ui_tooltip import Tooltip
 from .ui_transport import Transport, format_time
@@ -67,7 +66,6 @@ REVERSE_AHEAD_SECONDS = 12.0
 HIDE_LEAVE_MS = 600
 CONTROLS_ZONE_MARGIN = 80
 ZOOM_SNAP_OCTAVES = 0.04
-CUSTOM_PRESET = "Custom settings"
 SEEK_STEP_SECONDS = 5
 SOURCE_THUMBNAILS = 40
 THUMBNAIL_HEIGHT = 108
@@ -81,16 +79,6 @@ SIZE_TIPS = {
     "custom": "Any factor from 1× to 3× with the slider.",
 }
 TARGET_SHORT_SIDES = {"1440": 1440, "2160": 2160}
-MOTION_CHOICES = [
-    ("Optical flow · fast", "dis", "fast",
-     "Follows how things move between frames, so FSR can add detail from earlier frames. Good quality at full speed."),
-    ("Optical flow · ultrafast", "dis", "ultrafast",
-     "A rougher motion estimate, a little faster. Fine moving detail can come out softer."),
-    ("Optical flow · medium, best", "dis", "medium",
-     "The most accurate motion, for fast or detailed movement. Slower."),
-    ("Off", "zero", "fast",
-     "No motion: FSR mostly works on each frame alone. Fine for still shots, moving parts can smear."),
-]
 ENCODER_CHOICES = [
     ("HEVC · GPU (AMF)", "amf",
      "Encoded by the graphics card: fast and leaves the processor free. Plays on most devices from the last "
@@ -106,31 +94,10 @@ ENCODER_CHOICES = [
     ("HEVC · CPU (x265)", "x265",
      "Small files from the processor, but the slowest choice: at 4K it can hold the upscale back."),
 ]
-UPSCALER_CHOICES = [
-    ("FSR 4 · machine learning", None,
-     "AMD's newest upscaler, a neural network made for RDNA 4. The best results here."),
-    ("FSR 3.1 · older, hand-tuned", "3.1.6",
-     "AMD's previous upscaler, kept in the same DLL. Softer and less stable on video; here to compare."),
-    ("FSR 2.3 · older, hand-tuned", "2.3.4",
-     "The upscaler before that, also in the DLL. Here to compare."),
-    ("AMD HQ scaler · faster, no motion", HQ_SCALER,
-     "AMD's video scaler, run by ffmpeg 8.0 or later. Faster than FSR 4 with motion, but each frame stands alone: "
-     "it gathers no detail across frames."),
-    ("Real-ESRGAN · slow, redraws detail", REAL_ESRGAN,
-     "A neural network that draws each frame again: crisp, about 5 frames a second at 4K, and it can change faces and "
-     "small text. A separate program: see the README."),
-    ("Real-ESRGAN x4plus · general, stills only", REAL_ESRGAN_X4PLUS,
-     "Its general model, for still images: about 10 s for a 1080p picture. It can change faces and small text."),
-    ("Real-ESRGAN anime · drawings, stills only", REAL_ESRGAN_ANIME,
-     "Its model for drawings, for still images: about 4 s for a 1080p picture, and it keeps the colours better."),
-]
-NO_MOTION_NOTES = {HQ_SCALER: "Not used by the HQ scaler.", **dict.fromkeys(MODELS, "Not used by Real-ESRGAN.")}
 FILTER_HELP = {"nearest": "every source pixel as a block, exactly what the file holds",
                "linear": "smooth, what most players do", "cubic": "a little sharper, the usual photo editor filter",
                "lanczos": "the sharpest classic filter (mpv, madVR)"}
-DEFAULT_SIDES = {"left": "cubic", "right": "current"}
-SOURCE_LABELS = {"nearest": "Source · original pixels", "linear": "Source · bilinear", "cubic": "Source · bicubic",
-                 "lanczos": "Source · Lanczos"}
+DEFAULT_SIDES = {"left": "cubic", "right": FAMILIES[0].name}
 OPEN_TYPES = [("Videos and images", " ".join(f"*{suffix}" for suffix in VIDEO_SUFFIXES + IMAGE_SUFFIXES)),
               ("Videos", " ".join(f"*{suffix}" for suffix in VIDEO_SUFFIXES)),
               ("Images", " ".join(f"*{suffix}" for suffix in IMAGE_SUFFIXES)), ("All files", "*.*")]
@@ -254,7 +221,7 @@ class App:
         self._repaint_job: str | None = None
         keep_contents_on_resize(root)
         self.presets = PresetStore()
-        self.side_choices = dict(DEFAULT_SIDES)
+        self.side_choices = dict(DEFAULT_SIDES)  # a family's name, a filter or OFF
         self._shown_layers: dict[str, RenderSettings] = {}
         self.image_source: np.ndarray | None = None
         self.image_previewer: ImagePreviewer | None = None
@@ -357,7 +324,7 @@ class App:
         return row + 1
 
     def _build_sidebar(self, parent: ttk.Frame) -> ttk.Frame:
-        """Settings top to bottom in the order they are decided: source, size, motion, sharpening, output.
+        """Settings top to bottom in the order they are decided: source, size, each side's upscaler, output.
 
         The settings sit in a canvas that scrolls (wheel or scrollbar) when the window is too short for them;
         the machine's status stays below it.
@@ -441,92 +408,40 @@ class App:
         self.size_note = ttk.Label(sidebar, text="", style="Faint.TLabel", wraplength=wrap, justify="left")
         self.size_note.grid(row=row + 3, column=0, sticky="w")
 
-        row = self._section(sidebar, row + 4, "Preset")
-        preset_row = ttk.Frame(sidebar)
-        preset_row.grid(row=row, column=0, sticky="ew")
-        preset_row.columnconfigure(0, weight=1)
-        self.preset_choice = ttk.Combobox(preset_row, state="readonly", height=14)
-        self.preset_choice.grid(row=0, column=0, sticky="ew")
-        self.preset_choice.bind("<<ComboboxSelected>>", lambda _: self._preset_chosen())
-        self._tip(self.preset_choice, "A preset holds how the video is upscaled: the upscaler, the motion vectors "
-                                      "and the sharpening (not the size or the encoder). Choose one to load it "
-                                      "into the settings below. Either side of the picture can show any preset, "
-                                      "upscaled as well, to compare it with the current settings or another one.")
-        self.save_preset_button = ttk.Button(preset_row, image=self._icon_images("add"), style="Icon.TButton",
-                                             takefocus=False, command=self._begin_save_preset)
-        self.save_preset_button.grid(row=0, column=1, padx=(px(4), 0))
-        self._tip(self.save_preset_button, "Save the upscaler, motion and sharpening below as a preset of your "
-                                           "own.")
-        self.delete_preset_button = ttk.Button(preset_row, image=self._icon_images("delete"), style="Icon.TButton",
-                                               takefocus=False, command=self._delete_preset)
-        self.delete_preset_button.grid(row=0, column=2, padx=(px(2), 0))
-        self._tip(self.delete_preset_button, "Delete this preset (one of your own; the built-in ones stay).")
-        self.preset_name_row = ttk.Frame(sidebar)
-        self.preset_name_row.grid(row=row + 1, column=0, sticky="ew", pady=(px(6), 0))
-        self.preset_name_row.columnconfigure(0, weight=1)
-        self.preset_name_var = tk.StringVar()
-        self.preset_name_entry = ttk.Entry(self.preset_name_row, textvariable=self.preset_name_var)
-        self.preset_name_entry.grid(row=0, column=0, sticky="ew")
-        self.preset_name_entry.bind("<Return>", lambda _: self._finish_save_preset())
-        self.preset_name_entry.bind("<Escape>", self._cancel_save_preset)
-        ttk.Button(self.preset_name_row, text="Save", style="Secondary.TButton", width=0,
-                   command=self._finish_save_preset).grid(row=0, column=1, padx=(px(6), 0))
-        ttk.Button(self.preset_name_row, text="Cancel", style="Secondary.TButton", width=0,
-                   command=self._cancel_save_preset).grid(row=0, column=2, padx=(px(6), 0))
-        self.preset_name_row.grid_remove()
-        self.preset_note = ttk.Label(sidebar, text="", style="Faint.TLabel", wraplength=wrap, justify="left")
-        self.preset_note.grid(row=row + 2, column=0, sticky="w", pady=(px(4), 0))
-        self.preset_note.grid_remove()
+        row += 4
+        self.side_blocks: dict[str, SideBlock] = {}
+        for side in DEFAULT_SIDES:
+            block = SideBlock(sidebar, self.theme, side.capitalize(), wrap, self._tip, self._icon_images("add"),
+                              self._icon_images("delete"), on_changed=self._settings_changed,
+                              on_add=lambda side=side: self._begin_save_preset(side),
+                              on_delete=lambda side=side: self._delete_preset(side),
+                              on_name=lambda side=side: self._finish_save_preset(side),
+                              on_cancel_name=lambda _event=None, side=side: self._cancel_save_preset(side))
+            block.grid(row=row, column=0, sticky="ew")
+            block.grid_remove()
+            self.side_blocks[side] = block
+            row += 1
 
-        row = self._section(sidebar, row + 3, "Upscaler")
-        self.upscaler_choice = ttk.Combobox(sidebar, state="readonly", values=[c[0] for c in UPSCALER_CHOICES])
-        self.upscaler_choice.current(0)
-        self.upscaler_choice.grid(row=row, column=0, sticky="ew")
-        self.upscaler_choice.bind("<<ComboboxSelected>>", lambda _: self._settings_changed())
-        self._tip(self.upscaler_choice, "AMD's FSR DLL holds three upscalers. FSR 4 is the one this tool is for; "
-                                        "FSR 3.1 and 2.3 are there to compare. The HQ scaler comes with AMD's "
-                                        "driver and runs in ffmpeg. Real-ESRGAN is a separate program, with two "
-                                        "slower models for still images. Measured on "
-                                        "a test clip (PSNR against the original, higher is better): FSR 4 26.8 dB, "
-                                        "FSR 2.3 26.5, Lanczos 26.4, HQ scaler 26.3, FSR 3.1 25.9, Real-ESRGAN 24.4 "
-                                        "(crisper, but what it draws is not the original). To see them side by "
-                                        "side, show a preset on each side of the picture.")
-        self.upscaler_note = ttk.Label(sidebar, text="", style="Faint.TLabel", wraplength=wrap, justify="left")
-        self.upscaler_note.grid(row=row + 1, column=0, sticky="w", pady=(px(4), 0))
-
-        row = self._section(sidebar, row + 2, "Motion vectors")
-        self.motion_choice = ttk.Combobox(sidebar, state="readonly", values=[c[0] for c in MOTION_CHOICES])
-        self.motion_choice.current(0)
-        self.motion_choice.grid(row=row, column=0, sticky="ew")
-        self.motion_choice.bind("<<ComboboxSelected>>", lambda _: self._settings_changed())
-        self._tip(self.motion_choice, "FSR 4 was made for games, which tell it how every pixel moved. A video does "
-                                      "not, so the motion is measured with optical flow. Better motion lets FSR "
-                                      "build detail from several frames; faster settings trade some of it.")
-        self.motion_note = ttk.Label(sidebar, text="", style="Faint.TLabel", wraplength=wrap, justify="left")
-        self.motion_note.grid(row=row + 1, column=0, sticky="w", pady=(px(4), 0))
-
-        row = self._section(sidebar, row + 2, "Sharpening")
-        sharpen_row = ttk.Frame(sidebar)
-        sharpen_row.grid(row=row, column=0, sticky="ew")
-        sharpen_row.columnconfigure(1, weight=1)
-        self.sharpen_var = tk.BooleanVar(value=False)
-        self.sharpen_switch = ttk.Checkbutton(sharpen_row, text="", variable=self.sharpen_var,
-                                              style="Switch.TCheckbutton", command=self._settings_changed,
-                                              takefocus=False)
-        self.sharpen_switch.grid(row=0, column=0, padx=(0, px(4)))
-        self.sharpness_var = tk.DoubleVar(value=0.4)
-        self.sharpness_scale = ttk.Scale(sharpen_row, from_=0.0, to=1.0, variable=self.sharpness_var,
-                                         command=lambda _: self._settings_changed())
-        self.sharpness_scale.grid(row=0, column=1, sticky="ew")
-        self.sharpness_label = ttk.Label(sharpen_row, text="off", style="Small.TLabel", width=5, anchor="e")
-        self.sharpness_label.grid(row=0, column=2, padx=(px(8), 0))
-        sharpen_tip = ("The upscaler's own sharpening (FSR's RCAS, or the HQ scaler's; Real-ESRGAN has none). Off "
-                       "keeps its natural look; 0.2 to 0.5 makes edges crisper; high values also sharpen noise and "
-                       "can leave halos.")
-        self._tip(self.sharpen_switch, sharpen_tip)
-        self._tip(self.sharpness_scale, sharpen_tip)
-
-        row = self._section(sidebar, row + 1, "Output")
+        row = self._section(sidebar, row, "Output")
+        self.save_row = ttk.Frame(sidebar)
+        self.save_row.grid(row=row, column=0, sticky="w", pady=(0, px(6)))
+        ttk.Label(self.save_row, text="Saves", style="Small.TLabel").grid(row=0, column=0, padx=(0, px(8)))
+        self.save_side_var = tk.StringVar(value="right")
+        self.save_chips = []
+        for index, side in enumerate(DEFAULT_SIDES):
+            chip = ttk.Radiobutton(self.save_row, text=f"{side.capitalize()} side", value=side,
+                                   variable=self.save_side_var, style="Segment.TRadiobutton", takefocus=False,
+                                   command=self._settings_changed)
+            chip.grid(row=0, column=index + 1, padx=(0, px(5)))
+            self._tip(chip, "Both sides are upscaled: which one Upscale saves.")
+            self.save_chips.append(chip)
+        self.save_row.grid_remove()
+        self.save_note = ttk.Label(sidebar, text="Neither side is upscaled. Choose an upscaler in the Left or Right "
+                                                 "list to save a file.", style="Faint.TLabel", wraplength=wrap,
+                                   justify="left")
+        self.save_note.grid(row=row + 1, column=0, sticky="w", pady=(0, px(6)))
+        self.save_note.grid_remove()
+        row += 2
         output_row = ttk.Frame(sidebar)
         output_row.grid(row=row, column=0, sticky="ew")
         output_row.columnconfigure(0, weight=1)
@@ -582,9 +497,8 @@ class App:
             self._tip(chip, priority.description)
         self._processor_job: str | None = None
         self.threads_label.configure(text=f"{usage.DEFAULT.threads} of {usage.CPU_THREADS}")
-        self.setting_widgets = [self.choose_button, self.output_entry, self.save_button, self.motion_choice,
-                                self.sharpen_switch, self.sharpness_scale, self.encoder_choice, custom_slider,
-                                self.upscaler_choice, self.preset_choice, self.save_preset_button]
+        self.setting_widgets = [self.choose_button, self.output_entry, self.save_button, self.encoder_choice,
+                                custom_slider, *self.save_chips]
         self._route_wheel(holder)
         return holder
 
@@ -629,9 +543,10 @@ class App:
             box.grid(row=0, column=1)
             box.bind("<<ComboboxSelected>>", lambda _, side=side: self._side_chosen(side))
             box.bind("<MouseWheel>", lambda _: "break")
-            self._tip(box, f"What the {side} of the divider shows: the upscale with the current settings, a "
-                           "preset (upscaled as well, to compare two settings, or FSR 4 with FSR 3.1), or the "
-                           "source enlarged by a classic filter:\nOriginal pixels: " + FILTER_HELP["nearest"]
+            self._tip(box, f"What the {side} of the divider shows: an upscaler, a preset of your own, or the source "
+                           "enlarged by a classic filter. An upscaler starts from its best settings and shows what "
+                           "can be set in the sidebar: choose it again to go back to them. Two sides upscaled "
+                           "compare two settings, or FSR 4 with FSR 3.1.\nOriginal pixels: " + FILTER_HELP["nearest"]
                            + ".\nBilinear: " + FILTER_HELP["linear"] + ".\nBicubic: " + FILTER_HELP["cubic"]
                            + ".\nLanczos: " + FILTER_HELP["lanczos"] + ".\nOff hides this side: the other one "
                            "fills the picture. The label on the picture opens this list too. Drag the divider to "
@@ -679,8 +594,9 @@ class App:
         self._tip(self.transport.speed_scale, "Playing speed, from 1× backwards to 4× forwards ([ and ] step it). "
                                               "The sound plays from 0.25× to 2×, at its own pitch; otherwise it is "
                                               "silent. Faster than 2× and backwards every frame is shown, so "
-                                              "playback slows down when decoding cannot keep up; upscaling makes "
-                                              "about 40 frames a second at 4K, so fast speeds wait more.")
+                                              "playback slows down when decoding cannot keep up; FSR makes about "
+                                              "20 frames a second at 4K with its best motion, so fast speeds wait "
+                                              "more.")
         self._tip(self.transport.speed_label, "Click to play at normal speed again (Backspace).")
         self._tip(self.transport.volume_button, "Mute (M). ↑ and ↓ change the volume.")
         self._tip(self.transport.volume_bar, "The volume: click or drag it; the wheel, ↑ and ↓ change it too.")
@@ -815,21 +731,33 @@ class App:
         return float(choice)
 
     def _options(self) -> JobOptions:
-        _, flow, preset, _ = MOTION_CHOICES[self.motion_choice.current()]
-        upscaler = UPSCALER_CHOICES[self.upscaler_choice.current()][1]
-        if upscaler in EXTERNAL_UPSCALERS:
-            flow, preset = "zero", "fast"  # they take no motion
+        how = self._saved_how()
         output = self.output_var.get().strip().strip('"')
         return JobOptions(
             input=self.input_path, output=Path(output) if output else None, scale=self._scale_for(self.size_var.get()),
-            flow=flow, flow_preset=preset,
-            sharpness=round(float(self.sharpness_var.get()), 2) if self._sharpening(upscaler) else None,
+            flow=how.flow, flow_preset=how.flow_preset, sharpness=how.sharpness,
             codec=ENCODER_CHOICES[self.encoder_choice.current()][1],
-            upscaler=upscaler)
+            upscaler=how.upscaler)
 
-    def _sharpening(self, upscaler: str | None) -> bool:
-        """Whether the switch asks for sharpening and `upscaler` has it."""
-        return self.sharpen_var.get() and upscaler not in MODELS
+    def _side_how(self, side: str) -> Preset | None:
+        """How `side` is upscaled; None when it shows a filter or nothing."""
+        return self.side_blocks[side].how() if self.side_choices[side] in FAMILY_BY_NAME else None
+
+    def _saved_side(self) -> str | None:
+        """The side Upscale saves: the one chosen when both are upscaled, the only one, or None without any."""
+        upscaled = [side for side in DEFAULT_SIDES if self.side_choices[side] in FAMILY_BY_NAME]
+        if len(upscaled) == 2:
+            return self.save_side_var.get()
+        return upscaled[0] if upscaled else None
+
+    def _saved_how(self) -> Preset:
+        """How the file is saved: what a whole-file upscale started with while it runs (the sides stay free to change
+        then), otherwise the saved side; with no side upscaled, the output size still needs an answer."""
+        if (self.batch or self.saving) and self.renderer is not None:
+            settings = self.renderer.settings
+            return Preset("", settings.upscaler, settings.flow, settings.flow_preset, settings.sharpness)
+        side = self._saved_side()
+        return self._side_how(side) if side is not None else FAMILIES[0].best
 
     def _plan(self) -> JobPlan | None:
         if self.info is None or self.input_path is None:
@@ -855,21 +783,21 @@ class App:
         self._settings_job = self.root.after(SETTINGS_DELAY_MS, self._apply_settings)
 
     def _apply_settings(self) -> None:
+        """Make what the sides say real; a whole-file upscale carries on as it started."""
         self._settings_job = None
-        settings = self._render_settings()
-        if settings is None or (self.player is None and self.image_source is None):
-            return
-        if self.renderer is not None:
-            try:
-                self.renderer.change_settings(settings)
-            except OSError as error:
-                log.emit(f"[ui] error: {error}")
-                self._show_banner(f"The new settings could not be applied: {self._first_line(error)}")
-                return
-            self.transport.set_thumbnails(upscaled=self.renderer.thumbnails())
-        elif self.player is not None:
-            self._start_renderer(settings)  # the settings at load could not be upscaled (a size the encoder refuses)
-        self.view.set_media((self.info.width, self.info.height), settings.output_size)
+        settings = None if self.busy else self._render_settings()
+        if settings is not None and (self.player is not None or self.image_source is not None):
+            if self.renderer is not None:
+                try:
+                    self.renderer.change_settings(settings)
+                except OSError as error:
+                    log.emit(f"[ui] error: {error}")
+                    self._show_banner(f"The new settings could not be applied: {self._first_line(error)}")
+                    return
+                self.transport.set_thumbnails(upscaled=self.renderer.thumbnails())
+            elif self.player is not None:
+                self._start_renderer(settings)  # the settings at load could not be upscaled (a size the encoder refuses)
+            self.view.set_media((self.info.width, self.info.height), settings.output_size)
         self._update_layers()
         self._update_progress()
 
@@ -930,23 +858,16 @@ class App:
         else:
             self.custom_row.grid_remove()
         self.custom_label.configure(text=f"{self.custom_scale.get():.2f}×")
-        upscaler = UPSCALER_CHOICES[self.upscaler_choice.current()][1]
-        self._set_state(self.motion_choice, idle and not image and upscaler not in NO_MOTION_NOTES)
         self._set_state(self.encoder_choice, idle and not image)
-        self._set_state(self.sharpen_switch, idle and upscaler not in MODELS)
-        self._set_state(self.sharpness_scale, idle and self._sharpening(upscaler))
-        self.sharpness_label.configure(text=f"{self.sharpness_var.get():.2f}" if self._sharpening(upscaler) else "off")
-        self.motion_note.configure(text="Not used for images." if image else NO_MOTION_NOTES.get(
-            upscaler, MOTION_CHOICES[self.motion_choice.current()][3]))
         self.encoder_note.configure(text="" if image else ENCODER_CHOICES[self.encoder_choice.current()][2])
-        self.upscaler_note.configure(text=UPSCALER_CHOICES[self.upscaler_choice.current()][2])
-        match = self.presets.matching(self._how_settings())
-        self.preset_choice.set(match.name if match is not None else CUSTOM_PRESET)
-        self._set_state(self.delete_preset_button, idle)
-        if match is not None and not match.builtin:
-            self.delete_preset_button.grid()
-        else:
-            self.delete_preset_button.grid_remove()
+        for side, block in self.side_blocks.items():
+            how = self._side_how(side)
+            own = how is not None and self.presets.matching(self._how_settings(side)) is not None
+            block.refresh(how is not None, image, idle, own)
+        self._update_side_boxes()
+        hows = [self._side_how(side) for side in DEFAULT_SIDES]
+        show_widget(self.save_row, None not in hows and hows[0] != hows[1])
+        show_widget(self.save_note, hows == [None, None])
         plan, problem = None, None
         if self.input_path is not None and not self.output_custom:
             self._set_output(self._default_output())
@@ -970,7 +891,8 @@ class App:
             self.audio_note.configure(text="")
         if problem:
             self.size_note.configure(text=problem)
-        ready = idle and plan is not None and problem is None and self.gpu_ready is not False
+        ready = (idle and plan is not None and problem is None and self.gpu_ready is not False
+                 and self._saved_side() is not None)
         self._set_state(self.start_button, ready)
         self._set_state(self.cancel_button, self.batch and not self.saving)
         if self.batch:
@@ -1030,106 +952,111 @@ class App:
         scale = nearest if abs(math.log2(nearest) - octave) < ZOOM_SNAP_OCTAVES else 2 ** octave
         self.view.set_zoom(self.view.zoom_named(scale))
 
-    # ---- presets and what each side shows -------------------------------------------------------
+    # ---- what each side shows -------------------------------------------------------------------
 
-    def _how_settings(self) -> RenderSettings:
-        """The sidebar's upscaler, motion and sharpening, which presets hold (the size is a placeholder)."""
-        options = self._options()
-        return RenderSettings((0, 0), options.flow, options.flow_preset, options.sharpness, options.codec,
-                              options.upscaler)
+    def _still(self) -> bool:
+        """Whether the sides may offer what only suits still images: an image, or no file yet."""
+        return self.input_path is None or is_image(self.input_path)
+
+    def _how_settings(self, side: str) -> RenderSettings:
+        """How `side` upscales, which presets hold (the size is a placeholder)."""
+        return self.side_blocks[side].how().applied_to(RenderSettings((0, 0)))
 
     def _side_entries(self) -> list[tuple[str, str]]:
-        """(label, choice) of the side dropdowns: the current settings, the presets this file can show, the source
+        """(label, choice) of the side lists: the user's presets this file can show, the upscalers, the source
         filters, off."""
-        still = self.input_path is None or is_image(self.input_path)
-        return ([("Current settings", "current")]
-                + [(preset.name, f"preset:{preset.name}") for preset in self.presets.all
-                   if still or preset.upscaler not in STILL_ONLY]
+        still = self._still()
+        return ([(preset.name, f"preset:{preset.name}") for preset in self.presets.user
+                 if still or preset.upscaler not in STILL_ONLY]
+                + [(family.name, family.name) for family in FAMILIES]
                 + [(SOURCE_LABELS[name], name) for name in REFERENCE_FILTERS]
-                + [("Off", OFF)])
+                + [(OFF_LABEL, OFF)])
 
     def _update_preset_lists(self) -> None:
-        """The dropdowns' lists after presets or the file changed; a side that showed a preset now gone shows the
-        current settings."""
-        self.preset_choice.configure(values=[preset.name for preset in self.presets.all])
-        entries = self._side_entries()
-        for side, choice in self.side_choices.items():
-            if choice not in [value for _, value in entries]:
-                log.emit(f"[ui] the {side} side showed {choice.removeprefix('preset:')}, which is gone: it shows "
-                         f"the current settings")
-                self.side_choices[side] = "current"
+        """The side lists after presets or the file changed; a model this file cannot use leaves its side."""
+        labels = [label for label, _ in self._side_entries()]
+        for side, block in self.side_blocks.items():
+            block.load(block.family, block.how(), self._still())
+            self.side_boxes[side].configure(values=labels)
+        self._update_side_boxes()
+
+    def _update_side_boxes(self) -> None:
+        """What the side lists say: the filter, the preset these settings are, or else the upscaler."""
         for side, box in self.side_boxes.items():
-            box.configure(values=[label for label, _ in entries])
-            box.set(next(label for label, choice in entries if choice == self.side_choices[side]))
+            choice = self.side_choices[side]
+            if choice == OFF:
+                box.set(OFF_LABEL)
+            elif choice in SOURCE_LABELS:
+                box.set(SOURCE_LABELS[choice])
+            else:
+                match = self.presets.matching(self._how_settings(side))
+                box.set(match.name if match is not None else choice)
+
+    def _show_on_side(self, side: str, choice: str) -> None:
+        """Show an entry of the side lists on `side`: an upscaler starts from its best settings, a preset from its
+        own."""
+        block = self.side_blocks[side]
+        if choice.startswith("preset:"):
+            preset = self.presets.find(choice.removeprefix("preset:"))
+            if preset is None:
+                raise ValueError(f"no preset is called {choice.removeprefix('preset:')}")
+            family = family_of(preset.upscaler)
+            block.load(family, preset, self._still())
+            self.side_choices[side] = family.name
+            return
+        if choice in FAMILY_BY_NAME:
+            block.load(FAMILY_BY_NAME[choice], FAMILY_BY_NAME[choice].best, self._still())
+        self.side_choices[side] = choice
 
     def _side_chosen(self, side: str) -> None:
         box = self.side_boxes[side]
-        self.side_choices[side] = self._side_entries()[box.current()][1]
+        self._show_on_side(side, self._side_entries()[box.current()][1])
         other = "right" if side == "left" else "left"
         if self.side_choices[side] == OFF and self.side_choices[other] == OFF:
-            # Never both: the other side comes back with what it shows by default.
-            self.side_choices[other] = DEFAULT_SIDES[other]
-            self._update_preset_lists()
+            self._show_on_side(other, DEFAULT_SIDES[other])  # never both: the other side comes back
         box.selection_clear()
         self.root.focus_set()  # back to the window, so Space and the arrows play and seek again
-        self._update_layers()
-        self._update_progress()
+        self._refresh()
+        if self._settings_job is not None:
+            self.root.after_cancel(self._settings_job)
+        self._apply_settings()
 
     def _open_side_box(self, side: str) -> None:
         """A label on the picture was clicked: open that side's dropdown."""
         self.root.tk.call("ttk::combobox::Post", self.side_boxes[side])
 
-    def _preset_chosen(self) -> None:
-        """Load a preset into the settings."""
-        preset = self.presets.find(self.preset_choice.get())
-        self.preset_choice.selection_clear()
-        self.root.focus_set()
-        if preset is None:
-            return
-        self.upscaler_choice.current([value for _, value, _ in UPSCALER_CHOICES].index(preset.upscaler))
-        motion = (preset.flow, "fast" if preset.flow == "zero" else preset.flow_preset)
-        self.motion_choice.current([(flow, speed) for _, flow, speed, _ in MOTION_CHOICES].index(motion))
-        self.sharpen_var.set(preset.sharpness is not None)
-        if preset.sharpness is not None:
-            self.sharpness_var.set(preset.sharpness)
-        self._settings_changed()
-
-    def _begin_save_preset(self) -> None:
-        suggestion = self._how_settings().describe()
+    def _begin_save_preset(self, side: str) -> None:
+        suggestion = self._how_settings(side).describe()
         if self.presets.check_name(suggestion) is not None:
             suggestion = "My preset"
-        self.preset_name_var.set(suggestion)
-        self.preset_name_row.grid()
-        self.preset_note.configure(text="Name the preset, then press Enter.")
-        self.preset_note.grid()
-        self.preset_name_entry.focus_set()
-        self.preset_name_entry.select_range(0, "end")
+        self.side_blocks[side].ask_name(suggestion)
 
-    def _finish_save_preset(self) -> None:
-        problem = self.presets.check_name(self.preset_name_var.get())
+    def _finish_save_preset(self, side: str) -> None:
+        block = self.side_blocks[side]
+        problem = self.presets.check_name(block.name_var.get())
         if problem is not None:
-            self.preset_note.configure(text=problem)
+            block.name_note.configure(text=problem)
             return
         try:
-            preset = self.presets.save(self.preset_name_var.get(), self._how_settings())
+            preset = self.presets.save(block.name_var.get(), self._how_settings(side))
         except OSError as error:
             log.emit(f"[ui] error: cannot save the preset: {error}")
             self._show_banner(f"The preset could not be saved: {self._first_line(error)}")
             return
         log.emit(f"[ui] saved the preset {preset.name} in {self.presets.path}")
-        self._cancel_save_preset()
+        block.hide_name()
         self._update_preset_lists()
-        self._update_layers()  # a side showing a preset of that name shows its new settings
+        self._update_layers()  # the label on the picture names it
         self._refresh()
 
-    def _cancel_save_preset(self, _event: tk.Event | None = None) -> str:
-        self.preset_name_row.grid_remove()
-        self.preset_note.grid_remove()
+    def _cancel_save_preset(self, side: str) -> str:
+        self.side_blocks[side].hide_name()
         return "break"
 
-    def _delete_preset(self) -> None:
-        preset = self.presets.find(self.preset_choice.get())
-        if preset is None or preset.builtin:
+    def _delete_preset(self, side: str) -> None:
+        """Delete the preset `side`'s settings are; the side keeps the settings."""
+        preset = self.presets.matching(self._how_settings(side))
+        if preset is None:
             return
         try:
             self.presets.delete(preset.name)
@@ -1137,27 +1064,12 @@ class App:
             log.emit(f"[ui] error: cannot delete the preset: {error}")
             self._show_banner(f"The preset could not be deleted: {self._first_line(error)}")
             return
-        for side, choice in self.side_choices.items():
-            if choice == f"preset:{preset.name}":
-                self.side_choices[side] = "current"
         self._update_preset_lists()
         self._update_layers()
         self._refresh()
 
-    def _choice_settings(self, choice: str, current: RenderSettings) -> RenderSettings | None:
-        """The settings a side choice stands for; None for a source filter or a side turned off."""
-        if choice in REFERENCE_FILTERS or choice == OFF:
-            return None
-        if choice == "current":
-            return current
-        preset = self.presets.find(choice.removeprefix("preset:"))
-        if preset is None:
-            raise ValueError(f"no preset is called {choice.removeprefix('preset:')}")
-        return preset.applied_to(current)
-
-    def _choice_label(self, choice: str, settings: RenderSettings) -> str:
-        if choice.startswith("preset:"):
-            return choice.removeprefix("preset:")
+    def _side_label(self, settings: RenderSettings) -> str:
+        """What the label on the picture says: the preset these settings are, or the settings."""
         match = self.presets.matching(settings)
         return match.name if match is not None else settings.describe()
 
@@ -1169,11 +1081,12 @@ class App:
         image = self.image_source is not None
         sides, labels, layers = {}, {}, {}
         for side, choice in self.side_choices.items():
-            settings = self._choice_settings(choice, current) if current is not None else None
-            if settings is None:
-                sides[side] = choice if choice in REFERENCE_FILTERS or choice == OFF else "unavailable"
+            how = self._side_how(side)
+            if how is None or current is None:
+                sides[side] = choice if how is None else "unavailable"
                 continue
-            labels[side] = self._choice_label(choice, settings)
+            settings = how.applied_to(current)
+            labels[side] = self._side_label(settings)
             if image:
                 settings = replace(settings, flow="zero", flow_preset="fast")  # no motion in a single picture
             key = f"upscaled:{settings.upscaler}:{settings.flow}:{settings.flow_preset}:{settings.sharpness}"
@@ -1583,6 +1496,9 @@ class App:
     def start(self) -> None:
         if self.busy or self.info is None:
             return
+        if self._saved_side() is None:
+            self._show_banner("Neither side is upscaled: choose an upscaler in the Left or Right list.")
+            return
         try:
             plan = plan_from_info(self._options(), self.info)
         except ValueError as error:
@@ -1619,12 +1535,12 @@ class App:
             self.status_var.set("Cancelling after the current frame…")
             return
         if self.batch and not self.saving:
+            done = self.renderer.timeline.ready_frames() / max(1, self._total())
             self.batch = False
             self.renderer.set_batch(False)
-            self._update_layers()
+            self._apply_settings()  # the sides may have changed meanwhile
             self.renderer.want_live = False
             self.root.title(APP_NAME)
-            done = self.renderer.timeline.ready_frames() / max(1, self._total())
             self.status_var.set(f"Stopped at {done:.0%} upscaled · Upscale carries on from there")
             self._refresh()
 
@@ -1917,6 +1833,8 @@ class App:
             remaining = f" · {format_duration(left)} left" if self.render_position is not None and left else ""
             self.status_var.set(f"Upscaling · {ready / max(1, total):.0%}{speed}{remaining}")
             self.root.title(f"{int(100 * ready / max(1, total))}% · {APP_NAME}")
+        elif self._saved_side() is None:
+            self.status_var.set("Ready · neither side is upscaled")
         elif self.render_position is not None:
             position = self.player.position
             end = next((end for start, end in ranges if start <= position < end), position)
@@ -1983,7 +1901,7 @@ class App:
         self.batch = False
         if self.renderer is not None:
             self.renderer.set_batch(False)
-            self._update_layers()
+            self._apply_settings()  # the sides may have changed meanwhile
         self.progress.stop()
         self.progress.configure(mode="determinate", value=1000)
         self.root.title(APP_NAME)
