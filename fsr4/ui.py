@@ -1,11 +1,11 @@
 """The window: open a video or an image, watch it upscaled while it is made, compare it, save it.
 
-Layout: a settings sidebar that folds away (its button at the top left, Ctrl+B) with what can be set for each side
-and, at its foot, the machine's status; the preview with its toolbar (what each side of the divider shows, zoom), the
+Layout: a settings sidebar that folds away (its button at the top left, Ctrl+B) with the preset, the upscaler and what
+that upscaler can change and, at its foot, the machine's status; the preview with its toolbar (what each side of the divider shows, zoom), the
 playback controls with the filmstrip, an optional log, and a footer with the progress and the actions. Full screen (F11 or F) keeps
 the video; its controls come up when the mouse moves near the bottom and hide once it rests.
 
-Each side of the divider shows an upscaler with its settings, a preset of the user's or the source through a filter.
+Each side of the divider shows a preset, with its settings if they were changed, or the source through a filter.
 A loaded video gets a Renderer (fsr4.render), which upscales every version shown into pieces around the playhead, and
 a Player (fsr4.player), which plays the finished pieces in real time with sound. Upscale makes the renderer do the
 whole file the way the saved side says and joins the pieces into the output. An image gets an
@@ -40,7 +40,7 @@ from .job import JobOptions, JobPlan, JobResult, default_output, plan_from_info,
 from .media import (COPY_ANY_AUDIO_SUFFIXES, IMAGE_SUFFIXES, MP4_AUDIO_COPY, VIDEO_SUFFIXES, KeyframeIndex, MediaInfo,
                     is_image, probe, read_frame, read_thumbnail)
 from .player import Player
-from .presets import FAMILIES, FAMILY_BY_NAME, OFF_LABEL, SOURCE_LABELS, Preset, PresetStore, family_of
+from .presets import BEST, OFF_LABEL, SOURCE_LABELS, Preset, PresetStore
 from .render import RenderSettings, Renderer, clean_stale_directories
 from .timeline import intersect_ranges
 from .ui_art import icon, png_base64
@@ -97,7 +97,9 @@ ENCODER_CHOICES = [
 FILTER_HELP = {"nearest": "every source pixel as a block, exactly what the file holds",
                "linear": "smooth, what most players do", "cubic": "a little sharper, the usual photo editor filter",
                "lanczos": "the sharpest classic filter (mpv, madVR)"}
-DEFAULT_SIDES = {"left": "cubic", "right": FAMILIES[0].name}
+UPSCALED = "upscaled"  # a side showing its settings, the other choices being a filter or OFF
+DEFAULT_SIDES = {"left": "cubic", "right": UPSCALED}
+CUSTOM_PRESET = "Custom settings"
 OPEN_TYPES = [("Videos and images", " ".join(f"*{suffix}" for suffix in VIDEO_SUFFIXES + IMAGE_SUFFIXES)),
               ("Videos", " ".join(f"*{suffix}" for suffix in VIDEO_SUFFIXES)),
               ("Images", " ".join(f"*{suffix}" for suffix in IMAGE_SUFFIXES)), ("All files", "*.*")]
@@ -221,7 +223,7 @@ class App:
         self._repaint_job: str | None = None
         keep_contents_on_resize(root)
         self.presets = PresetStore()
-        self.side_choices = dict(DEFAULT_SIDES)  # a family's name, a filter or OFF
+        self.side_choices = dict(DEFAULT_SIDES)
         self._shown_layers: dict[str, RenderSettings] = {}
         self.image_source: np.ndarray | None = None
         self.image_previewer: ImagePreviewer | None = None
@@ -324,7 +326,8 @@ class App:
         return row + 1
 
     def _build_sidebar(self, parent: ttk.Frame) -> ttk.Frame:
-        """Settings top to bottom in the order they are decided: source, size, each side's upscaler, output.
+        """Settings top to bottom in the order they are decided: source, size, preset, upscaler and what it can
+        change, output.
 
         The settings sit in a canvas that scrolls (wheel or scrollbar) when the window is too short for them;
         the machine's status stays below it.
@@ -409,10 +412,25 @@ class App:
         self.size_note.grid(row=row + 3, column=0, sticky="w")
 
         row += 4
+        self.save_row = ttk.Frame(sidebar)
+        self.save_row.grid(row=row, column=0, sticky="w", pady=(px(10), 0))
+        ttk.Label(self.save_row, text="Settings of", style="Small.TLabel").grid(row=0, column=0, padx=(0, px(8)))
+        self.save_side_var = tk.StringVar(value="right")
+        self.save_chips = []
+        for index, side in enumerate(DEFAULT_SIDES):
+            chip = ttk.Radiobutton(self.save_row, text=f"{side.capitalize()} side", value=side,
+                                   variable=self.save_side_var, style="Segment.TRadiobutton", takefocus=False,
+                                   command=self._settings_changed)
+            chip.grid(row=0, column=index + 1, padx=(0, px(5)))
+            self._tip(chip, "Both sides are upscaled: the one the settings below change, and the one Upscale saves.")
+            self.save_chips.append(chip)
+        self.save_row.grid_remove()
+        row += 1
         self.side_blocks: dict[str, SideBlock] = {}
         for side in DEFAULT_SIDES:
-            block = SideBlock(sidebar, self.theme, side.capitalize(), wrap, self._tip, self._icon_images("add"),
+            block = SideBlock(sidebar, self.theme, wrap, self._tip, self._icon_images("add"),
                               self._icon_images("delete"), on_changed=self._settings_changed,
+                              on_preset=lambda side=side: self._preset_chosen(side),
                               on_add=lambda side=side: self._begin_save_preset(side),
                               on_delete=lambda side=side: self._delete_preset(side),
                               on_name=lambda side=side: self._finish_save_preset(side),
@@ -423,20 +441,7 @@ class App:
             row += 1
 
         row = self._section(sidebar, row, "Output")
-        self.save_row = ttk.Frame(sidebar)
-        self.save_row.grid(row=row, column=0, sticky="w", pady=(0, px(6)))
-        ttk.Label(self.save_row, text="Saves", style="Small.TLabel").grid(row=0, column=0, padx=(0, px(8)))
-        self.save_side_var = tk.StringVar(value="right")
-        self.save_chips = []
-        for index, side in enumerate(DEFAULT_SIDES):
-            chip = ttk.Radiobutton(self.save_row, text=f"{side.capitalize()} side", value=side,
-                                   variable=self.save_side_var, style="Segment.TRadiobutton", takefocus=False,
-                                   command=self._settings_changed)
-            chip.grid(row=0, column=index + 1, padx=(0, px(5)))
-            self._tip(chip, "Both sides are upscaled: which one Upscale saves.")
-            self.save_chips.append(chip)
-        self.save_row.grid_remove()
-        self.save_note = ttk.Label(sidebar, text="Neither side is upscaled. Choose an upscaler in the Left or Right "
+        self.save_note = ttk.Label(sidebar, text="Neither side is upscaled. Choose a preset in the Left or Right "
                                                  "list to save a file.", style="Faint.TLabel", wraplength=wrap,
                                    justify="left")
         self.save_note.grid(row=row + 1, column=0, sticky="w", pady=(0, px(6)))
@@ -543,10 +548,10 @@ class App:
             box.grid(row=0, column=1)
             box.bind("<<ComboboxSelected>>", lambda _, side=side: self._side_chosen(side))
             box.bind("<MouseWheel>", lambda _: "break")
-            self._tip(box, f"What the {side} of the divider shows: an upscaler, a preset of your own, or the source "
-                           "enlarged by a classic filter. An upscaler starts from its best settings and shows what "
-                           "can be set in the sidebar: choose it again to go back to them. Two sides upscaled "
-                           "compare two settings, or FSR 4 with FSR 3.1.\nOriginal pixels: " + FILTER_HELP["nearest"]
+            self._tip(box, f"What the {side} of the divider shows: a preset, upscaled, or the source enlarged by a "
+                           "classic filter. The sidebar shows the preset's settings, to change them or save your "
+                           "own. Two sides upscaled compare two settings, or FSR 4 with FSR 3.1.\nOriginal pixels: "
+                           + FILTER_HELP["nearest"]
                            + ".\nBilinear: " + FILTER_HELP["linear"] + ".\nBicubic: " + FILTER_HELP["cubic"]
                            + ".\nLanczos: " + FILTER_HELP["lanczos"] + ".\nOff hides this side: the other one "
                            "fills the picture. The label on the picture opens this list too. Drag the divider to "
@@ -741,11 +746,12 @@ class App:
 
     def _side_how(self, side: str) -> Preset | None:
         """How `side` is upscaled; None when it shows a filter or nothing."""
-        return self.side_blocks[side].how() if self.side_choices[side] in FAMILY_BY_NAME else None
+        return self.side_blocks[side].how() if self.side_choices[side] == UPSCALED else None
 
     def _saved_side(self) -> str | None:
-        """The side Upscale saves: the one chosen when both are upscaled, the only one, or None without any."""
-        upscaled = [side for side in DEFAULT_SIDES if self.side_choices[side] in FAMILY_BY_NAME]
+        """The side the sidebar sets and Upscale saves: the one chosen when both are upscaled, the only one, or None
+        without any."""
+        upscaled = [side for side in DEFAULT_SIDES if self.side_choices[side] == UPSCALED]
         if len(upscaled) == 2:
             return self.save_side_var.get()
         return upscaled[0] if upscaled else None
@@ -757,7 +763,7 @@ class App:
             settings = self.renderer.settings
             return Preset("", settings.upscaler, settings.flow, settings.flow_preset, settings.sharpness)
         side = self._saved_side()
-        return self._side_how(side) if side is not None else FAMILIES[0].best
+        return self._side_how(side) if side is not None else BEST
 
     def _plan(self) -> JobPlan | None:
         if self.info is None or self.input_path is None:
@@ -860,14 +866,14 @@ class App:
         self.custom_label.configure(text=f"{self.custom_scale.get():.2f}×")
         self._set_state(self.encoder_choice, idle and not image)
         self.encoder_note.configure(text="" if image else ENCODER_CHOICES[self.encoder_choice.current()][2])
+        saved = self._saved_side()
         for side, block in self.side_blocks.items():
-            how = self._side_how(side)
-            own = how is not None and self.presets.matching(self._how_settings(side)) is not None
-            block.refresh(how is not None, image, idle, own)
+            match = self.presets.matching(self._how_settings(side))
+            block.refresh(side == saved, image, idle, match.name if match is not None else CUSTOM_PRESET,
+                          match is not None and not match.builtin)
         self._update_side_boxes()
-        hows = [self._side_how(side) for side in DEFAULT_SIDES]
-        show_widget(self.save_row, None not in hows and hows[0] != hows[1])
-        show_widget(self.save_note, hows == [None, None])
+        show_widget(self.save_row, all(self._side_how(side) is not None for side in DEFAULT_SIDES))
+        show_widget(self.save_note, saved is None)
         plan, problem = None, None
         if self.input_path is not None and not self.output_custom:
             self._set_output(self._default_output())
@@ -962,26 +968,29 @@ class App:
         """How `side` upscales, which presets hold (the size is a placeholder)."""
         return self.side_blocks[side].how().applied_to(RenderSettings((0, 0)))
 
-    def _side_entries(self) -> list[tuple[str, str]]:
-        """(label, choice) of the side lists: the user's presets this file can show, the upscalers, the source
-        filters, off."""
+    def _offered_presets(self) -> list[Preset]:
+        """The presets this file can use: a video leaves out the models for still images."""
         still = self._still()
-        return ([(preset.name, f"preset:{preset.name}") for preset in self.presets.user
-                 if still or preset.upscaler not in STILL_ONLY]
-                + [(family.name, family.name) for family in FAMILIES]
+        return [preset for preset in self.presets.all if still or preset.upscaler not in STILL_ONLY]
+
+    def _side_entries(self) -> list[tuple[str, str]]:
+        """(label, choice) of the side lists: the presets, the source filters, off."""
+        return ([(preset.name, f"preset:{preset.name}") for preset in self._offered_presets()]
                 + [(SOURCE_LABELS[name], name) for name in REFERENCE_FILTERS]
                 + [(OFF_LABEL, OFF)])
 
     def _update_preset_lists(self) -> None:
-        """The side lists after presets or the file changed; a model this file cannot use leaves its side."""
+        """The lists after presets or the file changed; a model this file cannot use leaves its side."""
         labels = [label for label, _ in self._side_entries()]
+        names = [preset.name for preset in self._offered_presets()]
         for side, block in self.side_blocks.items():
-            block.load(block.family, block.how(), self._still())
+            block.load(block.how(), self._still())
+            block.set_presets(names)
             self.side_boxes[side].configure(values=labels)
         self._update_side_boxes()
 
     def _update_side_boxes(self) -> None:
-        """What the side lists say: the filter, the preset these settings are, or else the upscaler."""
+        """What the side lists say: the filter, the preset these settings are, or else the settings."""
         for side, box in self.side_boxes.items():
             choice = self.side_choices[side]
             if choice == OFF:
@@ -989,23 +998,16 @@ class App:
             elif choice in SOURCE_LABELS:
                 box.set(SOURCE_LABELS[choice])
             else:
-                match = self.presets.matching(self._how_settings(side))
-                box.set(match.name if match is not None else choice)
+                box.set(self._side_label(self._how_settings(side)))
 
     def _show_on_side(self, side: str, choice: str) -> None:
-        """Show an entry of the side lists on `side`: an upscaler starts from its best settings, a preset from its
-        own."""
-        block = self.side_blocks[side]
+        """Show an entry of the side lists on `side`: a preset loads into its settings."""
         if choice.startswith("preset:"):
             preset = self.presets.find(choice.removeprefix("preset:"))
             if preset is None:
                 raise ValueError(f"no preset is called {choice.removeprefix('preset:')}")
-            family = family_of(preset.upscaler)
-            block.load(family, preset, self._still())
-            self.side_choices[side] = family.name
-            return
-        if choice in FAMILY_BY_NAME:
-            block.load(FAMILY_BY_NAME[choice], FAMILY_BY_NAME[choice].best, self._still())
+            self.side_blocks[side].load(preset, self._still())
+            choice = UPSCALED
         self.side_choices[side] = choice
 
     def _side_chosen(self, side: str) -> None:
@@ -1024,6 +1026,16 @@ class App:
     def _open_side_box(self, side: str) -> None:
         """A label on the picture was clicked: open that side's dropdown."""
         self.root.tk.call("ttk::combobox::Post", self.side_boxes[side])
+
+    def _preset_chosen(self, side: str) -> None:
+        """Load a preset into the settings of `side`."""
+        block = self.side_blocks[side]
+        preset = self.presets.find(block.preset_choice.get())
+        block.preset_choice.selection_clear()
+        self.root.focus_set()
+        if preset is not None:
+            block.load(preset, self._still())
+            self._settings_changed()
 
     def _begin_save_preset(self, side: str) -> None:
         suggestion = self._how_settings(side).describe()
@@ -1054,9 +1066,9 @@ class App:
         return "break"
 
     def _delete_preset(self, side: str) -> None:
-        """Delete the preset `side`'s settings are; the side keeps the settings."""
+        """Delete the preset of the user's that `side`'s settings are; the side keeps the settings."""
         preset = self.presets.matching(self._how_settings(side))
-        if preset is None:
+        if preset is None or preset.builtin:
             return
         try:
             self.presets.delete(preset.name)
@@ -1497,7 +1509,7 @@ class App:
         if self.busy or self.info is None:
             return
         if self._saved_side() is None:
-            self._show_banner("Neither side is upscaled: choose an upscaler in the Left or Right list.")
+            self._show_banner("Neither side is upscaled: choose a preset in the Left or Right list.")
             return
         try:
             plan = plan_from_info(self._options(), self.info)

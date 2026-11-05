@@ -15,7 +15,7 @@ from fsr4 import hq_scaler, media
 from fsr4.hq_scaler import HQ_SCALER, EncoderScale, HqPipeline, filter_sharpness, upscale_picture
 from fsr4.job import JobOptions, plan_from_info, run_job
 from fsr4.pipeline import Timings
-from fsr4.presets import FAMILY_BY_NAME, preset_from_json
+from fsr4.presets import BUILTIN, preset_from_json
 from fsr4.render import RenderSettings, Renderer
 
 WIDTH, HEIGHT, RATE, SECONDS = 320, 180, 30, 3
@@ -90,8 +90,9 @@ class PlanTest(unittest.TestCase):
 
 
 class PresetTest(unittest.TestCase):
-    def test_its_entry_of_the_side_lists_is_named_without_motion(self):
-        settings = FAMILY_BY_NAME["AMD HQ scaler"].best.applied_to(RenderSettings((1280, 720)))
+    def test_the_builtin_preset_is_named_without_motion(self):
+        preset = next(preset for preset in BUILTIN if preset.upscaler == HQ_SCALER)
+        settings = preset.applied_to(RenderSettings((1280, 720)))
         self.assertEqual((settings.flow, settings.flow_preset), ("zero", "fast"))
         self.assertEqual(settings.describe(), "AMD HQ scaler")
         self.assertEqual(RenderSettings((1, 1), flow="zero", sharpness=0.5, upscaler=HQ_SCALER).describe(),

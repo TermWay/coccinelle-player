@@ -63,15 +63,16 @@ sub-pixel camera jitter every frame. A video file has none of those, so this too
   at about two thirds of real time and −0.5× and slower play at their speed. Backwards, the upscaler works on
   the seconds just behind the playhead.
 - **Compare anything:** the divider splits the picture; the Left and Right dropdowns above it (or a click on
-  the label in either top corner) choose what each side shows: FSR, AMD HQ scaler, Real-ESRGAN, your presets, or
-  the source enlarged by a classic filter: Original pixels (each source pixel as a block), Bilinear (what most
-  players do), Bicubic, or Lanczos. An upscaler starts from its best settings (FSR: FSR 4, medium optical flow, no
-  sharpening) and shows what can be set in the sidebar; one with nothing to set shows nothing. Two sides upscaled sit
-  side by side, paused or playing (two versions share the GPU, so playing them waits more), and Output then
-  asks which one Upscale saves. Off turns a side off: the other one fills the picture, without the divider.
-- **Presets** are your own: + in a side's settings saves its upscaler, motion vectors and sharpening (the size and
-  the encoder stay the file's) in `%APPDATA%\Coccinelle Player\presets.json`, they join the Left and Right lists,
-  and the bin deletes one.
+  the label in either top corner) choose what each side shows: a preset, or the source enlarged by a classic filter:
+  Original pixels (each source pixel as a block), Bilinear (what most players do), Bicubic, or Lanczos. Two sides
+  upscaled sit side by side, paused or playing (two versions share the GPU, so playing them waits more), and the
+  sidebar then asks which one its settings are for, which is also the one Upscale saves. Off turns a side off: the
+  other one fills the picture, without the divider.
+- **Presets** cover the choices worth comparing: FSR 4 at its best (medium optical flow, no sharpening) with faster,
+  sharpened and motionless variants, FSR 3.1, FSR 2.3, AMD's HQ scaler and Real-ESRGAN. The sidebar shows the preset,
+  its upscaler and only what that upscaler can change: motion vectors and sharpening for FSR, sharpening for the HQ
+  scaler, nothing for Real-ESRGAN. + saves those settings as a preset of your own (the size and the encoder stay the
+  file's) in `%APPDATA%\Coccinelle Player\presets.json`, and the bin deletes one.
 - **Zoom:** Fit shows the whole picture; Original size shows the source at its own pixel size (the upscaled
   side shrunk to match); 100% to 800% show upscaled pixels 1:1 or enlarged, and the slider beside them goes
   anywhere from Fit to 800%, sticking a little at those steps. From 100% up every pixel is drawn as a block,

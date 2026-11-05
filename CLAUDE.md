@@ -73,11 +73,12 @@ Python package stay `fsr4`.
   `App._saved_how`). `Renderer.show()` names the versions the view shows, which preview mode upscales in turns (fewest
   ready ahead first, yield after `SWITCH_SECONDS`), none when no side is upscaled; batch mode does only the current
   one. Versions not shown are kept up to `KEPT_VERSIONS`.
-- There is one list of what a side shows: the user's presets, `presets.FAMILIES` (each with its `best` settings, which
-  choosing it always loads), the filters, Off. `ui_sides.SideBlock` holds a side's settings and reads back as a
-  `Preset`; it lays out only the rows that apply and disappears when there are none. FSR's best uses medium flow
-  in the window; the command line's default stays fast. A preset holds only upscaler, motion and sharpening: size and
-  encoder come from the saved side's settings.
+- A side shows a preset's settings (`ui.UPSCALED`), a filter or Off. `presets.BUILTIN` starts with `BEST`, the side's
+  default. `ui_sides.SideBlock` holds a side's settings and reads back as a `Preset`; it lays out only the rows its
+  upscaler has. There is one per side, but the sidebar shows only the saved side's, so it reads as one panel; the
+  chips above it pick the side when both are upscaled. FSR's best uses medium flow in the window; the command line's
+  default stays fast. A preset holds only upscaler, motion and sharpening: size and encoder come from the saved
+  side's settings.
 - Each side of the view shows a filter of the source or an upscaled layer (keyed by its settings, so two sides
   showing the same version share it). The player decodes only the layers shown; layers being upscaled pace
   playback (buffering), the others (during a whole-file upscale) show what they have. Images get an

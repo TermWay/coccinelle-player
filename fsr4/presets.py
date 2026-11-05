@@ -1,9 +1,9 @@
-"""What the sides of the window can show: the upscalers with their best settings, and the user's presets.
+"""Named upscale settings, to load into a side's settings and to compare side by side.
 
 A preset holds how the video is upscaled: the upscaler, the motion vectors and the sharpening. The output size
 and the encoder belong to the file being made, so every side is upscaled at the same size with the same encoder and
-the comparison stays like for like. `FAMILIES` are the entries of the side lists that upscale, each starting from its
-best settings; the user's own presets are saved as JSON in the user's application data folder (`default_path`).
+the comparison stays like for like. The built-in presets cover the choices worth seeing, the best settings (`BEST`)
+first; the user's own are saved as JSON in the user's application data folder (`default_path`).
 """
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from pathlib import Path
 
 from . import log
 from .hq_scaler import HQ_SCALER
-from .realesrgan import MODELS, REAL_ESRGAN
+from .realesrgan import MODELS, REAL_ESRGAN, REAL_ESRGAN_ANIME, REAL_ESRGAN_X4PLUS
 from .upscalers import EXTERNAL_UPSCALERS
 from .render import UPSCALER_NAMES, RenderSettings
 
@@ -34,6 +34,7 @@ class Preset:
     flow: str = "dis"
     flow_preset: str = "fast"
     sharpness: float | None = None
+    builtin: bool = False
 
     def applied_to(self, settings: RenderSettings) -> RenderSettings:
         """`settings` (size, encoder) upscaled the way this preset says."""
@@ -45,29 +46,20 @@ class Preset:
             settings.upscaler, settings.flow, settings.flow_preset, settings.sharpness)
 
 
-@dataclass(frozen=True)
-class Family:
-    """An upscaler of the side lists: the settings it starts from and what can be changed in them. `upscalers` are
-    its versions or models, best first; with one, there is nothing to choose."""
-    name: str
-    best: Preset
-    upscalers: tuple[str | None, ...]
-    motion: bool = False
-    sharpening: bool = False
-
-
-FAMILIES = (
-    Family("FSR", Preset("FSR", flow_preset="medium"), (None, "3.1.6", "2.3.4"), motion=True, sharpening=True),
-    Family("AMD HQ scaler", Preset("AMD HQ scaler", upscaler=HQ_SCALER, flow="zero"), (HQ_SCALER,), sharpening=True),
-    Family("Real-ESRGAN", Preset("Real-ESRGAN", upscaler=REAL_ESRGAN, flow="zero"), tuple(MODELS)),
+BUILTIN = (
+    Preset("FSR 4", flow_preset="medium", builtin=True),
+    Preset("FSR 4 · fast motion", builtin=True),
+    Preset("FSR 4 · sharpened", flow_preset="medium", sharpness=0.5, builtin=True),
+    Preset("FSR 4 · no motion", flow="zero", builtin=True),
+    Preset("FSR 3.1", upscaler="3.1.6", flow_preset="medium", builtin=True),
+    Preset("FSR 2.3", upscaler="2.3.4", flow_preset="medium", builtin=True),
+    Preset("AMD HQ scaler", upscaler=HQ_SCALER, flow="zero", builtin=True),
+    Preset("Real-ESRGAN", upscaler=REAL_ESRGAN, flow="zero", builtin=True),
+    Preset("Real-ESRGAN x4plus", upscaler=REAL_ESRGAN_X4PLUS, flow="zero", builtin=True),
+    Preset("Real-ESRGAN anime", upscaler=REAL_ESRGAN_ANIME, flow="zero", builtin=True),
 )
-FAMILY_BY_NAME = {family.name: family for family in FAMILIES}
-LIST_NAMES = (*FAMILY_BY_NAME, *SOURCE_LABELS.values(), OFF_LABEL)
-
-
-def family_of(upscaler: str | None) -> Family:
-    """The family that offers `upscaler`."""
-    return next(family for family in FAMILIES if upscaler in family.upscalers)
+BEST = BUILTIN[0]
+LIST_NAMES = (*(preset.name for preset in BUILTIN), *SOURCE_LABELS.values(), OFF_LABEL)
 
 
 def default_path() -> Path:
@@ -102,7 +94,7 @@ def preset_from_json(entry: dict) -> Preset:
 
 
 class PresetStore:
-    """The user's presets, which are written to `path` after every change.
+    """The built-in presets and the user's, which are written to `path` after every change.
 
     A file that cannot be read is reported in `load_error` and renamed (".unreadable") on the next save, so
     nothing the user made is overwritten.
@@ -135,12 +127,17 @@ class PresetStore:
             return self._read()
         return self.user
 
+    @property
+    def all(self) -> list[Preset]:
+        """The user's presets, then the built-in ones."""
+        return self.user + list(BUILTIN)
+
     def find(self, name: str) -> Preset | None:
-        return next((preset for preset in self.user if preset.name == name), None)
+        return next((preset for preset in self.all if preset.name == name), None)
 
     def matching(self, settings: RenderSettings) -> Preset | None:
         """The first preset that upscales the way `settings` do."""
-        return next((preset for preset in self.user if preset.matches(settings)), None)
+        return next((preset for preset in self.all if preset.matches(settings)), None)
 
     def check_name(self, name: str) -> str | None:
         """Why `name` cannot be used for a new preset, or None when it can."""
