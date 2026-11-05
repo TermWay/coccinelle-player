@@ -8,7 +8,7 @@ original pixels on the left, the zoom slider and wheel, a side's dropdown opened
 and two presets upscaled side by side (paused and playing), a frame step, playing backwards at a quarter speed, a
 side turned off, full screen on the window's own monitor (the second one when there is one) with its controls
 showing near the bottom and hiding at rest, then back where the window was, the folded sidebar, the whole-file
-upscale and save, an image compared with a preset,
+upscale and save, AMD's HQ scaler beside FSR 4 and through a whole-file upscale, an image compared with a preset,
 the error banner for a bad file, and the minimum window size. Presets go to a scratch file in `--out`, not the
 user's. Screenshots go through PrintWindow, so the window may be covered; it does pop up on the desktop.
 """
@@ -435,6 +435,32 @@ def main() -> int:
         shot("08_saved")
         # A default name never replaces a file, so each run saves a new one: remove it once checked.
         app.last_saved.unlink()
+        # AMD's HQ scaler: no motion to set, the encoder's ffmpeg upscales; beside FSR 4, then the whole file.
+        app.preset_choice.set("AMD HQ scaler")
+        app._preset_chosen()
+        check(app.motion_choice.instate(["disabled"]) and app.motion_note.cget("text") == "Not used by the HQ scaler.",
+              "the HQ scaler has no motion to set")
+        yield 0.8  # the new settings apply after a moment
+        choose("left", "preset:FSR 4")
+        choose("right", "current")
+        yield lambda: side_ready("left") and side_ready("right")
+        app.view.set_zoom(2, anchor=center())
+        yield 0.8
+        check(app.view.side_labels == {"left": "FSR 4", "right": "AMD HQ scaler"},
+              f"labels name the upscalers: {app.view.side_labels}")
+        shot("08b_hq_scaler_beside_fsr4")
+        app.view.set_zoom("fit")
+        started = time.monotonic()
+        app.start()
+        yield lambda: not app.busy
+        check(app.last_saved is not None and app.last_saved.exists(), "whole video saved with the HQ scaler")
+        saved = media.probe(app.last_saved)
+        check(abs((saved.frame_count or 0) - total) <= 1 and saved.width == app._plan().output_size[0],
+              f"saved {saved.frame_count} of {total} frames at {saved.width} wide "
+              f"in {time.monotonic() - started:.1f} s")
+        app.last_saved.unlink()
+        app.preset_choice.set("FSR 4")
+        app._preset_chosen()
         app.load(args.image)
         yield lambda: app.info is not None
         yield lambda: side_ready("right")
@@ -443,6 +469,10 @@ def main() -> int:
         yield lambda: side_ready("left")
         yield 0.5
         shot("09_image_presets")
+        choose("left", "preset:AMD HQ scaler")
+        yield lambda: side_ready("left")
+        yield 0.5
+        shot("09a_image_hq_scaler")
         app.start()
         yield lambda: not app.busy and app.last_saved is not None
         check(app.last_saved.exists(), "image job finished")

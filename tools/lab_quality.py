@@ -30,7 +30,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from fsr4 import media  # noqa: E402
+from fsr4 import hq_scaler, media  # noqa: E402
 from fsr4.ffx import find_sdk_dir  # noqa: E402
 from fsr4.flow import create_flow  # noqa: E402
 from fsr4.gpu import Gpu  # noqa: E402
@@ -107,9 +107,7 @@ def ffmpeg_scale(source: Path, destination: Path, width: int, height: int, flags
 
 def has_amf_scaler() -> bool:
     """Whether this ffmpeg has `sr_amf`; says so when it does not, the lab then skips those rows."""
-    filters = subprocess.run([media.tool_path("ffmpeg"), "-hide_banner", "-filters"], check=True,
-                             capture_output=True, text=True).stdout
-    if " sr_amf " not in filters:
+    if not hq_scaler.available():
         print("this ffmpeg has no sr_amf filter: the AMF rows are skipped", flush=True)
         return False
     return True

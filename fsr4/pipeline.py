@@ -42,11 +42,15 @@ class Timings:
             return "no frames"
         parts = [f"{stage} {total / self.frames:.1f} ms" for stage, total in self.stages.items()]
         total = sum(value for stage, value in self.stages.items() if "worker thread" not in stage) / self.frames
+        if total == 0:
+            return f"{self.frames} frames"  # upscaled elsewhere (the HQ scaler, in the encoder's ffmpeg)
         return f"{self.frames} frames, {total:.1f} ms per frame on the main thread ({1000 / total:.1f} fps): " + ", ".join(parts)
 
 
 class Pipeline:
     """Upscales RGBA frames of one fixed size through an FSR 4 context."""
+
+    encoder_scale = None  # frames leave here upscaled; see `hq_scaler.HqPipeline`
 
     def __init__(self, gpu: Gpu, render_size: tuple[int, int], output_size: tuple[int, int], sdk_dir: Path,
                  flow, sharpness: float | None = None, frame_time_ms: float = 1000 / 30,
@@ -147,6 +151,11 @@ class Pipeline:
         self.timings.frames += 1
         self.frame_index += 1
         return self.output_pixels
+
+    def picture(self, rgba: np.ndarray) -> np.ndarray:
+        """Upscale a single picture, as a sequence of its own."""
+        self.reset()
+        return self.process(rgba)
 
     def destroy(self) -> None:
         """Free the FSR context and this pipeline's images and buffers; the device stays for the next one. On a

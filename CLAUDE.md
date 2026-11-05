@@ -15,7 +15,7 @@ Python package stay `fsr4`.
 
 ## Stack
 - Python 3.12, stdlib `ctypes` for Vulkan and the FSR API, numpy for pixels, ffmpeg/ffprobe subprocesses for
-  all decoding and encoding (ffmpeg 5.1 or later, 6.0 for `av1_amf`; not bundled: it is GPL). OpenCV
+  all decoding and encoding (ffmpeg 5.1 or later, 6.0 for `av1_amf`, 8.0 for `sr_amf`; not bundled: it is GPL). OpenCV
   (`opencv-python`) for optical flow; the command line must still run with `--flow zero` when it is absent.
   The window needs OpenCV (it resizes and filters every preview frame with it).
 - No C++ toolchain on this machine: the Vulkan structs in `fsr4/vk_types.py` are generated from the vendored
@@ -109,6 +109,11 @@ Python package stay `fsr4`.
   only this process's windows: never capture other windows' content.
   Probes that drive a window find it by the process they started, never by its title (the user may have the
   app open).
+- AMD's HQ scaler (`fsr4/hq_scaler.py`) upscales inside the encoder's ffmpeg: its 4K frames through a pipe cost
+  62 ms, more than FSR 4's whole frame. `HqPipeline` stands in for `Pipeline` in `upscale_stream` and hands frames on
+  unchanged, so the renderer has no upscaled frame of it: no "live" event, thumbnails from the source. `sr_amf` and an
+  AMF encoder deadlock at random on one shared device: `DEVICE_ARGUMENTS` declares a second, unused device, so ffmpeg
+  gives the encoder none and it opens its own. Never reduce that to one device.
 - FSR 4 ignores the SDK's upscale tuning keys (verified bit-identical); `ffx.Upscaler(provider=...)` selects the
   DLL's FSR 3.1.6 or 2.3.4 through `ffxOverrideVersion` for comparisons. The frame count from the probe is an
   estimate until a read reaches the end (`Timeline.exact`); never stop rendering at the estimate.

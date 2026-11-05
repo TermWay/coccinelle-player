@@ -20,6 +20,7 @@ import numpy as np
 
 from . import log
 from .flow import create_flow
+from .hq_scaler import create_pipeline
 from .media import read_image
 from .render import RenderSettings
 
@@ -86,9 +87,8 @@ class ImagePreviewer:
 
     def _main(self) -> None:
         from .gpu import Gpu
-        from .pipeline import Pipeline
         gpu = None
-        pipelines: dict[tuple, Pipeline] = {}
+        pipelines: dict[tuple, object] = {}
         try:
             source = read_image(self.path)
             height, width = source.shape[:2]
@@ -101,12 +101,11 @@ class ImagePreviewer:
                 try:
                     pipeline = pipelines.get(key)
                     if pipeline is None:
-                        pipeline = Pipeline(gpu, (width, height), settings.output_size, self.sdk_dir,
-                                            create_flow("zero", width, height), provider=settings.upscaler)
+                        pipeline = create_pipeline(gpu, (width, height), settings.output_size, self.sdk_dir,
+                                                   create_flow("zero", width, height), None, settings.upscaler)
                         pipelines[key] = pipeline
                     pipeline.sharpness = settings.sharpness
-                    pipeline.reset()
-                    picture = cv2.cvtColor(pipeline.process(source), cv2.COLOR_RGBA2BGRA)
+                    picture = cv2.cvtColor(pipeline.picture(source), cv2.COLOR_RGBA2BGRA)
                 except Exception as error:  # noqa: BLE001 - reported; the other pictures can still be made
                     with self._condition:
                         self._errors[settings] = error

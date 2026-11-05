@@ -20,7 +20,7 @@ sub-pixel camera jitter every frame. A video file has none of those, so this too
 - Windows and a Radeon RX 9000 card (FSR 4's FP8 model) with a current Adrenalin driver. AMD's requirements
   also name the RX 7000 series (FSR 4's INT8 model; the RX 6000 series appears only in AMD's timings): untested
   here.
-- ffmpeg 5.1 or later (6.0 or later for the AV1 GPU encoder), with ffprobe, on PATH or next to `fsr4.exe`. All
+- ffmpeg 5.1 or later (6.0 or later for the AV1 GPU encoder, 8.0 or later for AMD's HQ scaler), with ffprobe, on PATH or next to `fsr4.exe`. All
   decoding and encoding goes through it, and it is not included (see License). One way to install it:
   `winget install Gyan.FFmpeg.Essentials`, then open a new window.
 - For the exe: nothing else. For the source: Python 3.12 and `python -m pip install -r requirements.txt` (numpy,
@@ -65,7 +65,7 @@ sub-pixel camera jitter every frame. A video file has none of those, so this too
   against FSR 3.1, sit side by side, paused or playing (two versions share the GPU, so playing them waits
   more). Off turns a side off: the other one fills the picture, without the divider.
 - **Presets** hold how the video is upscaled: the upscaler, the motion vectors and the sharpening (the size and
-  the encoder stay the file's). Six are built in (FSR 4, sharpened, best motion, no motion, FSR 3.1, FSR 2.3);
+  the encoder stay the file's). Seven are built in (FSR 4, sharpened, best motion, no motion, FSR 3.1, FSR 2.3, AMD HQ scaler);
   + saves the current settings as your own (kept in `%APPDATA%\Coccinelle Player\presets.json`), the bin deletes
   one, and choosing one in the Preset dropdown loads it into the settings.
 - **Zoom:** Fit shows the whole picture; Original size shows the source at its own pixel size (the upscaled
@@ -122,8 +122,9 @@ AMD's license in `bin\` and the third-party notices in `licenses\`. Its two opti
 the folder that receives `fsr4\` and PyInstaller's work folder.
 
 Scale is 1x to 3x (FSR's limit); the modes are native 1x, quality 1.5x, balanced 1.7x, performance 2x,
-ultra 3x. `--sharpness 0..1` enables FSR's RCAS pass. Video encoders: `amf` (HEVC on the GPU, default),
-`av1_amf`, `h264_amf`, `x264`, `x265`. `--upscaler 3.1` or `2.3` uses AMD's older upscalers instead of FSR 4.
+ultra 3x. `--sharpness 0..1` enables FSR's RCAS pass (with `--upscaler hq`, the HQ scaler's own). Video encoders: `amf` (HEVC on the GPU, default),
+`av1_amf`, `h264_amf`, `x264`, `x265`. `--upscaler 3.1` or `2.3` uses AMD's older upscalers instead of FSR 4,
+`--upscaler hq` AMD's HQ scaler (ffmpeg 8.0 or later): faster, no motion vectors, each frame on its own.
 
 **Settings, all of them:** FSR 4 itself takes the output size, the optional RCAS sharpening, and per frame a
 colour image, depth, motion vectors, camera jitter, exposure and a reset flag. Depth, jitter and exposure have
@@ -201,12 +202,15 @@ default `fast` preset, HEVC AMF output:
 | Input                              | Output     | fps  | main thread per frame | flow (worker thread) |
 |------------------------------------|------------|------|-----------------------|----------------------|
 | 1280x720 60 fps screen recording   | 2560x1440  | 85   | 3.9 ms                | 9 ms                 |
-| 1920x1080 60 fps screen recording  | 3840x2160  | 41   | 10.6 ms               | 16 ms                |
-| same, `--flow-preset ultrafast`    | 3840x2160  | 49   | 9.7 ms                | 11 ms                |
-| 1920x1080, `--flow zero`           | 3840x2160  | 160+ | 6 ms                  | 0                    |
+| 1920x1080 60 fps screen recording  | 3840x2160  | 47   | 9.1 ms                | 14 ms                |
+| same, `--flow-preset ultrafast`    | 3840x2160  | 55   | 8.8 ms                | 8 ms                 |
+| same, `--flow zero`                | 3840x2160  | 60   | 8.5 ms                | 0                    |
+| same, `--upscaler hq`              | 3840x2160  | 72   | in the encoder        | 0                    |
+
+The 3840x2160 rows: `python -m fsr4 upscale <clip> --scale 2 --frames 600`, plus the option named.
 
 The FSR dispatch itself is about 2 ms at 1440p and 4.5 ms at 4K including the copies; optical flow on the
-CPU is what limits the rate. So 1080p30 content upscales in real time, 1080p60 at about two thirds speed.
+CPU is what limits the rate. So 1080p30 content upscales in real time, 1080p60 at about three quarters of real time.
 
 In the window (`python tools/ui_smoke.py`, 1080p60 WMV to 4K): the first upscaled frame shows 1.6 s after the
 file is opened, playback starts about 0.3 s after Play once a few seconds are ready, and plays at 60 fps.
@@ -263,9 +267,9 @@ verified by the negated run); faking the camera jitter by resampling the input c
 done; feeding a still image several times does not help either, so images get one pass. On screen
 recordings the FSR output is a touch crisper than Lanczos on text, with no visible artifacts.
 
-AMD's HQ scaler (ffmpeg's `sr_amf`, Video SR 1.1, default sharpness) works on one frame at a time and is measured
-for comparison; the tool does not use it. At 2880x2160 it takes 9 ms a frame against 17 ms for FSR 4 with DIS fast
-flow. It wins on the smooth still, is level with FSR 4 on natural footage, and loses 0.5 dB on the panning clip,
+AMD's HQ scaler (ffmpeg's `sr_amf`, Video SR 1.1, default sharpness; `--upscaler hq`) works on one frame at a time.
+At 2880x2160 it takes 9 ms a frame against 17 ms for FSR 4 with DIS fast flow; a whole job at 4K runs 1.5 times as
+fast as FSR 4 with motion and 1.2 times as fast without. It wins on the smooth still, is level with FSR 4 on natural footage, and loses 0.5 dB on the panning clip,
 where FSR 4 gathers detail across frames. Lanczos leads on natural footage only because PSNR rewards softness: on
 one frame it keeps 43% of the original's detail energy, the HQ scaler 99%, FSR 4 112%. Video SR 1.0 scores a little
 higher on stills (43.81) but leaves stair steps on diagonal edges.
@@ -281,6 +285,7 @@ Animation, which that video model is made for, has not been measured.
 - `fsr4/vk.py`, `fsr4/vk_types.py`, `fsr4/gpu.py`: ctypes Vulkan binding, generated structs, device and copies.
 - `fsr4/ffx.py`: the FSR API (`amd_fidelityfx_loader_vk.dll`) and the upscaling context.
 - `fsr4/media.py`: ffmpeg frame reader and writer. `fsr4/flow.py`: motion vectors. `fsr4/pipeline.py`: a frame.
+  `fsr4/hq_scaler.py`: AMD's HQ scaler, run by the encoder's ffmpeg.
 - `fsr4/job.py`: one pass over a file with progress and cancel, used by `fsr4/cli.py` (command line) and for
   images in the window; `fsr4/pipeline.py`'s `upscale_stream` is the frame loop both it and the renderer use.
 - `fsr4/render.py` (versions upscaled into pieces around the playhead, saving), `fsr4/timeline.py` (pieces

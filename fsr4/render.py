@@ -15,7 +15,8 @@ no longer shown are kept (up to KEPT_VERSIONS, the most recently used) so going 
 
 Events reach the window through `on_event(kind, *values)`, called from the renderer's threads:
 "piece" (a Piece of any version became playable), "live" (frame, source RGBA, upscaled RGBA of the current
-version; twice a second while `want_live`), "status" (frame being rendered or None when idle, frames per
+version; twice a second while `want_live`, except with the HQ scaler, whose frames are upscaled in the encoder's
+ffmpeg and never reach this process), "status" (frame being rendered or None when idle, frames per
 second), "total" (the real frame count, found by a read that reached the end or given by `set_total`),
 "complete" (every frame of the current version is ready), "error" (an exception; rendering stops until the
 settings or what is shown change, or a batch starts; after a lost graphics device, the next run starts a new one).
@@ -36,6 +37,7 @@ import numpy as np
 
 from . import log, usage
 from .flow import create_flow
+from .hq_scaler import HQ_SCALER, EncoderScale, create_pipeline
 from .media import FrameReader, FrameWriter, IndexClosed, KeyframeIndex, MediaInfo, join_pieces, last_frame_before
 from .timeline import Piece, Timeline, keep_going, next_start, piece_lengths
 
@@ -61,14 +63,15 @@ MIN_FREE_BYTES = 2 * 1024 ** 3
 EventCallback = Callable[..., None]
 
 
-UPSCALER_NAMES = {None: "FSR 4", "3.1.6": "FSR 3.1", "2.3.4": "FSR 2.3"}
+UPSCALER_NAMES = {None: "FSR 4", "3.1.6": "FSR 3.1", "2.3.4": "FSR 2.3", HQ_SCALER: "AMD HQ scaler"}
 MOTION_NAMES = {"ultrafast": "rough motion", "medium": "best motion"}
 
 
 @dataclass(frozen=True)
 class RenderSettings:
     """Everything the upscaled pieces depend on; each distinct value has its own version. `upscaler` names
-    one of the FSR DLL's upscalers ("3.1.6", "2.3.4"); None is FSR 4."""
+    one of the FSR DLL's upscalers ("3.1.6", "2.3.4") or AMD's HQ scaler (`HQ_SCALER`, always with `flow` "zero");
+    None is FSR 4."""
     output_size: tuple[int, int]
     flow: str = "dis"
     flow_preset: str = "fast"
@@ -79,10 +82,11 @@ class RenderSettings:
     def describe(self) -> str:
         """A short name: the upscaler, plus the motion and the sharpening when they are not the defaults."""
         parts = [UPSCALER_NAMES.get(self.upscaler, f"FSR {self.upscaler}")]
-        if self.flow == "zero":
-            parts.append("no motion")
-        elif self.flow_preset in MOTION_NAMES:
-            parts.append(MOTION_NAMES[self.flow_preset])
+        if self.upscaler != HQ_SCALER:  # it never takes motion: nothing to say
+            if self.flow == "zero":
+                parts.append("no motion")
+            elif self.flow_preset in MOTION_NAMES:
+                parts.append(MOTION_NAMES[self.flow_preset])
         if self.sharpness is not None:
             parts.append(f"sharpening {self.sharpness:.2f}")
         return " · ".join(parts)
@@ -405,7 +409,6 @@ class Renderer:
     def _pipeline_for(self, settings: RenderSettings, needed: set[tuple]):
         """A pipeline set up for `settings`. One FSR context per size and upscaler is kept while an active
         version needs it (sharpening and motion are changed in place); the others are freed."""
-        from .pipeline import Pipeline
         for key in [key for key in self._pipelines if key not in needed]:
             self._pipelines.pop(key).destroy()
             del self._pipeline_flows[key]
@@ -414,9 +417,9 @@ class Renderer:
         flow_settings = (settings.flow, settings.flow_preset)
         pipeline = self._pipelines.get(key)
         if pipeline is None:
-            pipeline = Pipeline(self._gpu, size, settings.output_size, self.sdk_dir,
-                                create_flow(settings.flow, *size, settings.flow_preset), sharpness=settings.sharpness,
-                                frame_time_ms=self.info.frame_time_ms, provider=settings.upscaler)
+            pipeline = create_pipeline(self._gpu, size, settings.output_size, self.sdk_dir,
+                                       create_flow(settings.flow, *size, settings.flow_preset), settings.sharpness,
+                                       settings.upscaler, frame_time_ms=self.info.frame_time_ms)
             self._pipelines[key] = pipeline
         elif self._pipeline_flows[key] != flow_settings:
             pipeline.flow = create_flow(settings.flow, *size, settings.flow_preset)
@@ -469,6 +472,7 @@ class Renderer:
         exhausted = False
         last_live = last_status = run_started = time.perf_counter()
         written = 0
+        scale = pipeline.encoder_scale
         try:
             with ThreadPoolExecutor(max_workers=1, initializer=usage.lower_current_thread) as executor:
                 stream = upscale_stream(iter(reader), pipeline, executor)
@@ -481,7 +485,7 @@ class Renderer:
                         piece_end = position + next(lengths)
                         if not open_end:
                             piece_end = min(piece_end, gap_end)
-                        writer = self._open_piece(piece_start, version)
+                        writer = self._open_piece(piece_start, version, scale)
                     writer.write(upscaled)
                     position += 1
                     written += 1
@@ -489,7 +493,7 @@ class Renderer:
                     if current:
                         self._keep_thumbnail(position - 1, upscaled, version)
                     now = time.perf_counter()
-                    if current and self.want_live and now - last_live >= LIVE_INTERVAL:
+                    if current and self.want_live and scale is None and now - last_live >= LIVE_INTERVAL:
                         self.on_event("live", position - 1, source_frame.copy(), upscaled.copy())
                         last_live = now
                     if now - last_status >= STATUS_INTERVAL:
@@ -541,7 +545,7 @@ class Renderer:
         if self.timeline.complete():
             self.on_event("complete")
 
-    def _open_piece(self, start: int, version: Version) -> FrameWriter:
+    def _open_piece(self, start: int, version: Version, scale: EncoderScale | None) -> FrameWriter:
         free = shutil.disk_usage(self.directory).free
         if free < MIN_FREE_BYTES:
             raise RuntimeError(f"only {free / 1024 ** 3:.1f} GB free for the upscaled pieces in {self.directory.parent}; "
@@ -549,7 +553,7 @@ class Renderer:
         path = self.directory / f"piece_{version.generation}_{start:08d}.mp4"
         width, height = version.settings.output_size
         return FrameWriter(path, width, height, self.info.frame_rate, version.settings.encoder,
-                           gop=self._frames(GOP_SECONDS), background=True)
+                           gop=self._frames(GOP_SECONDS), background=True, scale=scale)
 
     def _alive(self, version: Version) -> bool:
         """Whether `version` is still kept (not forgotten since). Call with the lock held."""
@@ -601,8 +605,9 @@ class Renderer:
         if frame % self.thumbnail_stride:
             return
         import cv2
-        height, width = upscaled.shape[:2]
-        size = (max(1, int(round(width * THUMBNAIL_HEIGHT / height))), THUMBNAIL_HEIGHT)
+        height = upscaled.shape[0]  # the source's with the HQ scaler, so the shape comes from the output size
+        output_width, output_height = version.settings.output_size
+        size = (max(1, int(round(output_width * THUMBNAIL_HEIGHT / output_height))), THUMBNAIL_HEIGHT)
         step = max(1, height // (2 * THUMBNAIL_HEIGHT))  # decimate first: an area resize of 4K costs 30 ms
         thumbnail = cv2.resize(np.ascontiguousarray(upscaled[::step, ::step, :3]), size, interpolation=cv2.INTER_AREA)
         with self._thumbnail_lock:

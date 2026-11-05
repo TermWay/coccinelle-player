@@ -24,11 +24,14 @@ from collections import deque
 from dataclasses import dataclass, field
 from fractions import Fraction
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 import numpy as np
 
 from . import log, usage
+
+if TYPE_CHECKING:
+    from .hq_scaler import EncoderScale
 
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp", ".exr", ".gif")
 VIDEO_SUFFIXES = (".mp4", ".m4v", ".mov", ".mkv", ".webm", ".avi", ".wmv", ".asf", ".flv", ".f4v", ".mpg", ".mpeg",
@@ -645,15 +648,16 @@ def describe_audio(audio: list[AudioStream], output: Path) -> list[str]:
     return lines
 
 
-def color_arguments(height: int) -> list[str]:
-    """RGB to YUV with the matrix players assume for this size, and the matching tags."""
+def color_arguments(height: int, first_filter: str | None = None) -> list[str]:
+    """RGB to YUV with the matrix players assume for this size, and the matching tags; `first_filter` runs before."""
     if height >= HD_HEIGHT:
         matrix, tag = "bt709", "bt709"
     else:
         matrix, tag = "bt601", "smpte170m"
     # ffmpeg takes the encoder's colour tags from the frames, so they are set on the frames (setparams).
-    return ["-vf", f"scale=out_color_matrix={matrix}:out_range=tv,format=yuv420p,"
-                   f"setparams=colorspace={tag}:color_primaries={tag}:color_trc={tag}:range=tv",
+    conversion = (f"scale=out_color_matrix={matrix}:out_range=tv,format=yuv420p,"
+                  f"setparams=colorspace={tag}:color_primaries={tag}:color_trc={tag}:range=tv")
+    return ["-vf", f"{first_filter},{conversion}" if first_filter else conversion,
             "-colorspace", tag, "-color_primaries", tag, "-color_trc", tag, "-color_range", "tv"]
 
 
@@ -672,22 +676,30 @@ class FrameWriter:
     The file is written as `partial_path(path)` and renamed to `path` by `close` once the encoder succeeded;
     `abort` and a failed `close` delete it. `gop` sets the keyframe interval (pieces use a short one so playback
     can seek inside them quickly); `background` runs the encoder at the Speed setting's priority and thread count.
+    With `scale`, frames are written at its source size and ffmpeg upscales them to `width` by `height`.
     """
 
     def __init__(self, path: Path, width: int, height: int, frame_rate: Fraction, encoder: str,
                  audio_source: Path | None = None, audio: list[AudioStream] | None = None,
-                 audio_seconds: float | None = None, gop: int | None = None, background: bool = False):
+                 audio_seconds: float | None = None, gop: int | None = None, background: bool = False,
+                 scale: EncoderScale | None = None):
         if encoder not in ENCODERS:
             raise ValueError(f"unknown encoder {encoder}; choose from {', '.join(ENCODERS)}")
         self.path = path
         self.partial = partial_path(path)
         self.width = width
         self.height = height
-        self.frame_bytes = width * height * 4
+        source_width, source_height = scale.source_size if scale else (width, height)
+        self.frame_bytes = source_width * source_height * 4
         self.frames = 0
         rate = rate_text(frame_rate) if frame_rate else "30"
-        command = [tool_path("ffmpeg"), "-v", "error", "-nostdin", "-y",
-                   "-f", "rawvideo", "-pix_fmt", "rgba", "-s", f"{width}x{height}", "-r", rate, "-i", "-"]
+        command = [tool_path("ffmpeg"), "-v", "error", "-nostdin", "-y"]
+        video_filter = None
+        if scale is not None:
+            from .hq_scaler import DEVICE_ARGUMENTS
+            command += DEVICE_ARGUMENTS
+            video_filter = scale.video_filter(width, height)
+        command += ["-f", "rawvideo", "-pix_fmt", "rgba", "-s", f"{source_width}x{source_height}", "-r", rate, "-i", "-"]
         tracks = audio or []
         if audio_source is not None and tracks:
             if audio_seconds is not None:
@@ -703,7 +715,9 @@ class FrameWriter:
         elif threads is not None:
             command += ["-threads", str(threads)]
         if encoder != "png":
-            command += color_arguments(height)
+            command += color_arguments(height, video_filter)
+        elif video_filter is not None:
+            command += ["-vf", video_filter]
         command.append(file_argument(self.partial))
         self.process = _popen(command, background=background, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
         self._stderr = _StderrTail(self.process.stderr)

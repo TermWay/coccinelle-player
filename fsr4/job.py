@@ -15,9 +15,10 @@ import numpy as np
 from . import log
 from .ffx import QUALITY_MODE_SCALES, find_sdk_dir
 from .flow import create_flow
+from .hq_scaler import HQ_SCALER, MIN_SIZE as HQ_MIN_SIZE, create_pipeline
 from .media import (ENCODER_LIMITS, ENCODER_NAMES, FrameReader, FrameWriter, MediaInfo, describe_audio, is_image,
                     partial_path, probe, read_image, write_image)
-from .pipeline import Pipeline, upscale_stream
+from .pipeline import upscale_stream
 
 VIDEO_SUFFIX = ".mp4"
 MIN_SCALE = 1.0
@@ -139,9 +140,20 @@ def check_output(output: Path, source: Path) -> None:
                          f"file; choose another output name")
 
 
+def check_hq_scaler(options: JobOptions, info: MediaInfo) -> None:
+    """Raise ValueError for what AMD's HQ scaler cannot do: small inputs, and the options that belong to FSR."""
+    if min(info.width, info.height) < HQ_MIN_SIZE:
+        raise ValueError(f"AMD's HQ scaler takes at least {HQ_MIN_SIZE} × {HQ_MIN_SIZE}; this is {info.width} × "
+                         f"{info.height}")
+    if options.debug_view or options.debug_checking or options.validate or options.gpu is not None:
+        raise ValueError("--debug-view, --debug-checking, --validate and --gpu do not apply to AMD's HQ scaler")
+
+
 def plan_from_info(options: JobOptions, info: MediaInfo) -> JobPlan:
     """Resolve the output path and sizes for an already probed input; raises ValueError for bad scales and for
     an output that would overwrite the input."""
+    if options.upscaler == HQ_SCALER:
+        check_hq_scaler(options, info)
     output = options.output or default_output(options.input)
     check_output(output, options.input)
     width, height = info.width, info.height
@@ -175,11 +187,13 @@ def run_job(options: JobOptions, progress: ProgressCallback | None = None,
 
     `progress(frames_done, total, fps)` is called about ten times a second. `preview(source, upscaled,
     frames_done)` receives copies of the current input and output frames about twice a second and after the
-    last frame. Set `cancel` to stop after the current frame (the output written so far is kept).
+    last frame (with the HQ scaler, a video's frames as they go to the encoder, which upscales them). Set `cancel`
+    to stop after the current frame (the output written so far is kept).
     """
     from .gpu import Gpu
     job = plan(options)
-    sdk_dir = find_sdk_dir(options.sdk)
+    uses_fsr = options.upscaler != HQ_SCALER
+    sdk_dir = find_sdk_dir(options.sdk) if uses_fsr else None
     width, height = job.render_size
     out_width, out_height = job.output_size
     if options.verbose:
@@ -189,20 +203,20 @@ def run_job(options: JobOptions, progress: ProgressCallback | None = None,
             for line in describe_audio(job.info.audio, job.output):
                 log.emit(f"[fsr4] {line}")
 
-    gpu = Gpu(gpu_index=options.gpu, validate=options.validate, verbose=options.verbose)
+    gpu = Gpu(gpu_index=options.gpu, validate=options.validate, verbose=options.verbose) if uses_fsr else None
     pipeline = None
     try:
-        flow = create_flow(options.flow if not job.image_mode else "zero", width, height,
+        flow = create_flow(options.flow if uses_fsr and not job.image_mode else "zero", width, height,
                            options.flow_preset, options.flow_scale)
-        pipeline = Pipeline(gpu, job.render_size, job.output_size, sdk_dir, flow, sharpness=options.sharpness,
-                            frame_time_ms=job.info.frame_time_ms, debug_view=options.debug_view,
-                            debug_checking=options.debug_checking, verbose=options.verbose,
-                            provider=options.upscaler)
+        pipeline = create_pipeline(gpu, job.render_size, job.output_size, sdk_dir, flow, options.sharpness,
+                                   options.upscaler, frame_time_ms=job.info.frame_time_ms,
+                                   debug_view=options.debug_view, debug_checking=options.debug_checking,
+                                   verbose=options.verbose)
         started = time.perf_counter()
         cancelled = False
         if job.image_mode:
             source = read_image(options.input)
-            upscaled = pipeline.process(source)
+            upscaled = pipeline.picture(source)
             transparent = bool((source[..., 3] < 255).any())
             write_image(job.output, upscaled, alpha_source=options.input if transparent else None)
             frames_done = 1
@@ -225,16 +239,18 @@ def run_job(options: JobOptions, progress: ProgressCallback | None = None,
             if pipeline is not None:
                 pipeline.destroy()
         finally:
-            gpu.destroy()
+            if gpu is not None:
+                gpu.destroy()
 
 
-def _run_video(options: JobOptions, job: JobPlan, pipeline: Pipeline, progress: ProgressCallback | None,
+def _run_video(options: JobOptions, job: JobPlan, pipeline, progress: ProgressCallback | None,
                preview: PreviewCallback | None, cancel: threading.Event | None, started: float) -> tuple[int, bool]:
     info = job.info
     reader = FrameReader(options.input, info, max_frames=options.frames)
     audio_seconds = options.frames / float(info.frame_rate) if options.frames and info.frame_rate else None
     writer = FrameWriter(job.output, job.output_size[0], job.output_size[1], info.frame_rate, options.codec,
-                         audio_source=options.input, audio=info.audio, audio_seconds=audio_seconds)
+                         audio_source=options.input, audio=info.audio, audio_seconds=audio_seconds,
+                         scale=pipeline.encoder_scale)
     total = info.frame_count
     if options.frames is not None:
         total = min(options.frames, total) if total else options.frames

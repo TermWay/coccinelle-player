@@ -36,7 +36,7 @@ CLAUDE.md the design notes for working on the code.
   AMD's GitHub repository and checked against pinned SHA-256 hashes; never committed. AMD's license file always
   travels with them. They are looked for in the folder given (which must then hold them), else next to the
   packaged executable, else in the repository's `bin\`.
-- ffmpeg and ffprobe, 5.1 or later (6.0 for the AV1 GPU encoder), do all decoding and encoding as separate
+- ffmpeg and ffprobe, 5.1 or later (6.0 for the AV1 GPU encoder, 8.0 for AMD's HQ scaler), do all decoding and encoding as separate
   processes, found next to the executable or on PATH. They are never bundled (GPL). A missing one is named with
   how to install it (`winget install Gyan.FFmpeg.Essentials`); when ffmpeg rejects an option as unknown, the error
   says this ffmpeg is too old and which version is needed.
@@ -61,7 +61,12 @@ has none of those; the tool substitutes, as the quality lab (§14) settled:
 - FSR 4 ignores the SDK's five upscale tuning keys (its output stayed identical to the bit): they are not
   offered. The upscaler is FSR 4 by default; FSR 3.1.6 and 2.3.4, from the same DLL through its version override,
   are offered to compare against. A version the DLL lacks is an error naming those it has.
-- Sharpening: FSR's RCAS pass, strength 0 to 1, off by default.
+- AMD's HQ scaler (ffmpeg's `sr_amf`, Video SR 1.1) is offered beside them: faster, with no motion vectors and no
+  history, each frame on its own. It runs in the encoder's ffmpeg, so a video's frames reach it at their own size
+  and only the encoded file holds them upscaled. It needs an ffmpeg that has the filter (without one, an error
+  says so), takes at least 32 × 32, and refuses `--debug-view`, `--debug-checking`, `--validate` and `--gpu`.
+- Sharpening: strength 0 to 1, off by default: FSR's RCAS pass, or the HQ scaler's own, where off and 0 keep the
+  source's detail and 1 is the filter's strongest.
 - Each frame is uploaded, dispatched and read back through cached host memory (93 ms to 1.4 ms, *measured*). The
   resource states told to FSR match the layouts the images are really in; `selftest --validate` runs the Vulkan
   path under the validation layer without errors.
@@ -151,9 +156,9 @@ has none of those; the tool substitutes, as the quality lab (§14) settled:
 | `--flow dis\|zero` | `dis` | optical flow or no motion vectors (images always use none) |
 | `--flow-preset ultrafast\|fast\|medium` | `fast` | flow quality |
 | `--flow-scale N` | 1 | compute the flow at 1/N of the size |
-| `--sharpness S` | off | RCAS strength, 0 to 1 |
+| `--sharpness S` | off | sharpening strength, 0 to 1 (§4) |
 | `--codec` | `amf` | §6 |
-| `--upscaler 4\|3.1\|2.3` | 4 | §4 |
+| `--upscaler 4\|3.1\|2.3\|hq` | 4 | §4; `hq` ignores the `--flow` options |
 | `--frames N` | all | stop after N frames (audio cut to match) |
 | `--gpu I`, `--sdk FOLDER` | automatic, `bin\` | device index; folder holding both FSR DLLs |
 | `--validate`, `--debug-checking`, `--debug-view` | off | validation layer, FSR's checks (logged), FSR's debug overlay |
@@ -218,13 +223,14 @@ has none of those; the tool substitutes, as the quality lab (§14) settled:
 3. **Preset**: a dropdown showing the preset the settings match, or "Custom settings"; + saves them as a preset;
    a bin, shown for the user's own presets, deletes the one shown.
 4. **Upscaler**: "FSR 4 · machine learning" (default), "FSR 3.1 · older, hand-tuned", "FSR 2.3 · older,
-   hand-tuned", with a note under the dropdown for each; the tooltip quotes the lab's PSNR (FSR 4 26.8 dB, FSR
-   2.3 26.5, Lanczos 26.4, FSR 3.1 25.9).
+   hand-tuned", "AMD HQ scaler · faster, no motion", with a note under the dropdown for each; the tooltip quotes
+   the lab's PSNR (FSR 4 26.8 dB, FSR 2.3 26.5, Lanczos 26.4, HQ scaler 26.3, FSR 3.1 25.9).
 5. **Motion vectors**: "Optical flow · fast" (default), "Optical flow · ultrafast", "Optical flow · medium,
    best", "Off", with a note for each; the tooltip says a video carries no motion data, so it is measured, and
-   better motion gives more detail. Disabled for images ("Not used for images.").
-6. **Sharpening**: a switch (off), a slider from 0 to 1 (0.40) and its value; the tooltip names RCAS: 0.2 to 0.5
-   gives crisper edges, high values leave halos.
+   better motion gives more detail. Disabled for images ("Not used for images.") and with the HQ scaler ("Not
+   used by the HQ scaler.").
+6. **Sharpening**: a switch (off), a slider from 0 to 1 (0.40) and its value; the tooltip says it is the upscaler's
+   own (RCAS, or the HQ scaler's): 0.2 to 0.5 gives crisper edges, high values leave halos.
 7. **Output**: the output path (§6; tooltip: .mp4 plays everywhere, .mkv keeps every audio track), "…" for a
    Save-as dialog (MP4, Matroska, QuickTime; PNG, JPEG, WebP for images), the encoder ("HEVC · GPU (AMF)"
    default, "AV1 · GPU (AMF)", "H.264 · GPU (AMF)", "H.264 · CPU (x264)", "HEVC · CPU (x265)") with a note on
@@ -315,7 +321,8 @@ is its own version (§10).
   Replace it?" for an existing output the user typed.
 - Video: only the current settings' version is upscaled, from the playhead to the end, then from the start;
   pieces already made with these settings are reused, so a finished version saves at once. While paused, the
-  picture follows the upscaler's newest frame every 0.5 s until Play, a seek or a step. The status reads
+  picture follows the upscaler's newest frame every 0.5 s until Play, a seek or a step (not with the HQ scaler,
+  whose frames exist upscaled only in the encoder: the picture stays where it is). The status reads
   "Upscaling · 42% · 38 fps · 3:12 left", the bar shows the share done, the title the percentage. Then "Saving
   <name>…": the pieces are joined without re-encoding, with the source's audio, and "Saved <name> · 3:20 of
   video at 3840 × 2160". Open plays the file in the user's player and Show in folder selects it in Explorer; both
@@ -331,8 +338,8 @@ is its own version (§10).
 
 ### Presets
 - Built in: "FSR 4" (fast flow, no sharpening), "FSR 4 · sharpened" (0.5), "FSR 4 · best motion" (medium flow),
-  "FSR 4 · no motion", "FSR 3.1" and "FSR 2.3" (fast flow, no sharpening). A preset holds the upscaler, the
-  motion vectors and the sharpening only; the size and the encoder stay the file's.
+  "FSR 4 · no motion", "FSR 3.1" and "FSR 2.3" (fast flow, no sharpening), "AMD HQ scaler" (no sharpening). A preset
+  holds the upscaler, the motion vectors and the sharpening only; the size and the encoder stay the file's.
 - Choosing one in the Preset dropdown loads it into the settings. + opens a row with a name (the settings'
   description, or "My preset"), Save and Cancel: Enter saves, Escape cancels. Refused: an empty name, more than
   40 characters, a built-in name (in any case). A user preset's name used again (in any case) replaces it. The
@@ -469,7 +476,7 @@ is its own version (§10).
   FSR 4 with DIS fast flow 26.82 dB (medium 27.10), Lanczos 26.42, HQ scaler 26.34, Real-ESRGAN 24.35, FSR 4
   without motion vectors 25.59, with the flow negated 25.63.
 - Speed, end to end (decode, flow, upscale, encode), *measured*: 720p60 to 1440p at 85 fps, 1080p60 to 4K at
-  41 fps, more than 160 fps without motion vectors. In the window a 1080p60 file plays at 60 fps once a few
+  47 fps, 60 fps without motion vectors, 72 fps with the HQ scaler. In the window a 1080p60 file plays at 60 fps once a few
   seconds are ready, about 0.3 s after Play.
 - `tools/ui_smoke.py` drives the real window through every state (a real drop, the first upscaled frame, a
   tooltip, a dropdown, the file dialog, playback, the seek bar's hover, buffering after a seek, zoom with

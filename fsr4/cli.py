@@ -8,11 +8,12 @@ from pathlib import Path
 from . import __version__, log
 from .ffx import QUALITY_MODE_SCALES, find_sdk_dir
 from .flow import FLOW_METHODS
+from .hq_scaler import FIRST_FFMPEG, HQ_SCALER
 from .job import JobOptions, run_job
 from .media import ENCODERS
 
 
-UPSCALERS = {"4": None, "3.1": "3.1.6", "2.3": "2.3.4"}
+UPSCALERS = {"4": None, "3.1": "3.1.6", "2.3": "2.3.4", "hq": HQ_SCALER}
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="fsr4", description="Upscale an image or a video with AMD FSR 4.")
@@ -37,7 +38,8 @@ def build_parser() -> argparse.ArgumentParser:
     upscale.add_argument("--codec", choices=sorted(ENCODERS), default="amf",
                          help="video encoder: amf (HEVC on the GPU), av1_amf, h264_amf, x264, x265 (default: amf)")
     upscale.add_argument("--upscaler", choices=sorted(UPSCALERS), default="4",
-                         help="which of the DLL's upscalers: 4 (FSR 4, default), 3.1 or 2.3 (to compare)")
+                         help="4 (FSR 4, default), 3.1 or 2.3 (from the same DLL, to compare), or hq (AMD's HQ "
+                              f"scaler, through ffmpeg {FIRST_FFMPEG} or later; it takes no motion vectors)")
     upscale.add_argument("--frames", type=int, help="stop after this many frames (for tests)")
     upscale.add_argument("--debug-view", action="store_true", help="draw FSR's debug overlay on the output")
     upscale.add_argument("--debug-checking", action="store_true", help="enable FSR's input checker messages")
