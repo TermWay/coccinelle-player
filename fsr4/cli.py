@@ -5,7 +5,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import __version__, log
+from . import __version__, log, usage
 from .ffx import QUALITY_MODE_SCALES, find_sdk_dir
 from .flow import FLOW_METHODS
 from .hq_scaler import FIRST_FFMPEG, HQ_SCALER
@@ -102,26 +102,29 @@ def run_upscale(args) -> int:
               end="", file=sys.stderr, flush=True)
         line_open = True
 
-    def emit(line: str) -> None:
+    def close_line() -> None:
+        """End the progress line, so that what follows starts a line of its own."""
         nonlocal line_open
         if line_open:
             print("", file=sys.stderr, flush=True)
             line_open = False
+
+    def emit(line: str) -> None:
+        close_line()
         print(line, flush=True)
 
+    # The whole processor at normal priority, the optical flow capped at the threads it gains from.
+    usage.apply(usage.CPU_THREADS, "normal")
     log.set_sink(emit)
     try:
         result = run_job(options, progress=progress)
-    except ValueError as error:
+    except (ValueError, RuntimeError, OSError) as error:
+        close_line()
         print(f"fsr4: {error}", file=sys.stderr)
-        return 2
-    except (RuntimeError, OSError) as error:
-        print(f"fsr4: {error}", file=sys.stderr)
-        return 1
+        return 2 if isinstance(error, ValueError) else 1
     finally:
         log.set_sink(None)
-        if line_open:
-            print("", file=sys.stderr)
+        close_line()
     return 0 if result.frames else 1
 
 

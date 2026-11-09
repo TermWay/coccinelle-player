@@ -1550,7 +1550,7 @@ class App:
     def cancel(self) -> None:
         if self.image_running and not self.image_cancel.is_set():
             self.image_cancel.set()
-            self.status_var.set("Cancelling after the current frame…")
+            self.status_var.set("Cancelling…")
             return
         if self.batch and not self.saving:
             done = self.renderer.timeline.ready_frames() / max(1, self._total())
@@ -1626,7 +1626,7 @@ class App:
         self.close()
 
     def close(self) -> None:
-        """Close the window; a save in progress (or an image being upscaled) finishes first."""
+        """Close the window once a save in progress finishes; an image being upscaled is cancelled first."""
         if self.closing:
             return  # already waiting for it
         self.closing = True
@@ -1938,9 +1938,13 @@ class App:
 
     def _on_image_done(self, result: JobResult) -> None:
         self._end_image()
-        self.last_saved = result.output
-        width, height = self.view.output_size
-        self.status_var.set(f"Saved {result.output.name} · {width} × {height} in {result.seconds:.1f} s")
+        if result.cancelled:
+            self.progress.configure(value=0)
+            self.status_var.set("Cancelled · nothing was saved")
+        else:
+            self.last_saved = result.output
+            width, height = self.view.output_size
+            self.status_var.set(f"Saved {result.output.name} · {width} × {height} in {result.seconds:.1f} s")
         self._refresh()
 
     def _on_image_failed(self, error: Exception) -> None:

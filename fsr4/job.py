@@ -163,8 +163,10 @@ def check_realesrgan(options: JobOptions) -> None:
 
 
 def plan_from_info(options: JobOptions, info: MediaInfo) -> JobPlan:
-    """Resolve the output path and sizes for an already probed input; raises ValueError for bad scales and for
-    an output that would overwrite the input."""
+    """Resolve the output path and sizes for an already probed input; raises ValueError for bad scales, a
+    sharpening outside 0 to 1 and an output that would overwrite the input."""
+    if options.sharpness is not None and not 0.0 <= options.sharpness <= 1.0:
+        raise ValueError(f"sharpening {options.sharpness:g} is not between 0 and 1")
     if options.upscaler == HQ_SCALER:
         check_hq_scaler(options, info)
     elif options.upscaler in MODELS:
@@ -203,7 +205,8 @@ def run_job(options: JobOptions, progress: ProgressCallback | None = None,
     `progress(frames_done, total, fps)` is called about ten times a second. `preview(source, upscaled,
     frames_done)` receives copies of the current input and output frames about twice a second and after the
     last frame (with the HQ scaler, a video's frames as they go to the encoder, which upscales them). Set `cancel`
-    to stop after the current frame (the output written so far is kept).
+    to stop after the current frame: a video keeps what was written so far, an image is
+    not written (`JobResult.frames` is 0).
     """
     from .gpu import Gpu
     job = plan(options)
@@ -237,7 +240,7 @@ def run_job(options: JobOptions, progress: ProgressCallback | None = None,
                 upscaled = pipeline.picture(source)
             except Stopped:
                 upscaled = None
-            if upscaled is None:
+            if upscaled is None or (cancel is not None and cancel.is_set()):
                 cancelled, frames_done = True, 0
             else:
                 transparent = bool((source[..., 3] < 255).any())
@@ -251,9 +254,12 @@ def run_job(options: JobOptions, progress: ProgressCallback | None = None,
             frames_done, cancelled = _run_video(options, job, pipeline, progress, preview, cancel, started)
         elapsed = time.perf_counter() - started
         if options.verbose:
-            verb = "cancelled after" if cancelled else "wrote"
-            log.emit(f"[fsr4] {verb} {job.output} ({frames_done} frames in {elapsed:.1f} s, "
-                     f"{frames_done / max(elapsed, 1e-6):.1f} fps)")
+            if cancelled and not frames_done:
+                log.emit(f"[fsr4] cancelled before writing {job.output}")
+            else:
+                verb = "cancelled after" if cancelled else "wrote"
+                log.emit(f"[fsr4] {verb} {job.output} ({frames_done} frames in {elapsed:.1f} s, "
+                         f"{frames_done / max(elapsed, 1e-6):.1f} fps)")
             log.emit(f"[fsr4] {pipeline.timings.summary()}")
         return JobResult(output=job.output, frames=frames_done, seconds=elapsed, cancelled=cancelled,
                          timings=pipeline.timings.summary())

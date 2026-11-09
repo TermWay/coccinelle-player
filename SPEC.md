@@ -55,8 +55,8 @@ has none of those; the tool substitutes, as the quality lab (§14) settled:
   pixels, which is FSR's convention (the lab run with the flow negated must score lower); zero on the first frame
   of a run. Presets ultrafast, fast (default) and medium, optionally computed at 1/N of the size, or none.
   Uploaded as 32-bit floats: converting to half floats on the processor cost more than the flow. The next
-  frame's flow runs on a worker thread while the current frame is on the GPU. In the window it gets at most 8
-  threads (47 fps against 39 with 32 threads, *measured*).
+  frame's flow runs on a worker thread while the current frame is on the GPU. It gets at most 8 threads, in the
+  window and on the command line (47 fps against 39 with 32 threads, *measured*).
 - Depth: a constant plane. Jitter: none. Exposure: FSR's auto exposure. Camera values: fixed. Reset: on the first
   frame of each run; there is no scene-cut detection.
 - Not done, because the lab measured them worse: faking jitter by resampling the input (2 to 8 dB lower PSNR),
@@ -187,8 +187,8 @@ has none of those; the tool substitutes, as the quality lab (§14) settled:
   stdout, tagged by part ([fsr4], [gpu], [fsr], [pipeline], [media]): the input and output sizes, each audio
   track's fate, the GPU, the FSR version and its memory, the timings. Errors: "fsr4: <reason>" on stderr, one
   line.
-- Exit codes: 0 done; 2 for a wrong request (input missing, scale out of range, size the encoder refuses, output
-  is the input, upscaler not in the DLL); 1 for a failure (ffmpeg, Vulkan, FSR, missing DLLs or OpenCV) or no
+- Exit codes: 0 done; 2 for a wrong request (input missing, scale out of range, sharpening outside 0 to 1, size
+  the encoder refuses, output is the input, upscaler not in the DLL); 1 for a failure (ffmpeg, Vulkan, FSR, missing DLLs or OpenCV) or no
   frame written. Ctrl+C stops the decoder and deletes the partial output.
 
 ## 9. The window
@@ -359,6 +359,7 @@ is its own version (§10).
 - Stop or Esc ends a whole-file upscale: "Stopped at 42% upscaled · Upscale carries on from there"; what is done
   stays while the file is open. Saving itself cannot be stopped.
 - Image: one pass with the saved side's settings, "Upscaling the image…" then "Saved <name> · 3840 × 2160 in 1.2 s".
+  Stop or Esc cancels it: "Cancelled · nothing was saved", and no file is written.
 - An upscaling error ends the whole-file upscale, pauses playback, shows "Upscaling stopped: <reason>" and opens
   the log. Each new piece needs 2 GB free in the temporary folder; below that the reason says how much is free and
   that 4K takes about 10 MB per second.

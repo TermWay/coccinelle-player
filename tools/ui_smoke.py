@@ -10,6 +10,7 @@ side turned off, full screen on the window's own monitor (the second one when th
 showing near the bottom and hiding at rest, then back where the window was, the folded sidebar, the whole-file
 upscale and save, AMD's HQ scaler beside FSR 4 and through a whole-file upscale, Real-ESRGAN beside FSR 4 (a
 whole-file upscale stopped midway, and the note when it is not installed), an image compared with a preset,
+saved, then cancelled (nothing written),
 the error banner for a bad file, and the minimum window size. Presets go to a scratch file in `--out`, not the
 user's. Screenshots go through PrintWindow, so the window may be covered; it does pop up on the desktop.
 """
@@ -589,6 +590,14 @@ def main() -> int:
         yield 0.5
         shot("09b_image_saved")
         app.last_saved.unlink()
+        # Esc (stop) while the image is being upscaled cancels it: nothing is written.
+        files_before = set(args.image.parent.iterdir())
+        app.start()
+        app.cancel()
+        yield lambda: not app.busy
+        check(app.status_var.get() == "Cancelled · nothing was saved" and app.last_saved is None
+              and set(args.image.parent.iterdir()) == files_before,
+              f"Esc cancels the image upscale ({app.status_var.get()})")
         app.load(bad_file)
         yield lambda: app.banner.winfo_ismapped()
         yield 0.3

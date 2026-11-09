@@ -24,6 +24,13 @@ class PlanTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             plan_from_info(JobOptions(input=Path("a.mp4"), scale=3.5), info(640, 360))
 
+    def test_sharpening_range(self):
+        for sharpness in (None, 0.0, 0.4, 1.0):
+            plan_from_info(JobOptions(input=Path("a.mp4"), sharpness=sharpness), info(640, 360))
+        for sharpness in (-0.1, 1.5, float("nan")):
+            with self.subTest(sharpness=sharpness), self.assertRaises(ValueError):
+                plan_from_info(JobOptions(input=Path("a.mp4"), sharpness=sharpness), info(640, 360))
+
     def test_gpu_encoder_limits(self):
         source = info(2880, 2160)
         with self.assertRaises(ValueError) as raised:
