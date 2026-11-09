@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import window_capture  # noqa: E402
 from fsr4 import ui, ui_theme, usage  # noqa: E402
+from fsr4.preferences import PreferenceStore  # noqa: E402
 from fsr4.presets import PresetStore  # noqa: E402
 from fsr4.ui_art import png_bytes  # noqa: E402
 
@@ -249,7 +250,7 @@ def main() -> int:
     usage.apply(usage.DEFAULT.threads, usage.DEFAULT.priority)
     root = tk.Tk()
     root.withdraw()
-    app = ui.App(root)
+    app = ui.App(root, preferences=PreferenceStore(args.video.resolve().parent / "ui_flicker_preferences.json"))
     presets_file = args.video.resolve().parent / "ui_flicker_presets.json"
     presets_file.unlink(missing_ok=True)
     app.presets = PresetStore(presets_file)

@@ -40,9 +40,9 @@ Python package stay `fsr4`.
 - The window is checked with `python tools/ui_smoke.py --video <clip> --image <png> --out out/ui`: it drives
   every state through the real widgets (a real WM_DROPFILES drop, tooltip, dropdown, file dialog, playback,
   buffering, presets side by side, zoom slider, full screen, save) and saves PrintWindow screenshots to look at.
-  Its presets go to a scratch file in `--out`, never the user's `%APPDATA%` one. The window pops up on the desktop
-  while it runs; the usual clip is a 1080p60 WMV with WMA audio. The saved outputs it makes are deleted once
-  checked (a default output name never replaces a file, so each run would add one).
+  Its presets and preferences go to scratch files in `--out`, never the user's `%APPDATA%` ones. The window pops up
+  on the desktop while it runs; the usual clip is a 1080p60 WMV with WMA audio. The saved outputs it makes are
+  deleted once checked (a default output name never replaces a file, so each run would add one).
 - `python tools/ui_flicker.py --video <clip> --frames out/ui/flicker` samples the screen on every composed frame
   while the sidebar folds, a repaint runs and the window changes size: stray pixels, blinks, how far what follows
   the right edge lags. PrintWindow never shows these. The window pops up and must be left alone: the run refuses if

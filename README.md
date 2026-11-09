@@ -70,7 +70,7 @@ sub-pixel camera jitter every frame. A video file has none of those, so this too
   Original pixels (each source pixel as a block), Bilinear (what most players do), Bicubic, or Lanczos. Two sides
   upscaled sit side by side, paused or playing (two versions share the GPU, so playing them waits more), and the
   sidebar then asks which one its settings are for, which is also the one Upscale saves. Off turns a side off: the
-  other one fills the picture, without the divider.
+  other one fills the picture, without the divider. The divider's handle follows the pointer's height.
 - **Presets** cover the choices worth comparing: FSR 4 at its best (medium optical flow, no sharpening) with faster,
   sharpened and motionless variants, FSR 3.1, FSR 2.3, AMD's HQ scaler and Real-ESRGAN. The sidebar shows the preset,
   its upscaler and only what that upscaler can change: motion vectors and sharpening for FSR, sharpening for the HQ
@@ -88,6 +88,10 @@ sub-pixel camera jitter every frame. A video file has none of those, so this too
   from the playhead; the earlier ones are kept, so going back to them is instant.
 - **Images** are upscaled as soon as they open, with every version shown, so presets can be compared before
   Upscale saves the picture.
+- **Preferences**, kept between runs: turn off "Upscale as soon as a file opens" to open files as in a plain player
+  (the source, bicubic) and start FSR only when you choose a preset in the Left or Right list. "Temporary files" is
+  where the pieces of an open video wait (by default the `temp` folder next to the program); choose a drive with
+  room for them.
 - **Full screen** (F11, F or the button) covers the monitor the window is on and keeps the video; leaving it
   puts the window back exactly where and as it was. Its controls come up when the mouse moves near the bottom
   of the screen, and hide, with the pointer, once the mouse rests, wherever it is.
@@ -332,8 +336,9 @@ filter, which scores 0.1 to 0.5 dB above Lanczos for these two (the video model 
   images in the window; `fsr4/pipeline.py`'s `upscale_stream` is the frame loop both it and the renderer use.
 - `fsr4/render.py` (versions upscaled into pieces around the playhead, saving), `fsr4/timeline.py` (pieces
   and scheduling), `fsr4/player.py` (real-time playback), `fsr4/audio.py` (waveOut sound), `fsr4/usage.py`
-  (processor threads and priority), `fsr4/presets.py` (built-in and saved presets), `fsr4/image_preview.py`
-  (an image upscaled with every version shown).
+  (processor threads and priority), `fsr4/presets.py` (built-in and saved presets), `fsr4/preferences.py` (the
+  window's preferences), `fsr4/temporary.py` (where temporary files go), `fsr4/image_preview.py` (an image
+  upscaled with every version shown).
 - The window: `fsr4/ui.py` (layout and wiring), `fsr4/ui_video.py` (the GDI-drawn preview and comparison),
   `fsr4/ui_transport.py` (filmstrip, seek bar, playback buttons, speed), `fsr4/ui_window.py` (full screen on
   the window's monitor), `fsr4/system.py` (processor name, RAM and VRAM in use), `fsr4/ui_tooltip.py`,
@@ -350,8 +355,9 @@ filter, which scores 0.1 to 0.5 dB above Lanczos for these two (the video model 
   zoom slider and wheel, a side's dropdown opened from its label, a preset saved and two presets side by side
   paused and playing, a frame step, playing backwards, a side turned off, full screen on the window's own
   monitor (the second one when there is one) with its controls showing near the bottom and hiding at rest,
-  then back where it was, folded sidebar, whole-file save, an image compared with a preset, error, minimum
-  size) and screenshots each with `tools/window_capture.py`. Its presets go to a scratch file, never yours.
+  then back where it was, folded sidebar, whole-file save, an image compared with a preset, error, a video opened
+  without upscaling, minimum size) and screenshots each with `tools/window_capture.py`. Its presets and preferences
+  go to scratch files, never yours.
 - `tests/`: `python -m unittest discover -s tests`. Tests that need ffmpeg, OpenCV or FSR 4 itself (the card
   and the DLLs in `bin/`) skip without it, saying why; `tests/test_audio.py` also needs a sound device.
 
@@ -359,9 +365,9 @@ filter, which scores 0.1 to 0.5 dB above Lanczos for these two (the video model 
 - No jitter and no real depth means FSR 4 works mostly as a very good spatial upscaler with temporal
   stabilisation; it cannot reconstruct the sub-pixel detail it recovers in games.
 - Input is processed as 8-bit sRGB; HDR video is not handled, and interlaced video is not deinterlaced.
-- The player plays the first audio track; the saved file keeps every track. Pieces live in a temporary folder
-  (about 10 MB per second of 4K) until the file is closed; folders left by a crash are removed the next time
-  the window opens.
+- The player plays the first audio track; the saved file keeps every track. Pieces live in the temporary folder
+  of the preferences (about 10 MB per second of 4K) until the file is closed; folders left by a crash are removed
+  the next time the window opens.
 
 ## License
 MIT (`LICENSE`) for this project's code. What it builds on keeps its own license:

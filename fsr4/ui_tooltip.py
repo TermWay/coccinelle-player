@@ -1,4 +1,8 @@
-"""Hover tooltips in the window's dark style: a short delay, then a small borderless window near the pointer."""
+"""Hover tooltips in the window's dark style: a short delay, then a small borderless window near the pointer.
+
+A tooltip is a window of its own, which Windows does not hide with the main window, and minimizing the window sends
+no Leave event: so while it shows, the tooltip checks that its widget can still be seen, and goes away otherwise.
+"""
 from __future__ import annotations
 
 import tkinter as tk
@@ -8,6 +12,7 @@ from .ui_theme import Theme
 from .ui_window import work_area_at
 
 DELAY_MS = 450
+CHECK_MS = 200
 WRAP = 320
 
 
@@ -20,6 +25,7 @@ class Tooltip:
         self.text = text
         self._window: tk.Toplevel | None = None
         self._pending: str | None = None
+        self._check_job: str | None = None
         widget.bind("<Enter>", self._schedule, add="+")
         widget.bind("<Leave>", self._hide, add="+")
         widget.bind("<ButtonPress>", self._hide, add="+")
@@ -33,11 +39,14 @@ class Tooltip:
         if self._pending is not None:
             self.widget.after_cancel(self._pending)
             self._pending = None
+        if self._check_job is not None:
+            self.widget.after_cancel(self._check_job)
+            self._check_job = None
 
     def _show(self) -> None:
         self._pending = None
         text = self.text() if callable(self.text) else self.text
-        if not text or self._window is not None:
+        if not text or self._window is not None or not self.widget.winfo_viewable():
             return
         palette, px = self.theme.palette, self.theme.px
         window = tk.Toplevel(self.widget)
@@ -58,6 +67,17 @@ class Tooltip:
             y = widget_y - height - px(6)
         window.wm_geometry(f"+{x}+{y}")
         self._window = window
+        self._check_job = self.widget.after(CHECK_MS, self._check)
+
+    def _check(self) -> None:
+        """Hide once the widget cannot be seen (its window minimized or withdrawn), which sends no Leave event."""
+        self._check_job = None
+        if self._window is None:
+            return
+        if not self.widget.winfo_viewable():
+            self._hide()
+            return
+        self._check_job = self.widget.after(CHECK_MS, self._check)
 
     def _hide(self, _event: tk.Event | None = None) -> None:
         self._cancel()

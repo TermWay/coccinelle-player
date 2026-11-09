@@ -2,17 +2,18 @@
 
     python tools/ui_smoke.py --video clip.wmv --image picture.png --out out/ui
 
-Steps: empty window, a video dropped on it (a real WM_DROPFILES message), its first upscaled frame, a tooltip,
-a dropdown, the file dialog, playback, a seek into frames not upscaled yet (buffering), a paused zoom with the
-original pixels on the left, the zoom slider and wheel, a side's dropdown opened from its label, a preset saved
-and two presets upscaled side by side (paused and playing), a frame step, playing backwards at a quarter speed, a
-side turned off, full screen on the window's own monitor (the second one when there is one) with its controls
-showing near the bottom and hiding at rest, then back where the window was, the folded sidebar, the whole-file
-upscale and save, AMD's HQ scaler beside FSR 4 and through a whole-file upscale, Real-ESRGAN beside FSR 4 (a
-whole-file upscale stopped midway, and the note when it is not installed), an image compared with a preset,
-saved, then cancelled (nothing written),
-the error banner for a bad file, and the minimum window size. Presets go to a scratch file in `--out`, not the
-user's. Screenshots go through PrintWindow, so the window may be covered; it does pop up on the desktop.
+Steps: empty window, a video dropped on it (a real WM_DROPFILES message), its first upscaled frame, a tooltip
+(gone once the window is minimized), a dropdown, the file dialog, playback, a seek into frames not upscaled yet
+(buffering), a paused zoom with the original pixels on the left (the divider's handle at the pointer's height), the
+zoom slider and wheel, a side's dropdown opened from its label, a preset saved and two presets upscaled side by side
+(paused and playing), a frame step, playing backwards at a quarter speed, a side turned off, full screen on the
+window's own monitor (the second one when there is one) with its controls showing near the bottom and hiding at
+rest, then back where the window was, the folded sidebar, the whole-file upscale and save, AMD's HQ scaler beside
+FSR 4 and through a whole-file upscale, Real-ESRGAN beside FSR 4 (a whole-file upscale stopped midway, and the note
+when it is not installed), an image compared with a preset, saved, then cancelled (nothing written), the error
+banner for a bad file, a video opened with the upscale-on-open switch off (pieces in a chosen temporary folder),
+and the minimum window size. Presets and preferences go to scratch files in `--out`, not the user's. Screenshots
+go through PrintWindow, so the window may be covered; it does pop up on the desktop and must not be minimized.
 """
 from __future__ import annotations
 
@@ -32,7 +33,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import window_capture  # noqa: E402
-from fsr4 import media, ui, ui_theme, ui_window, usage  # noqa: E402
+from fsr4 import media, temporary, ui, ui_theme, ui_window, usage  # noqa: E402
+from fsr4.preferences import PreferenceStore  # noqa: E402
 from fsr4.presets import BEST, PresetStore  # noqa: E402
 from fsr4.realesrgan import REAL_ESRGAN  # noqa: E402
 from fsr4.ui_transport import KNOB_INSET, speed_fraction  # noqa: E402
@@ -132,7 +134,9 @@ def main() -> int:
     usage.apply(usage.DEFAULT.threads, usage.DEFAULT.priority)
     root = tk.Tk()
     root.withdraw()
-    app = ui.App(root)
+    preferences_file = args.out / "preferences_check.json"
+    preferences_file.unlink(missing_ok=True)
+    app = ui.App(root, preferences=PreferenceStore(preferences_file))
     presets_file = args.out / "presets_check.json"
     presets_file.unlink(missing_ok=True)
     app.presets = PresetStore(presets_file)
@@ -200,6 +204,11 @@ def main() -> int:
         if tips:
             window_capture.save_handle(int(tips[0].wm_frame(), 16), args.out / "02a_tooltip.png")
             print("      screenshot 02a_tooltip.png", flush=True)
+            root.iconify()  # no Leave event: the tooltip must notice by itself
+            yield 0.6
+            check(not tips[0].winfo_exists(), "minimizing the window takes its tooltip away")
+            root.deiconify()
+            yield 0.8
         chip.event_generate("<Leave>")
         root.tk.call("ttk::combobox::Post", app.encoder_choice)
         yield 0.4
@@ -269,6 +278,16 @@ def main() -> int:
         check(app.zoom_var.get() == "2", "zoom chip follows the view")
         check(app.view.sides["left"] == "nearest", "left side shows the original pixels")
         shot("05_paused_zoom_original")
+        move_pointer(0.25)
+        yield 0.3
+        view = app.view
+        shown_left, _, shown_width, _ = view._geometry.shown
+        handle_x = shown_left + int(view.split * shown_width) + round(0.36 * view._handle.shape[0])
+        handle_y = int(view.winfo_height() * 0.25)
+        pixel = view.snapshot()[handle_y, handle_x, :3]
+        check(view.handle_y == handle_y and int(pixel.min()) >= 225,
+              f"zoomed in, the divider's handle follows the pointer's height (pixel {pixel.tolist()} at y {handle_y})")
+        shot("05_handle_at_pointer")
         app.zoom_slider_var.set(math.log2(1.5))
         app._zoom_slid()
         yield 0.6
@@ -419,7 +438,7 @@ def main() -> int:
         yield 0.3
         check(app.save_note.winfo_ismapped(), "the window says why Upscale is off")
         yield lambda: app.render_position is None
-        check(app.status_var.get() == "Ready · neither side is upscaled", "with no side upscaled the upscaler rests")
+        check(app.status_var.get() == ui.NOTHING_UPSCALED, "with no side upscaled the upscaler rests")
         shot("05i_nothing_upscaled")
         choose("right", "preset:FSR 4")
         yield 0.5
@@ -609,6 +628,37 @@ def main() -> int:
         yield lambda: app.info is not None
         check(left_block.how().upscaler == REAL_ESRGAN, "opening a video takes a model for still images off its side")
         choose("left", "cubic")
+        # The switch off, a file opens as in a plain player: the source alone, nothing upscaled, until a preset is
+        # chosen. Its pieces go to the temporary folder chosen.
+        pieces = (args.out / "temp_check").resolve()
+        app._set_temporary_folder(pieces)
+        check(app.temporary_var.get() == str(pieces) and app.temporary_default_button.winfo_manager() == "grid",
+              f"a temporary folder is chosen ({app.temporary_var.get()})")
+        app.upscale_on_open_switch.invoke()
+        kept = PreferenceStore(preferences_file).preferences
+        check(not kept.upscale_on_open and kept.temporary_folder == pieces,
+              f"the preferences are kept in their file ({kept})")
+        app.load(args.video)
+        yield lambda: app.info is not None and app.renderer is not None
+        check(app.side_choices == {"left": "cubic", "right": ui.OFF},
+              f"opened without upscaling, the source alone ({app.side_choices})")
+        check(app.renderer.directory.parent == pieces, f"the pieces go to the chosen folder ({app.renderer.directory})")
+        app.toggle_play()
+        yield 2.0
+        check(app.player.position > 0 and app.render_position is None and app.renderer.timeline.ready_frames() == 0,
+              f"it plays the source and nothing is upscaled (frame {app.player.position})")
+        check(app.status_var.get() == ui.NOTHING_UPSCALED, f"the status says how to upscale ({app.status_var.get()})")
+        shot("12_opened_without_upscaling")
+        app.toggle_play()
+        yield lambda: not app.player.playing
+        choose("right", "preset:FSR 4")
+        yield lambda: side_ready("right")
+        check(True, "choosing a preset starts the upscaler")
+        app.upscale_on_open_switch.invoke()
+        app._set_temporary_folder(None)
+        check(app.temporary_var.get() == str(temporary.default_folder())
+              and app.temporary_default_button.winfo_manager() == "",
+              "Default goes back to the folder next to the program")
         minimum_width, minimum_height = root.minsize()
         root.geometry(f"{minimum_width}x{minimum_height}")
         yield 1.0

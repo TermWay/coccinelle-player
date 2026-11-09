@@ -8,3 +8,4 @@ out/
 *.fsr4.*
 bin/*.part
 requests/
+temp/

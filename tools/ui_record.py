@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import window_capture  # noqa: E402
 from fsr4 import ui, ui_theme, usage  # noqa: E402
+from fsr4.preferences import PreferenceStore  # noqa: E402
 from fsr4.presets import PresetStore  # noqa: E402
 
 POLL_MS = 15
@@ -50,7 +51,7 @@ def main() -> int:
     usage.apply(usage.DEFAULT.threads, usage.DEFAULT.priority)
     root = tk.Tk()
     root.withdraw()
-    app = ui.App(root)
+    app = ui.App(root, preferences=PreferenceStore(args.out.with_name(args.out.stem + "_preferences.json")))
     presets_file = args.out.with_name(args.out.stem + "_presets.json")
     presets_file.unlink(missing_ok=True)
     app.presets = PresetStore(presets_file)

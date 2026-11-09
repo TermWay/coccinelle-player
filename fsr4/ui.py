@@ -32,7 +32,7 @@ from tkinter import filedialog, messagebox, ttk
 import cv2
 import numpy as np
 
-from . import log, system, usage
+from . import log, system, temporary, usage
 from .ffx import find_sdk_dir
 from .image_preview import ImagePreviewer
 from .realesrgan import STILL_ONLY
@@ -40,6 +40,7 @@ from .job import JobOptions, JobPlan, JobResult, default_output, plan_from_info,
 from .media import (COPY_ANY_AUDIO_SUFFIXES, IMAGE_SUFFIXES, MP4_AUDIO_COPY, VIDEO_SUFFIXES, KeyframeIndex, MediaInfo,
                     is_image, probe, read_frame, read_thumbnail)
 from .player import Player
+from .preferences import PreferenceStore
 from .presets import BEST, OFF_LABEL, SOURCE_LABELS, Preset, PresetStore
 from .render import RenderSettings, Renderer, clean_stale_directories
 from .timeline import intersect_ranges
@@ -100,6 +101,7 @@ FILTER_HELP = {"nearest": "every source pixel as a block, exactly what the file 
 UPSCALED = "upscaled"  # a side showing its settings, the other choices being a filter or OFF
 DEFAULT_SIDES = {"left": "cubic", "right": UPSCALED}
 CUSTOM_PRESET = "Custom settings"
+NOTHING_UPSCALED = "Ready · nothing is upscaled · choose a preset in the Left or Right list to upscale"
 OPEN_TYPES = [("Videos and images", " ".join(f"*{suffix}" for suffix in VIDEO_SUFFIXES + IMAGE_SUFFIXES)),
               ("Videos", " ".join(f"*{suffix}" for suffix in VIDEO_SUFFIXES)),
               ("Images", " ".join(f"*{suffix}" for suffix in IMAGE_SUFFIXES)), ("All files", "*.*")]
@@ -183,10 +185,13 @@ def to_bgra(rgba: np.ndarray) -> np.ndarray:
 
 
 class App:
-    """The main window. `load`, `start`, `cancel` and the playback methods are also what the UI check drives."""
+    """The main window. `load`, `start`, `cancel` and the playback methods are also what the UI check drives.
+    `preferences` replaces the user's own (the UI check gives it a scratch file)."""
 
-    def __init__(self, root: tk.Tk, preselected: Path | None = None):
+    def __init__(self, root: tk.Tk, preselected: Path | None = None, preferences: PreferenceStore | None = None):
         self.root = root
+        self.preferences = preferences or PreferenceStore()
+        temporary_problem = self._use_saved_temporary_folder()
         self.theme = Theme(root)
         self.queue: queue.Queue = queue.Queue()
         self.load_token = 0
@@ -255,6 +260,12 @@ class App:
         if self.presets.load_error is not None:
             self._show_banner(f"Your presets could not be read ({self.presets.load_error}); saving a preset keeps "
                               f"that file as {self.presets.path.with_suffix('.unreadable').name}.")
+        if self.preferences.load_error is not None:
+            self._show_banner(f"Your preferences could not be read ({self.preferences.load_error}); the defaults "
+                              "are used, and changing one keeps that file as "
+                              f"{self.preferences.path.with_suffix('.unreadable').name}.")
+        if temporary_problem is not None:
+            self._show_banner(temporary_problem)
         if preselected is not None:
             self.load(preselected)
 
@@ -502,10 +513,100 @@ class App:
             self._tip(chip, priority.description)
         self._processor_job: str | None = None
         self.threads_label.configure(text=f"{usage.DEFAULT.threads} of {usage.CPU_THREADS}")
+        self._build_preferences(sidebar, row + 2)
         self.setting_widgets = [self.choose_button, self.output_entry, self.save_button, self.encoder_choice,
                                 custom_slider, *self.save_chips]
         self._route_wheel(holder)
         return holder
+
+    def _build_preferences(self, sidebar: ttk.Frame, row: int) -> None:
+        """Whether a file is upscaled as soon as it opens, and the folder of the temporary files; both are kept
+        between runs."""
+        px = self.theme.px
+        row = self._section(sidebar, row, "Preferences")
+        self.upscale_on_open_var = tk.BooleanVar(value=self.preferences.preferences.upscale_on_open)
+        self.upscale_on_open_switch = ttk.Checkbutton(
+            sidebar, text="Upscale as soon as a file opens", variable=self.upscale_on_open_var,
+            style="Switch.TCheckbutton", command=self._upscale_on_open_changed, takefocus=False)
+        self.upscale_on_open_switch.grid(row=row, column=0, sticky="w")
+        self._tip(self.upscale_on_open_switch,
+                  "On: a file opens with each side as you left it, and FSR starts on the sides that show a preset.\n"
+                  "Off: a file opens as in a plain player, the source enlarged by a classic filter, and nothing is "
+                  "upscaled until you choose a preset in the Left or Right list.\nFrom the next file you open.")
+        ttk.Label(sidebar, text="Temporary files", style="Small.TLabel").grid(row=row + 1, column=0, sticky="w",
+                                                                              pady=(px(10), px(4)))
+        folder_row = ttk.Frame(sidebar)
+        folder_row.grid(row=row + 2, column=0, sticky="ew")
+        folder_row.columnconfigure(0, weight=1)
+        self.temporary_var = tk.StringVar()
+        self.temporary_entry = ttk.Entry(folder_row, textvariable=self.temporary_var, state="readonly",
+                                         takefocus=False)
+        self.temporary_entry.grid(row=0, column=0, sticky="ew")
+        self._tip(self.temporary_entry, "Where the upscaled pieces of an open video wait to be played and saved "
+                                        "(about 10 MB per second of 4K). They are deleted when the file closes. "
+                                        f"By default the {temporary.DEFAULT_NAME} folder next to {APP_NAME}.")
+        browse = ttk.Button(folder_row, text="…", width=3, style="Secondary.TButton",
+                            command=self.browse_temporary_folder)
+        browse.grid(row=0, column=1, padx=(px(6), 0))
+        self._tip(browse, "Choose another folder, for instance on a drive with more room. From the next file you "
+                          "open.")
+        self.temporary_default_button = ttk.Button(folder_row, text="Default", style="Secondary.TButton",
+                                                   command=lambda: self._set_temporary_folder(None))
+        self.temporary_default_button.grid(row=0, column=2, padx=(px(6), 0))
+        self._tip(self.temporary_default_button, f"Back to the {temporary.DEFAULT_NAME} folder next to {APP_NAME}.")
+        self._show_temporary_folder()
+
+    def _use_saved_temporary_folder(self) -> str | None:
+        """Put temporary files where the preferences say; why that folder cannot be used, or None."""
+        chosen = self.preferences.preferences.temporary_folder
+        if chosen is not None:
+            try:
+                temporary.use(chosen)
+                return None
+            except OSError as error:
+                log.emit(f"[ui] error: cannot use {chosen} for temporary files: {error}")
+                return (f"The folder for temporary files, {chosen}, cannot be used ({self._first_line(error)}); "
+                        f"they go to {temporary.folder()} for now.")
+        temporary.folder()  # the default folder, or the system's when it cannot be used (logged)
+        return None
+
+    def _show_temporary_folder(self) -> None:
+        self.temporary_var.set(str(temporary.folder()))
+        self.temporary_entry.xview_moveto(1.0)
+        show_widget(self.temporary_default_button, self.preferences.preferences.temporary_folder is not None)
+
+    def browse_temporary_folder(self) -> None:
+        chosen = filedialog.askdirectory(parent=self.root, title="Choose the folder for temporary files",
+                                         initialdir=str(temporary.folder()), mustexist=False)
+        if chosen:
+            folder = Path(chosen)
+            self._set_temporary_folder(None if folder.resolve() == temporary.default_folder().resolve() else folder)
+
+    def _set_temporary_folder(self, folder: Path | None) -> None:
+        """Put the temporary files of the next files opened in `folder` (None: the default one), and keep it."""
+        try:
+            temporary.use(folder)
+        except OSError as error:
+            shown = folder if folder is not None else temporary.default_folder()
+            log.emit(f"[ui] error: cannot use {shown} for temporary files: {error}")
+            self._show_banner(f"{shown} cannot hold temporary files: {self._first_line(error)}")
+            return
+        self._save_preferences(temporary_folder=folder)
+        self._show_temporary_folder()
+
+    def _upscale_on_open_changed(self) -> None:
+        if not self._save_preferences(upscale_on_open=bool(self.upscale_on_open_var.get())):
+            self.upscale_on_open_var.set(self.preferences.preferences.upscale_on_open)
+
+    def _save_preferences(self, **changes) -> bool:
+        """Keep the preferences with `changes`; False, said in the banner, when they cannot be written."""
+        try:
+            self.preferences.change(**changes)
+        except OSError as error:
+            log.emit(f"[ui] error: cannot save the preferences: {error}")
+            self._show_banner(f"The preferences could not be saved: {self._first_line(error)}")
+            return False
+        return True
 
     def _route_wheel(self, widget: tk.Misc) -> None:
         """The wheel scrolls the sidebar wherever the pointer is on it (instead of changing a dropdown's value)."""
@@ -1011,6 +1112,18 @@ class App:
             choice = UPSCALED
         self.side_choices[side] = choice
 
+    def _show_source_only(self) -> None:
+        """Open the next file without upscaling: sides showing a preset are turned off, and when no side would
+        show anything the first of them shows the source bicubic. Their settings stay, for when a preset is
+        chosen again."""
+        upscaled = [side for side in DEFAULT_SIDES if self.side_choices[side] == UPSCALED]
+        if not upscaled:
+            return
+        for side in upscaled:
+            self._show_on_side(side, OFF)
+        if all(choice == OFF for choice in self.side_choices.values()):
+            self._show_on_side(upscaled[0], DEFAULT_SIDES["left"])  # the source, through the default filter
+
     def _side_chosen(self, side: str) -> None:
         box = self.side_boxes[side]
         self._show_on_side(side, self._side_entries()[box.current()][1])
@@ -1172,6 +1285,8 @@ class App:
         self._close_media()
         self.load_token += 1
         self.input_path, self.info, self.last_saved = path, None, None
+        if not self.upscale_on_open_var.get():
+            self._show_source_only()
         self._update_preset_lists()
         self.output_custom = False
         self._hide_banner()
@@ -1675,7 +1790,7 @@ class App:
 
     def _clean_temp(self) -> None:
         try:
-            for directory in clean_stale_directories():
+            for directory in clean_stale_directories(temporary.folders_to_clean()):
                 log.emit(f"[ui] removed pieces left by an earlier session: {directory}")
         except OSError as error:
             log.emit(f"[ui] could not clean old pieces: {error}")
@@ -1768,10 +1883,12 @@ class App:
                 self.image_previewer = ImagePreviewer(
                     path, sdk_dir, lambda kind, *values: self.queue.put(("preview", token, kind, values)))
             self._update_layers()
-            self.status_var.set("Ready · press Upscale or Ctrl+Enter to save")
+            self.status_var.set("Ready · press Upscale or Ctrl+Enter to save" if self._saved_side() is not None
+                                else NOTHING_UPSCALED)
         else:
             self._start_video(path, info)
-            self.status_var.set("Ready · Space plays it upscaled · Upscale saves the whole video")
+            self.status_var.set("Ready · Space plays it upscaled · Upscale saves the whole video"
+                                if self._saved_side() is not None else NOTHING_UPSCALED)
         self._refresh()
 
     def _on_load_failed(self, token: int, path: Path, error: Exception) -> None:
@@ -1852,7 +1969,7 @@ class App:
             self.status_var.set(f"Upscaling · {ready / max(1, total):.0%}{speed}{remaining}")
             self.root.title(f"{int(100 * ready / max(1, total))}% · {APP_NAME}")
         elif self._saved_side() is None:
-            self.status_var.set("Ready · neither side is upscaled")
+            self.status_var.set(NOTHING_UPSCALED)
         elif self.render_position is not None:
             position = self.player.position
             end = next((end for start, end in ranges if start <= position < end), position)

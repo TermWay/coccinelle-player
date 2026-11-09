@@ -28,7 +28,7 @@ from typing import BinaryIO, Iterator
 
 import numpy as np
 
-from . import log, usage
+from . import log, temporary, usage
 from .flow import ZeroFlow
 from .media import _popen, tool_path
 from .pipeline import Timings
@@ -179,7 +179,7 @@ class RealEsrganPipeline:
         """Yield `frames`, each once its upscaled frame is waiting for `process`. Closing this ends what is running
         and removes its files."""
         self.upscaled.clear()
-        folder = Path(tempfile.mkdtemp(prefix="fsr4-realesrgan-"))
+        folder = Path(tempfile.mkdtemp(prefix="fsr4-realesrgan-", dir=temporary.folder()))
         chunks: deque[_Chunk] = deque()
         try:
             for number, length in enumerate(chunk_lengths()):

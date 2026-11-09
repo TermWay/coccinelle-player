@@ -8,8 +8,9 @@ whichever thread presents (the Tk thread for interaction, the player thread for 
 
 Each side of the divider shows a layer: an upscaled version (the window names them) or the source
 enlarged by a filter (original pixels, bilinear, bicubic or Lanczos), all at the same
-geometry; clicking a side's label tells the window, which opens that side's dropdown. A side can be OFF: the
-other one fills the picture and there is no divider. Zoom is Fit, Original
+geometry; clicking a side's label tells the window, which opens that side's dropdown. The divider's handle follows
+the pointer's height over the picture. A side can be OFF: the other one fills the picture and there is no divider.
+Zoom is Fit, Original
 size (one screen pixel per source pixel, the upscaled side shrunk to match) or any scale from Fit to 800%; from
 100% up every output pixel is a block of screen pixels (nearest neighbour), so what is drawn is what the file
 holds. The right or middle button pans, the wheel zooms around the cursor in quarter octaves (stopping at
@@ -450,6 +451,7 @@ class VideoView(tk.Frame):
         self.zoom = "fit"
         self.center: tuple[float, float] | None = None
         self.split = 0.5
+        self.handle_y: int | None = None  # the pointer's last height over the picture; None: its middle
         self.sides = {"left": "cubic", "right": "unavailable"}
         self.side_labels: dict[str, str] = {}
         self.fullscreen = False
@@ -779,8 +781,10 @@ class VideoView(tk.Frame):
             x = left + split
             line = max(1, px(2))
             fill(canvas, x - line // 2, top, x - line // 2 + line, top + shown_height, DIVIDER_COLOR)
-            blend(canvas, self._handle, x - self._handle.shape[1] // 2,
-                  top + shown_height // 2 - self._handle.shape[0] // 2)
+            half = self._handle.shape[0] // 2
+            middle = top + shown_height // 2 if self.handle_y is None else self.handle_y
+            middle = max(top + half, min(top + shown_height - half, middle))  # whole, inside the picture
+            blend(canvas, self._handle, x - self._handle.shape[1] // 2, middle - half)
         margin = px(10)
         boxes = {}
         arrow = "" if self.fullscreen or self.on_side_click is None else "  ▾"
@@ -988,13 +992,13 @@ class VideoView(tk.Frame):
             self._move_to_minimap(event.x, event.y)
         elif not self.single:
             self._drag = "divider"
-            self._move_divider(event.x)
+            self._move_divider(event.x, event.y)
 
     def _drag_motion(self, event: tk.Event) -> None:
         if self._drag == "minimap":
             self._move_to_minimap(event.x, event.y)
         elif self._drag == "divider":
-            self._move_divider(event.x)
+            self._move_divider(event.x, event.y)
 
     def _release(self, event: tk.Event) -> None:
         side, self._pill_pressed = self._pill_pressed, None
@@ -1004,13 +1008,27 @@ class VideoView(tk.Frame):
         if side is not None and self._pill_at(event.x, event.y) == side:
             self.on_side_click(side)
 
-    def _move_divider(self, x: int) -> None:
+    def _move_divider(self, x: int, y: int) -> None:
         geometry = self._geometry
         if geometry is None:
             return
         left, _, shown_width, _ = geometry.shown
         with self._lock:
             self.split = min(1.0, max(0.0, (x - left) / max(shown_width, 1)))
+            self.handle_y = y
+        self.redraw()
+
+    def _follow_pointer(self, y: int) -> None:
+        """Put the divider's handle at the pointer's height while the pointer is over the picture, so it is where
+        the eye is (zoomed in, the middle is often far from it)."""
+        geometry = self._geometry
+        if self.single or not self.comparing or geometry is None or y == self.handle_y:
+            return
+        _, top, _, shown_height = geometry.shown
+        if not top <= y < top + shown_height:
+            return
+        with self._lock:
+            self.handle_y = y
         self.redraw()
 
     def _move_to_minimap(self, x: int, y: int) -> None:
@@ -1057,3 +1075,4 @@ class VideoView(tk.Frame):
             cursor = "" if self.single else "sb_h_double_arrow"
         if self._pan_origin is None and str(self.cget("cursor")) != cursor:
             self.configure(cursor=cursor)
+        self._follow_pointer(event.y)

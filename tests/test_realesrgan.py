@@ -14,7 +14,7 @@ from unittest import mock
 import numpy as np
 
 import needs
-from fsr4 import media, realesrgan
+from fsr4 import media, realesrgan, temporary
 from fsr4.image_preview import ImagePreviewer
 from fsr4.job import JobOptions, plan_from_info, run_job
 from fsr4.pipeline import upscale_stream
@@ -147,11 +147,8 @@ class UpscaleTest(unittest.TestCase):
         cls.directory.cleanup()
 
     def setUp(self):
-        self.temporary = self.root / f"temporary_{self._testMethodName}"
-        self.temporary.mkdir()
-        patcher = mock.patch.object(realesrgan.tempfile, "tempdir", str(self.temporary))
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        self.addCleanup(temporary.use, temporary.folder())
+        self.temporary = temporary.use(self.root / f"temporary_{self._testMethodName}")
 
     def reference(self, frame: np.ndarray, size: tuple[int, int] | None = None) -> np.ndarray:
         """`frame` at the output size by plain resampling."""

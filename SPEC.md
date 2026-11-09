@@ -257,6 +257,17 @@ has none of those; the tool substitutes, as the quality lab (§14) settled:
 5. **Processor**: threads from 1 to every logical processor (default half, shown as "8 of 16") and the priority:
    Normal, Low (default) or Background (quickest but other programs may stutter / other programs stay smooth /
    only spare time). They cap background work only (§10), stay usable while busy and reach the running upscale.
+6. **Preferences**, kept between runs in `%APPDATA%\Coccinelle Player\preferences.json` (written through a
+   temporary file; one that cannot be read is reported in the banner, the defaults are used, and the next change
+   keeps it as `preferences.unreadable`):
+   - "Upscale as soon as a file opens", a switch, on by default. Off, a file opens as in a plain player: the sides
+     showing a preset are turned off, and when that leaves nothing the first of them shows the source bicubic. Their
+     settings stay, so choosing a preset in a side's list starts upscaling with them.
+   - "Temporary files": the folder of the pieces (§10), shown with "…" to choose another and Default to go back to
+     the `temp` folder next to the executable (next to the `fsr4` package from source). The folder is made when
+     needed and must take a file, or the banner says why and the folder in use stays. A saved folder that can no
+     longer be used is said in the banner at start, and the default one is used meanwhile.
+   Both apply from the next file opened.
 
 A change applies 450 ms after the last one. Each combination of size, upscaler, motion, sharpening and encoder
 is its own version (§10).
@@ -275,7 +286,9 @@ is its own version (§10).
   spinner. A video then shows frame 0 paused while upscaling starts there, and the upscaled side appears once the
   first half second is ready (1.6 s after opening for 1080p60 to 4K, *measured*); status "Ready · Space plays it
   upscaled · Upscale saves the whole video". An image is upscaled at once with every version shown; status
-  "Ready · press Upscale or Ctrl+Enter to save".
+  "Ready · press Upscale or Ctrl+Enter to save". With "Upscale as soon as a file opens" off, nothing is upscaled
+  until a side shows a preset: status "Ready · nothing is upscaled · choose a preset in the Left or Right list to
+  upscale".
 
 ### Comparing
 - The divider splits the picture; the Left and Right dropdowns say what a side shows: the presets (FSR 4 on the right
@@ -285,7 +298,8 @@ is its own version (§10).
   settings share one version. Both are upscaled at the same size and encoder, paused or playing, so two FSR settings
   or FSR 4 and FSR 3.1 sit side by side. With no side upscaled, nothing is.
 - The divider is a 2 px line with a round ‹› handle; a left press anywhere on the picture moves it there and
-  dragging follows.
+  dragging follows. The handle follows the pointer's height over the picture (zoomed in, the middle is often far
+  from where one looks) and stays there when the pointer leaves, always whole inside the picture.
 - A label in each top corner names its side: the preset, the settings described ("FSR 3.1 · rough motion ·
   sharpening 0.80"; best motion goes unsaid) or the filter ("Source" at Fit while the source is not enlarged). Outside full screen it
   ends in ▾ and clicking it opens that side's dropdown, on release (on press, the release would pick an entry).
@@ -444,9 +458,12 @@ is its own version (§10).
   under a few milliseconds and allocates almost nothing. While playing, a zoom or pan resamples the previous
   picture into place until the decoders restart, 0.15 s after the view settles.
 - Images: an image previewer with its own GPU device upscales the image with every version shown.
-- Temporary pieces live in a `fsr4-` folder in the user's temporary folder (about 10 MB per second of 4K) until
-  the file is closed. Each folder carries a marker while a window holds it; folders left by a crash are removed
-  the next time the window opens, and only this tool's, never one a running window holds.
+- Temporary pieces live in a `fsr4-` folder in the temporary folder of the preferences, by default `temp` next to
+  the executable (about 10 MB per second of 4K), until the file is closed; Real-ESRGAN's pictures go there too. A
+  default folder that cannot be made or written to (a read-only install) gives way to the user's temporary folder,
+  and the log says so. Each folder carries a marker while a window holds it; folders left by a crash are removed
+  the next time the window opens, in the folder in use, the default one and the user's temporary folder, and only
+  this tool's, never one a running window holds.
 - Processor setting: the renderer's ffmpeg processes get `-threads N` when N is below the processor count (x265
   `pools=N`), OpenCV at most N and never more than 8, and the processes and worker threads run at the chosen
   priority; thumbnails and the final join too. The GPU encoders are not capped, and playback never is.

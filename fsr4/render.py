@@ -35,7 +35,7 @@ from typing import Callable
 
 import numpy as np
 
-from . import log, usage
+from . import log, temporary, usage
 from .flow import create_flow
 from .hq_scaler import HQ_SCALER, EncoderScale
 from .media import FrameReader, FrameWriter, IndexClosed, KeyframeIndex, MediaInfo, join_pieces, last_frame_before
@@ -106,12 +106,15 @@ class Version:
     used: float = 0.0
 
 
-def clean_stale_directories() -> list[Path]:
-    """Delete the piece folders of sessions that ended without cleaning up (a crash, a killed process): only
-    folders holding SESSION_MARKER, and only when the marker can be deleted (a running session keeps it open).
-    Each folder is handled on its own; one that cannot be emptied is logged and gets its marker back."""
+def clean_stale_directories(folders: list[Path]) -> list[Path]:
+    """Delete the piece folders in `folders` of sessions that ended without cleaning up (a crash, a killed
+    process): only folders holding SESSION_MARKER, and only when the marker can be deleted (a running session
+    keeps it open). Each folder is handled on its own; one that cannot be emptied is logged and gets its marker
+    back."""
     removed = []
-    for directory in Path(tempfile.gettempdir()).glob(f"{DIRECTORY_PREFIX}*"):
+    candidates = [directory for folder in folders if folder.is_dir()
+                  for directory in folder.glob(f"{DIRECTORY_PREFIX}*")]
+    for directory in candidates:
         marker = directory / SESSION_MARKER
         if not marker.is_file():
             continue  # not made by this tool (or by a version before the marker): never touched
@@ -156,7 +159,7 @@ class Renderer:
         self._owns_keyframes = keyframes is None
         self.keyframes = keyframes or KeyframeIndex(source, info)
         self.rate = float(info.frame_rate)
-        self.directory = Path(tempfile.mkdtemp(prefix=DIRECTORY_PREFIX))
+        self.directory = Path(tempfile.mkdtemp(prefix=DIRECTORY_PREFIX, dir=temporary.folder()))
         self._marker = open(self.directory / SESSION_MARKER, "w", encoding="utf-8")
         self._marker.write(f"pieces of {source.name}, process {os.getpid()}\n")
         self._marker.flush()

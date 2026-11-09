@@ -8,12 +8,12 @@ first; the user's own are saved as JSON in the user's application data folder (`
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass, replace
 from pathlib import Path
 
 from . import log
 from .hq_scaler import HQ_SCALER
+from .preferences import app_data_folder, write_json
 from .realesrgan import MODELS, REAL_ESRGAN, REAL_ESRGAN_ANIME, REAL_ESRGAN_X4PLUS
 from .upscalers import EXTERNAL_UPSCALERS
 from .render import UPSCALER_NAMES, RenderSettings
@@ -63,9 +63,7 @@ LIST_NAMES = (*(preset.name for preset in BUILTIN), *SOURCE_LABELS.values(), OFF
 
 
 def default_path() -> Path:
-    base = os.environ.get("APPDATA")
-    folder = Path(base) / "Coccinelle Player" if base else Path.home() / ".config" / "coccinelle-player"
-    return folder / "presets.json"
+    return app_data_folder() / "presets.json"
 
 
 def preset_from_json(entry: dict) -> Preset:
@@ -168,18 +166,10 @@ class PresetStore:
 
     def _write(self, user: list[Preset]) -> None:
         """Write `user` to the file, then keep it (nothing changes when the write fails)."""
-        self.path.parent.mkdir(parents=True, exist_ok=True)
         if self.load_error is not None and self.path.exists():
             self.path.replace(self.path.with_suffix(".unreadable"))
             self.load_error = None
         entries = [{"name": preset.name, "upscaler": preset.upscaler, "flow": preset.flow,
                     "flow_preset": preset.flow_preset, "sharpness": preset.sharpness} for preset in user]
-        temporary = self.path.with_suffix(".tmp")
-        try:
-            temporary.write_text(json.dumps({"version": FILE_VERSION, "presets": entries}, indent=2),
-                                 encoding="utf-8")
-            temporary.replace(self.path)
-        except OSError:
-            temporary.unlink(missing_ok=True)
-            raise
+        write_json(self.path, {"version": FILE_VERSION, "presets": entries})
         self.user = user
