@@ -129,6 +129,7 @@ class UpscaleTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         needs.require_realesrgan()
+        cls.addClassCleanup(temporary.use, temporary.folder())  # the job below puts its files beside its output
         cls.directory = tempfile.TemporaryDirectory()
         cls.root = Path(cls.directory.name)
         cls.source = cls.root / "source.mp4"
@@ -148,7 +149,9 @@ class UpscaleTest(unittest.TestCase):
 
     def setUp(self):
         self.addCleanup(temporary.use, temporary.folder())
-        self.temporary = temporary.use(self.root / f"temporary_{self._testMethodName}")
+        folder = self.root / f"temporary_{self._testMethodName}"
+        folder.mkdir()
+        self.temporary = temporary.use(folder)
 
     def reference(self, frame: np.ndarray, size: tuple[int, int] | None = None) -> np.ndarray:
         """`frame` at the output size by plain resampling."""
@@ -330,6 +333,8 @@ class UpscaleTest(unittest.TestCase):
         result = run_job(JobOptions(input=source, output=output, scale=2.0, upscaler=REAL_ESRGAN, verbose=False))
         self.assertEqual(result.frames, 1)
         self.assertEqual(media.read_image(output).shape[:2], self.output_size[::-1])
+        self.assertEqual(temporary.folder(), self.root.resolve(), "its pictures waited beside the output")
+        self.assertEqual([path.name for path in self.root.iterdir() if path.name.startswith("fsr4-")], [])
 
     def test_pieces_around_a_seek_join_into_the_single_pass(self):
         events: queue.Queue = queue.Queue()

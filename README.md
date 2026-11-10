@@ -88,10 +88,8 @@ sub-pixel camera jitter every frame. A video file has none of those, so this too
   from the playhead; the earlier ones are kept, so going back to them is instant.
 - **Images** are upscaled as soon as they open, with every version shown, so presets can be compared before
   Upscale saves the picture.
-- **Preferences**, kept between runs: turn off "Upscale on open", under Choose file, to open files as in a plain
-  player (the source, bicubic) and start FSR only when you choose a preset in the Left or Right list. "Temporary
-  files", under Output, is where the pieces of an open video wait (by default the `temp` folder next to the
-  program); choose a drive with room for them.
+- **Auto upscale**, the switch beside Choose file, kept between runs: off, files open as in a plain player (the
+  source, bicubic) and FSR starts only when you choose a preset in the Left or Right list.
 - **Full screen** (F11, F or the button) covers the monitor the window is on and keeps the video; leaving it
   puts the window back exactly where and as it was. Its controls come up when the mouse moves near the bottom
   of the screen, and hide, with the pointer, once the mouse rests, wherever it is.
@@ -306,7 +304,7 @@ it: on one frame of natural footage, 4.5 times the original's detail energy and 
 It comes out 2 to 3 levels brighter, and on small text it draws clean letters that are the wrong letters. It takes
 160 ms a frame at 2880x2160 (FSR 4: 19 ms). On a drawn clip (made for the lab: flat colours, black outlines, a panning background) it scores below the HQ scaler when the file is clean, and first of the three once H.264 at CRF 26 has marked it up, because it wipes the artifacts; it also flickers least there (temporal PSNR 46.8, HQ scaler 45.9, FSR 4 41.0).
 The program only takes files and each run costs 0.34 s to start, so frames go through it in chunks of up to 16 PNG
-files in a temporary folder (about 400 MB at 4K), two runs overlapping. A seek waits for the chunk being read, up to
+files in a temporary folder beside the output (about 400 MB at 4K), two runs overlapping. A seek waits for the chunk being read, up to
 about 3 s at 4K.
 
 Its two slower models are for still images only, since in a video a seek would wait minutes. They are there for their
@@ -337,7 +335,7 @@ filter, which scores 0.1 to 0.5 dB above Lanczos for these two (the video model 
 - `fsr4/render.py` (versions upscaled into pieces around the playhead, saving), `fsr4/timeline.py` (pieces
   and scheduling), `fsr4/player.py` (real-time playback), `fsr4/audio.py` (waveOut sound), `fsr4/usage.py`
   (processor threads and priority), `fsr4/presets.py` (built-in and saved presets), `fsr4/preferences.py` (the
-  window's preferences), `fsr4/temporary.py` (where temporary files go), `fsr4/image_preview.py` (an image
+  window's preferences), `fsr4/temporary.py` (temporary files go beside the output), `fsr4/image_preview.py` (an image
   upscaled with every version shown).
 - The window: `fsr4/ui.py` (layout and wiring), `fsr4/ui_video.py` (the GDI-drawn preview and comparison),
   `fsr4/ui_transport.py` (filmstrip, seek bar, playback buttons, speed), `fsr4/ui_window.py` (full screen on
@@ -365,9 +363,9 @@ filter, which scores 0.1 to 0.5 dB above Lanczos for these two (the video model 
 - No jitter and no real depth means FSR 4 works mostly as a very good spatial upscaler with temporal
   stabilisation; it cannot reconstruct the sub-pixel detail it recovers in games.
 - Input is processed as 8-bit sRGB; HDR video is not handled, and interlaced video is not deinterlaced.
-- The player plays the first audio track; the saved file keeps every track. Pieces live in the temporary folder
-  of the preferences (about 10 MB per second of 4K) until the file is closed; folders left by a crash are removed
-  the next time the window opens.
+- The player plays the first audio track; the saved file keeps every track. Pieces wait in a `fsr4-` folder
+  beside the output (about 10 MB per second of 4K) until the file is closed, or in the system's temporary folder when
+  the output's cannot take them; folders left by a crash are removed the next time that folder is used.
 
 ## License
 MIT (`LICENSE`) for this project's code. What it builds on keeps its own license:

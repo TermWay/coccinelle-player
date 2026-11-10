@@ -1,4 +1,4 @@
-"""The window's preferences file and the temporary folder they choose (no GPU)."""
+"""The window's preferences file, and where temporary files go: beside the output (no GPU)."""
 import json
 import tempfile
 import unittest
@@ -17,18 +17,25 @@ class PreferencesTest(unittest.TestCase):
 
     def test_defaults_without_a_file(self):
         store = PreferenceStore(self.path)
-        self.assertEqual(store.preferences, Preferences(upscale_on_open=True, temporary_folder=None))
+        self.assertEqual(store.preferences, Preferences(upscale_on_open=True))
         self.assertIsNone(store.load_error)
         self.assertFalse(self.path.exists(), "reading never writes")
 
     def test_a_change_is_kept_for_the_next_run(self):
-        PreferenceStore(self.path).change(upscale_on_open=False, temporary_folder=self.root / "pieces")
-        self.assertEqual(PreferenceStore(self.path).preferences, Preferences(False, self.root / "pieces"))
-        PreferenceStore(self.path).change(temporary_folder=None)
-        self.assertEqual(PreferenceStore(self.path).preferences, Preferences(False, None))
+        PreferenceStore(self.path).change(upscale_on_open=False)
+        self.assertEqual(PreferenceStore(self.path).preferences, Preferences(False))
+
+    def test_a_file_with_a_field_this_version_dropped_still_reads(self):
+        self.path.write_text('{"version": 1, "upscale_on_open": false, "temporary_folder": "D:\\\\pieces"}',
+                             encoding="utf-8")
+        store = PreferenceStore(self.path)
+        self.assertIsNone(store.load_error)
+        self.assertEqual(store.preferences, Preferences(False))
+        store.change(upscale_on_open=True)
+        self.assertEqual(json.loads(self.path.read_text(encoding="utf-8")), {"version": 1, "upscale_on_open": True})
 
     def test_an_unreadable_file_gives_the_defaults_and_is_kept_aside(self):
-        for content in ("{not json", '{"upscale_on_open": "yes"}', '{"temporary_folder": 3}', "[]"):
+        for content in ("{not json", '{"upscale_on_open": "yes"}', "[]"):
             with self.subTest(content=content):
                 self.path.write_text(content, encoding="utf-8")
                 store = PreferenceStore(self.path)
@@ -43,27 +50,29 @@ class TemporaryFolderTest(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
-        self.root = Path(directory.name)
-        previous = temporary.folder()
-        self.addCleanup(temporary.use, previous)
+        self.root = Path(directory.name).resolve()
+        self.addCleanup(temporary.use, temporary.folder())
 
-    def test_a_new_folder_is_made_and_used(self):
-        folder = (self.root / "a" / "b").resolve()
-        self.assertEqual(temporary.use(folder), folder)
-        self.assertEqual(temporary.folder(), folder)
-        self.assertEqual(list(folder.iterdir()), [], "the write check leaves nothing behind")
-        self.assertIn(folder, temporary.folders_to_clean())
+    def test_files_go_beside_the_output(self):
+        output = self.root / "clip.fsr4.mp4"
+        self.assertEqual(temporary.use_beside(output), self.root)
+        self.assertEqual(temporary.folder(), self.root)
+        self.assertEqual(list(self.root.iterdir()), [], "the write check leaves nothing behind")
+        self.assertIn(self.root, temporary.folders_to_clean())
 
-    def test_a_folder_that_cannot_be_made_keeps_the_previous_one(self):
-        self.root = temporary.use(self.root)
+    def test_an_output_folder_that_cannot_take_files_falls_back_to_the_system_one(self):
         blocker = self.root / "a file"
         blocker.write_text("not a folder", encoding="utf-8")
-        with self.assertRaises(OSError):
-            temporary.use(blocker / "pieces")
-        self.assertEqual(temporary.folder(), self.root)
+        self.assertEqual(temporary.use_beside(blocker / "clip.fsr4.mp4"), temporary.system_folder().resolve())
+        missing = self.root / "not made yet" / "clip.fsr4.mp4"
+        self.assertEqual(temporary.use_beside(missing), temporary.system_folder().resolve())
+        self.assertFalse(missing.parent.exists(), "an output folder is never made for temporary files")
 
-    def test_the_default_is_next_to_the_program(self):
-        self.assertEqual(temporary.default_folder(), Path(__file__).resolve().parent.parent / temporary.DEFAULT_NAME)
+    def test_use_keeps_the_previous_folder_when_the_new_one_fails(self):
+        temporary.use(self.root)
+        with self.assertRaises(OSError):
+            temporary.use(self.root / "missing")
+        self.assertEqual(temporary.folder(), self.root)
 
 
 if __name__ == "__main__":

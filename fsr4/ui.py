@@ -191,7 +191,6 @@ class App:
     def __init__(self, root: tk.Tk, preselected: Path | None = None, preferences: PreferenceStore | None = None):
         self.root = root
         self.preferences = preferences or PreferenceStore()
-        temporary_problem = self._use_saved_temporary_folder()
         self.theme = Theme(root)
         self.queue: queue.Queue = queue.Queue()
         self.load_token = 0
@@ -264,8 +263,6 @@ class App:
             self._show_banner(f"Your preferences could not be read ({self.preferences.load_error}); the defaults "
                               "are used, and changing one keeps that file as "
                               f"{self.preferences.path.with_suffix('.unreadable').name}.")
-        if temporary_problem is not None:
-            self._show_banner(temporary_problem)
         if preselected is not None:
             self.load(preselected)
 
@@ -390,7 +387,8 @@ class App:
                                         style="Small.TLabel", wraplength=wrap, justify="left")
         self.source_details.grid(row=row + 1, column=0, sticky="w", pady=(px(2), px(6)))
         open_row = ttk.Frame(sidebar)
-        open_row.grid(row=row + 2, column=0, sticky="w")
+        open_row.grid(row=row + 2, column=0, sticky="ew")
+        open_row.columnconfigure(1, weight=1)
         self.choose_button = ttk.Button(open_row, text="Choose file…", style="Secondary.TButton", command=self.browse)
         self.choose_button.grid(row=0, column=0)
         self._tip(self.choose_button, "Open a video or an image (Ctrl+O). You can also drop a file anywhere on "
@@ -489,9 +487,8 @@ class App:
         self.encoder_note.grid(row=row + 2, column=0, sticky="w", pady=(px(4), 0))
         self.audio_note = ttk.Label(sidebar, text="", style="Faint.TLabel", wraplength=wrap, justify="left")
         self.audio_note.grid(row=row + 3, column=0, sticky="w", pady=(px(3), 0))
-        self._build_temporary_folder(sidebar, row + 4)
 
-        row = self._section(sidebar, row + 6, "Processor")
+        row = self._section(sidebar, row + 4, "Processor")
         threads_row = ttk.Frame(sidebar)
         threads_row.grid(row=row, column=0, sticky="ew")
         threads_row.columnconfigure(1, weight=1)
@@ -523,85 +520,18 @@ class App:
         return holder
 
     def _build_upscale_on_open(self, open_row: ttk.Frame) -> None:
-        """The switch under Choose file: whether a file is upscaled as soon as it opens (kept between runs)."""
+        """The switch at the right end of Choose file's line (it stays put when the button's text changes): whether
+        a file is upscaled as soon as it opens, kept between runs."""
         self.upscale_on_open_var = tk.BooleanVar(value=self.preferences.preferences.upscale_on_open)
         self.upscale_on_open_switch = ttk.Checkbutton(
-            open_row, text="Upscale on open", variable=self.upscale_on_open_var,
+            open_row, text="Auto upscale", variable=self.upscale_on_open_var,
             style="Switch.TCheckbutton", command=self._upscale_on_open_changed, takefocus=False)
-        self.upscale_on_open_switch.grid(row=1, column=0, sticky="w", pady=(self.theme.px(10), 0))
+        self.upscale_on_open_switch.grid(row=0, column=1, sticky="e", padx=(self.theme.px(10), 0))
         self._tip(self.upscale_on_open_switch,
+                  "Upscale as soon as a file opens.\n"
                   "On: a file opens with each side as you left it, and FSR starts on the sides that show a preset.\n"
                   "Off: a file opens as in a plain player, the source enlarged by a classic filter, and nothing is "
                   "upscaled until you choose a preset in the Left or Right list.\nFrom the next file you open.")
-
-    def _build_temporary_folder(self, sidebar: ttk.Frame, row: int) -> None:
-        """The folder of the temporary files, in the Output section (kept between runs); takes rows `row` and
-        `row + 1`."""
-        px = self.theme.px
-        title_row = ttk.Frame(sidebar)
-        title_row.grid(row=row, column=0, sticky="ew", pady=(px(6), px(2)))
-        title_row.columnconfigure(0, weight=1)
-        ttk.Label(title_row, text="Temporary files", style="Small.TLabel").grid(row=0, column=0, sticky="w")
-        self.temporary_default_button = ttk.Button(title_row, text="Default", style="Ghost.TButton", takefocus=False,
-                                                   command=lambda: self._set_temporary_folder(None))
-        self.temporary_default_button.grid(row=0, column=1, sticky="e")
-        self._tip(self.temporary_default_button, f"Back to the {temporary.DEFAULT_NAME} folder next to {APP_NAME}.")
-        folder_row = ttk.Frame(sidebar)
-        folder_row.grid(row=row + 1, column=0, sticky="ew")
-        folder_row.columnconfigure(0, weight=1)
-        self.temporary_var = tk.StringVar()
-        self.temporary_entry = ttk.Entry(folder_row, textvariable=self.temporary_var, state="readonly",
-                                         takefocus=False)
-        self.temporary_entry.grid(row=0, column=0, sticky="ew")
-        self._tip(self.temporary_entry, "Where the upscaled pieces of an open video wait to be played and saved "
-                                        "(about 10 MB per second of 4K). They are deleted when the file closes. "
-                                        f"By default the {temporary.DEFAULT_NAME} folder next to {APP_NAME}.")
-        browse = ttk.Button(folder_row, text="…", width=3, style="Secondary.TButton",
-                            command=self.browse_temporary_folder)
-        browse.grid(row=0, column=1, padx=(px(6), 0))
-        self._tip(browse, "Choose another folder, for instance on a drive with more room. From the next file you "
-                          "open.")
-        self.temporary_entry.bind("<Configure>", lambda _event: self.temporary_entry.xview_moveto(1.0))
-        self._show_temporary_folder()
-
-    def _use_saved_temporary_folder(self) -> str | None:
-        """Put temporary files where the preferences say; why that folder cannot be used, or None."""
-        chosen = self.preferences.preferences.temporary_folder
-        if chosen is not None:
-            try:
-                temporary.use(chosen)
-                return None
-            except OSError as error:
-                log.emit(f"[ui] error: cannot use {chosen} for temporary files: {error}")
-                return (f"The folder for temporary files, {chosen}, cannot be used ({self._first_line(error)}); "
-                        f"they go to {temporary.folder()} for now.")
-        temporary.folder()  # the default folder, or the system's when it cannot be used (logged)
-        return None
-
-    def _show_temporary_folder(self) -> None:
-        self.temporary_var.set(str(temporary.folder()))
-        # The end of the path names the folder; the entry lays out its new text when idle.
-        self.root.after_idle(self.temporary_entry.xview_moveto, 1.0)
-        show_widget(self.temporary_default_button, self.preferences.preferences.temporary_folder is not None)
-
-    def browse_temporary_folder(self) -> None:
-        chosen = filedialog.askdirectory(parent=self.root, title="Choose the folder for temporary files",
-                                         initialdir=str(temporary.folder()), mustexist=False)
-        if chosen:
-            folder = Path(chosen)
-            self._set_temporary_folder(None if folder.resolve() == temporary.default_folder().resolve() else folder)
-
-    def _set_temporary_folder(self, folder: Path | None) -> None:
-        """Put the temporary files of the next files opened in `folder` (None: the default one), and keep it."""
-        try:
-            temporary.use(folder)
-        except OSError as error:
-            shown = folder if folder is not None else temporary.default_folder()
-            log.emit(f"[ui] error: cannot use {shown} for temporary files: {error}")
-            self._show_banner(f"{shown} cannot hold temporary files: {self._first_line(error)}")
-            return
-        self._save_preferences(temporary_folder=folder)
-        self._show_temporary_folder()
 
     def _upscale_on_open_changed(self) -> None:
         if not self._save_preferences(upscale_on_open=bool(self.upscale_on_open_var.get())):
@@ -1363,8 +1293,19 @@ class App:
             return
         sdk_dir = self._sdk_dir()
         if sdk_dir is not None:
+            self._use_output_folder()
             self.renderer = Renderer(self.input_path, self.info, settings, sdk_dir,
                                      lambda kind, *values: self.queue.put(("render", kind, values)), self.keyframes)
+
+    def _use_output_folder(self) -> None:
+        """Put the open file's temporary files (pieces, Real-ESRGAN's pictures) in its output's folder, and delete
+        the pieces a crash left there."""
+        folder = temporary.use_beside(Path(self.output_var.get().strip() or self._default_output()))
+        try:
+            for directory in clean_stale_directories([folder]):
+                log.emit(f"[ui] removed pieces left by an earlier session: {directory}")
+        except OSError as error:
+            log.emit(f"[ui] could not clean old pieces in {folder}: {error}")
 
     def _sdk_dir(self) -> Path | None:
         """The folder of the FSR DLLs, or None (said in the banner) when they are missing."""
@@ -1889,6 +1830,7 @@ class App:
             self.image_source = image
             sdk_dir = self._sdk_dir() if self.gpu_ready is not False else None
             if sdk_dir is not None:
+                self._use_output_folder()
                 self.image_previewer = ImagePreviewer(
                     path, sdk_dir, lambda kind, *values: self.queue.put(("preview", token, kind, values)))
             self._update_layers()

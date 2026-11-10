@@ -71,10 +71,10 @@ has none of those; the tool substitutes, as the quality lab (§14) settled:
 - Real-ESRGAN (its `realesr-animevideov3` model) is offered too: a neural network that redraws each frame on its own,
   crisper but not the same picture, and about 10 times slower than FSR 4. It runs at the smallest of its scales (2, 3,
   4) that reaches the output size, then the result is resized to it (Lanczos). Frames go through its program in
-  chunks of PNG files in a temporary folder, removed afterwards: 4, then 8, then 16 frames, two runs overlapping, so
-  a picture comes about 2.5 s after a seek at 4K; a seek or a stop waits for the chunk being read, up to about 3 s. A
-  program that fails or leaves frames out is an error quoting its output. It refuses `--sharpness`, `--debug-view`,
-  `--debug-checking`, `--validate` and `--gpu`; it picks the discrete card itself.
+  chunks of PNG files in a temporary folder beside the output (§10), removed afterwards: 4, then 8, then 16 frames,
+  two runs overlapping, so a picture comes about 2.5 s after a seek at 4K; a seek or a stop waits for the chunk
+  being read, up to about 3 s. A program that fails or leaves frames out is an error quoting its output. It refuses
+  `--sharpness`, `--debug-view`, `--debug-checking`, `--validate` and `--gpu`; it picks the discrete card itself.
 - Two more Real-ESRGAN models are offered for still images only, since a 1080p picture takes them seconds (*measured*:
   `realesrgan-x4plus`, the general one, 10 s; `realesrgan-x4plus-anime`, for drawings, 4.3 s; the video model 1.8 s). A
   video is refused with a plain reason. They run at 4x and the picture comes down to the output size with an area
@@ -230,7 +230,8 @@ has none of those; the tool substitutes, as the quality lab (§14) settled:
 1. **Source**: the file name ("No file yet"); for a video "<codec> · W × H · <fps> fps", then "[plays as W × H
    · ]3:20 · 12,000 frames · <audio codec, N audio tracks or no audio>"; for an image "<codec> image · W × H".
    Empty, it says "Drop a file anywhere on this window, or choose one."; while probing, "Reading…". The button
-   reads "Choose file…", then "Choose another file…". Under it, the switch "Upscale on open" (on by default; item 6).
+   reads "Choose file…", then "Choose another file…". On its line, at the right end so it stays put when the
+   button's text changes, the switch "Auto upscale" (on by default; tooltip "Upscale as soon as a file opens"; item 6).
    Off, a file opens as in a plain player: the sides showing a preset are turned off, and when that leaves nothing
    the first of them shows the source bicubic. Their settings stay, so choosing a preset in a side's list starts
    upscaling with them.
@@ -257,17 +258,13 @@ has none of those; the tool substitutes, as the quality lab (§14) settled:
    default, "AV1 · GPU (AMF)", "H.264 · GPU (AMF)", "H.264 · CPU (x264)", "HEVC · CPU (x265)") with a note on
    size, speed and the devices that play it, and what happens to the audio ("Audio: AAC copied as is; WMA
    converted to AAC (.mp4 cannot hold it)." or "No audio in this file."). Images disable the encoder.
-   Last, "Temporary files" (item 6): the folder of the pieces (§10), shown with "…" to choose another and Default
-   to go back to the `temp` folder next to the executable (next to the `fsr4` package from source). The folder is
-   made when needed and must take a file, or the banner says why and the folder in use stays. A saved folder that
-   can no longer be used is said in the banner at start, and the default one is used meanwhile.
 5. **Processor**: threads from 1 to every logical processor (default half, shown as "8 of 16") and the priority:
    Normal, Low (default) or Background (quickest but other programs may stutter / other programs stay smooth /
    only spare time). They cap background work only (§10), stay usable while busy and reach the running upscale.
-6. **Preferences**: "Upscale on open" (Source) and "Temporary files" (Output) are kept between runs in
+6. **Preferences**: "Auto upscale" (Source) is kept between runs in
    `%APPDATA%\Coccinelle Player\preferences.json` (written through a temporary file; one that cannot be read is
-   reported in the banner, the defaults are used, and the next change keeps it as `preferences.unreadable`). Both
-   apply from the next file opened.
+   reported in the banner, the defaults are used, and the next change keeps it as `preferences.unreadable`; fields
+   of other versions are ignored). It applies from the next file opened.
 
 A change applies 450 ms after the last one. Each combination of size, upscaler, motion, sharpening and encoder
 is its own version (§10).
@@ -286,7 +283,7 @@ is its own version (§10).
   spinner. A video then shows frame 0 paused while upscaling starts there, and the upscaled side appears once the
   first half second is ready (1.6 s after opening for 1080p60 to 4K, *measured*); status "Ready · Space plays it
   upscaled · Upscale saves the whole video". An image is upscaled at once with every version shown; status
-  "Ready · press Upscale or Ctrl+Enter to save". With "Upscale on open" off, nothing is upscaled
+  "Ready · press Upscale or Ctrl+Enter to save". With "Auto upscale" off, nothing is upscaled
   until a side shows a preset: status "Ready · nothing is upscaled · choose a preset in the Left or Right list to
   upscale".
 
@@ -376,7 +373,7 @@ is its own version (§10).
 - Image: one pass with the saved side's settings, "Upscaling the image…" then "Saved <name> · 3840 × 2160 in 1.2 s".
   Stop or Esc cancels it: "Cancelled · nothing was saved", and no file is written.
 - An upscaling error ends the whole-file upscale, pauses playback, shows "Upscaling stopped: <reason>" and opens
-  the log. Each new piece needs 2 GB free in the temporary folder; below that the reason says how much is free and
+  the log. Each new piece needs 2 GB free in the pieces' folder; below that the reason says how much is free and
   that 4K takes about 10 MB per second.
 - Closing the window during a whole-file upscale asks "The video is still being upscaled. Close the window and
   lose that work?"; during a save it closes once the video is saved.
@@ -459,12 +456,13 @@ is its own version (§10).
   under a few milliseconds and allocates almost nothing. While playing, a zoom or pan resamples the previous
   picture into place until the decoders restart, 0.15 s after the view settles.
 - Images: an image previewer with its own GPU device upscales the image with every version shown.
-- Temporary pieces live in a `fsr4-` folder in the temporary folder of the preferences, by default `temp` next to
-  the executable (about 10 MB per second of 4K), until the file is closed; Real-ESRGAN's pictures go there too. A
-  default folder that cannot be made or written to (a read-only install) gives way to the user's temporary folder,
-  and the log says so. Each folder carries a marker while a window holds it; folders left by a crash are removed
-  the next time the window opens, in the folder in use, the default one and the user's temporary folder, and only
-  this tool's, never one a running window holds.
+- Temporary pieces live in a `fsr4-` folder beside the output (about 10 MB per second of 4K), until the file is
+  closed; Real-ESRGAN's pictures go there too, in the window and on the command line. The folder is the output's as
+  it is when the file opens (by default the source's own); choosing another output later keeps them where they are.
+  An output folder that cannot take files (read-only, or not made yet) gives way to the user's temporary folder, and
+  the log says so; no folder is ever made for them. Each `fsr4-` folder carries a marker while a window holds it;
+  folders left by a crash are removed when the window starts (the user's temporary folder) and when it next puts
+  pieces in that folder, and only this tool's, never one a running window holds.
 - Processor setting: the renderer's ffmpeg processes get `-threads N` when N is below the processor count (x265
   `pools=N`), OpenCV at most N and never more than 8, and the processes and worker threads run at the chosen
   priority; thumbnails and the final join too. The GPU encoders are not capped, and playback never is.

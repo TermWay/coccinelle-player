@@ -1,41 +1,29 @@
 """Where temporary files go: the pieces of the window's videos and Real-ESRGAN's pictures.
 
-By default the `temp` folder next to the executable (next to the `fsr4` package when run from source), so they stay
-with the program instead of filling the system drive; the window's preferences can name another folder. When the
-default folder cannot be made or written to (a read-only install), the system's temporary folder takes its place
-and the log says so.
+They go in the folder of the file being written (the output), so they sit on the drive that receives the result and
+need no setting of their own. Until an output is known, and when its folder cannot take files (read-only, or not
+made yet), they go to the system's temporary folder, and the log says why.
 """
 from __future__ import annotations
 
 import os
-import sys
 import tempfile
 from pathlib import Path
 
 from . import log
 
-DEFAULT_NAME = "temp"
-
 _folder: Path | None = None
 
 
-def program_folder() -> Path:
-    """The folder of the executable, or of the repository when run from source."""
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
-    return Path(__file__).resolve().parent.parent
-
-
-def default_folder() -> Path:
-    return program_folder() / DEFAULT_NAME
+def system_folder() -> Path:
+    return Path(tempfile.gettempdir())
 
 
 def use(path: Path | None) -> Path:
-    """Put temporary files in `path` (None: `default_folder()`) from now on, and return it. The folder is made when
-    needed and must take a file; raises OSError when it cannot, and the folder in use stays."""
+    """Put temporary files in `path` (None: the system's temporary folder) from now on, and return it. The folder
+    must exist and take a file; raises OSError when it cannot, and the folder in use stays."""
     global _folder
-    target = (Path(path) if path is not None else default_folder()).resolve()
-    target.mkdir(parents=True, exist_ok=True)
+    target = (Path(path) if path is not None else system_folder()).resolve()
     handle, probe = tempfile.mkstemp(dir=target, prefix="fsr4-check-")
     os.close(handle)
     os.unlink(probe)
@@ -43,19 +31,24 @@ def use(path: Path | None) -> Path:
     return target
 
 
+def use_beside(output: Path) -> Path:
+    """Put temporary files in the folder of `output`, or in the system's temporary folder (logged) when that folder
+    cannot take them; returns the folder in use."""
+    wanted = Path(output).parent
+    try:
+        return use(wanted)
+    except OSError as error:
+        fallback = use(None)
+        log.emit(f"[temp] error: cannot write to {wanted} ({error}); temporary files go to {fallback}")
+        return fallback
+
+
 def folder() -> Path:
-    """The folder in use. Until `use` names one, the default folder, or the system's when it cannot be used."""
-    global _folder
-    if _folder is None:
-        try:
-            use(None)
-        except OSError as error:
-            _folder = Path(tempfile.gettempdir())
-            log.emit(f"[temp] error: cannot use {default_folder()} ({error}); temporary files go to {_folder}")
-    return _folder
+    """The folder in use: the last one `use` took, else the system's temporary folder."""
+    return _folder if _folder is not None else system_folder()
 
 
 def folders_to_clean() -> list[Path]:
-    """Where pieces left by a crash can be: the folder in use, the default one and the system's (earlier versions
-    put them there)."""
-    return list(dict.fromkeys((folder(), default_folder(), Path(tempfile.gettempdir()))))
+    """Where pieces left by a crash are looked for at start: the folder in use and the system's (earlier versions
+    put them there). The window also cleans each output folder it starts using."""
+    return list(dict.fromkeys((folder(), system_folder())))

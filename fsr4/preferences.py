@@ -1,7 +1,7 @@
 """The window's preferences, kept between runs, and the folder where the window keeps its files.
 
-Preferences: whether a file is upscaled as soon as it opens, and where the temporary files go (None: the default,
-`temporary.default_folder()`). They are saved as JSON in the user's application data folder, next to the presets.
+Preferences: whether a file is upscaled as soon as it opens. They are saved as JSON in the user's application data
+folder, next to the presets.
 """
 from __future__ import annotations
 
@@ -36,21 +36,17 @@ def write_json(path: Path, data: object) -> None:
 @dataclass(frozen=True)
 class Preferences:
     upscale_on_open: bool = True
-    temporary_folder: Path | None = None
 
 
 def preferences_from_json(data: object) -> Preferences:
     """Preferences from their saved form; raises ValueError when a field makes no sense. Missing fields keep their
-    default, so a file from an earlier version still reads."""
+    default and fields this version no longer has are ignored, so a file from another version still reads."""
     if not isinstance(data, dict):
         raise ValueError("expected an object")
     upscale_on_open = data.get("upscale_on_open", True)
     if not isinstance(upscale_on_open, bool):
         raise ValueError(f"upscale_on_open should be true or false, not {upscale_on_open!r}")
-    folder = data.get("temporary_folder")
-    if folder is not None and (not isinstance(folder, str) or not folder.strip()):
-        raise ValueError(f"temporary_folder should be a folder or null, not {folder!r}")
-    return Preferences(upscale_on_open, Path(folder) if folder is not None else None)
+    return Preferences(upscale_on_open)
 
 
 class PreferenceStore:
@@ -78,8 +74,6 @@ class PreferenceStore:
         if self.load_error is not None and self.path.exists():
             self.path.replace(self.path.with_suffix(".unreadable"))
             self.load_error = None
-        folder = preferences.temporary_folder
-        write_json(self.path, {"version": FILE_VERSION, "upscale_on_open": preferences.upscale_on_open,
-                               "temporary_folder": str(folder) if folder is not None else None})
+        write_json(self.path, {"version": FILE_VERSION, "upscale_on_open": preferences.upscale_on_open})
         self.preferences = preferences
         return preferences

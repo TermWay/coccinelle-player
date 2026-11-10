@@ -11,7 +11,7 @@ window's own monitor (the second one when there is one) with its controls showin
 rest, then back where the window was, the folded sidebar, the whole-file upscale and save, AMD's HQ scaler beside
 FSR 4 and through a whole-file upscale, Real-ESRGAN beside FSR 4 (a whole-file upscale stopped midway, and the note
 when it is not installed), an image compared with a preset, saved, then cancelled (nothing written), the error
-banner for a bad file, a video opened with the upscale-on-open switch off (pieces in a chosen temporary folder),
+banner for a bad file, a video opened with the upscale-on-open switch off (its pieces beside the output),
 and the minimum window size. Presets and preferences go to scratch files in `--out`, not the user's. Screenshots
 go through PrintWindow, so the window may be covered; it does pop up on the desktop and must not be minimized.
 """
@@ -33,7 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import window_capture  # noqa: E402
-from fsr4 import media, temporary, ui, ui_theme, ui_window, usage  # noqa: E402
+from fsr4 import media, ui, ui_theme, ui_window, usage  # noqa: E402
 from fsr4.preferences import PreferenceStore  # noqa: E402
 from fsr4.presets import BEST, PresetStore  # noqa: E402
 from fsr4.realesrgan import REAL_ESRGAN  # noqa: E402
@@ -639,20 +639,17 @@ def main() -> int:
         check(left_block.how().upscaler == REAL_ESRGAN, "opening a video takes a model for still images off its side")
         choose("left", "cubic")
         # The switch off, a file opens as in a plain player: the source alone, nothing upscaled, until a preset is
-        # chosen. Its pieces go to the temporary folder chosen.
-        pieces = (args.out / "temp_check").resolve()
-        app._set_temporary_folder(pieces)
-        check(app.temporary_var.get() == str(pieces) and app.temporary_default_button.winfo_manager() == "grid",
-              f"a temporary folder is chosen ({app.temporary_var.get()})")
+        # chosen. Its pieces wait beside the output.
         app.upscale_on_open_switch.invoke()
         kept = PreferenceStore(preferences_file).preferences
-        check(not kept.upscale_on_open and kept.temporary_folder == pieces,
-              f"the preferences are kept in their file ({kept})")
+        check(not kept.upscale_on_open, f"the preferences are kept in their file ({kept})")
         app.load(args.video)
         yield lambda: app.info is not None and app.renderer is not None
         check(app.side_choices == {"left": "cubic", "right": ui.OFF},
               f"opened without upscaling, the source alone ({app.side_choices})")
-        check(app.renderer.directory.parent == pieces, f"the pieces go to the chosen folder ({app.renderer.directory})")
+        output_folder = Path(app.output_var.get()).resolve().parent
+        check(app.renderer.directory.parent == output_folder,
+              f"the pieces wait beside the output ({app.renderer.directory})")
         app.toggle_play()
         yield 2.0
         check(app.player.position > 0 and app.render_position is None and app.renderer.timeline.ready_frames() == 0,
@@ -660,31 +657,21 @@ def main() -> int:
         check(app.status_var.get() == ui.NOTHING_UPSCALED, f"the status says how to upscale ({app.status_var.get()})")
         shot("12_opened_without_upscaling")
         switch, choose_button, content = app.upscale_on_open_switch, app.choose_button, app.sidebar_content
-        under = (switch.winfo_rootx() == choose_button.winfo_rootx()
-                 and 0 <= switch.winfo_rooty() - choose_button.winfo_rooty() - choose_button.winfo_height() <= 20)
+        middle_offset = (switch.winfo_rooty() + switch.winfo_height() // 2
+                         - choose_button.winfo_rooty() - choose_button.winfo_height() // 2)
+        gap = switch.winfo_rootx() - choose_button.winfo_rootx() - choose_button.winfo_width()
         switch_right = switch.winfo_rootx() + switch.winfo_width() - content.winfo_rootx()
         inner_right = content.winfo_width() - app.theme.px(6)
-        check(under and switch_right <= inner_right and switch.winfo_width() >= switch.winfo_reqwidth(),
-              f"the switch sits whole under Choose file (ends at {switch_right} of {inner_right})")
-        folder_y = app.temporary_entry.master.winfo_y()
-        check(app.encoder_choice.winfo_y() < folder_y < app.threads_label.master.winfo_y(),
-              "the temporary folder is in the Output section, under the encoder")
-        app.sidebar_canvas.yview_moveto(max(0.0, (app.output_entry.master.winfo_y() - 60) / content.winfo_reqheight()))
-        yield 0.4
-        check(app.temporary_entry.xview()[1] >= 0.999, f"the folder's field shows the end of its path "
-                                                         f"({app.temporary_entry.xview()})")
-        shot("12a_temporary_folder_in_output")
-        app.sidebar_canvas.yview_moveto(0.0)
+        check(abs(middle_offset) <= 2 and gap >= app.theme.px(8) and inner_right - 2 <= switch_right <= inner_right
+              and switch.winfo_width() >= switch.winfo_reqwidth(),
+              f"the switch sits whole at the right end of {choose_button.cget('text')!r}'s line (a gap of {gap}, "
+              f"ends at {switch_right} of {inner_right})")
         app.toggle_play()
         yield lambda: not app.player.playing
         choose("right", "preset:FSR 4")
         yield lambda: side_ready("right")
         check(True, "choosing a preset starts the upscaler")
         app.upscale_on_open_switch.invoke()
-        app._set_temporary_folder(None)
-        check(app.temporary_var.get() == str(temporary.default_folder())
-              and app.temporary_default_button.winfo_manager() == "",
-              "Default goes back to the folder next to the program")
         minimum_width, minimum_height = root.minsize()
         root.geometry(f"{minimum_width}x{minimum_height}")
         yield 1.0

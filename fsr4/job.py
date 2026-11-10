@@ -12,7 +12,7 @@ from typing import Callable
 
 import numpy as np
 
-from . import log
+from . import log, temporary
 from .ffx import QUALITY_MODE_SCALES, find_sdk_dir
 from .flow import create_flow
 from .hq_scaler import HQ_SCALER, MIN_SIZE as HQ_MIN_SIZE
@@ -210,6 +210,8 @@ def run_job(options: JobOptions, progress: ProgressCallback | None = None,
     """
     from .gpu import Gpu
     job = plan(options)
+    if options.upscaler in MODELS:
+        temporary.use_beside(job.output)  # Real-ESRGAN's pictures wait next to the output
     uses_fsr = options.upscaler not in EXTERNAL_UPSCALERS
     sdk_dir = find_sdk_dir(options.sdk) if uses_fsr else None
     width, height = job.render_size
