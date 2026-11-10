@@ -54,7 +54,9 @@ sub-pixel camera jitter every frame. A video file has none of those, so this too
   (a tick), and hovering it gives the frame number and its time to the millisecond; the filmstrip above it
   shows the video, bright where it is upscaled. The buttons around Play step one frame back or forward (hold
   to keep stepping); the time shows the current frame's number and keeps one width, so the volume after it
-  stays put. The volume slider fills up to its knob and shows its percentage (click, drag, the wheel, ↑ ↓).
+  stays put. The volume slider is a decibel scale like the speed's, marked 0, 1, 3, 10, 30 and 100%, so equal
+  distances sound like equal steps (click, drag, the wheel over it or the speaker, ↑ ↓); the speaker shows the
+  level.
 - **Speed:** the slider at the right of the controls is a log scale from .05× to 5×, with 0 at its left end: 0
   pauses, and the next speed plays on. A drag stops anywhere (0.35×) and lands on a mark when near one; [, ] and
   the wheel go from mark to mark, Backspace or a click on the value goes back to 1× forwards. The ◀ button
@@ -76,10 +78,9 @@ sub-pixel camera jitter every frame. A video file has none of those, so this too
   its upscaler and only what that upscaler can change: motion vectors and sharpening for FSR, sharpening for the HQ
   scaler, nothing for Real-ESRGAN. + saves those settings as a preset of your own (the size and the encoder stay the
   file's) in `%APPDATA%\Coccinelle Player\presets.json`, and the bin deletes one.
-- **Zoom:** Fit shows the whole picture; Original size shows the source at its own pixel size (the upscaled
-  side shrunk to match); 100% to 800% show upscaled pixels 1:1 or enlarged, and the slider beside them goes
-  anywhere from Fit to 800%, sticking a little at those steps. From 100% up every pixel is drawn as a block,
-  exactly as the file holds it. All of it works while playing. Drag the divider; the wheel zooms around the
+- **Zoom:** the Fit button shows the whole picture; the slider beside it is marked like the speed's: Original
+  shows the source at its own pixel size (the upscaled side shrunk to match); 100% to 800% show upscaled pixels
+  1:1 or enlarged. Click or drag anywhere on it (137%), or click a mark. From 100% up every pixel is drawn as a block, exactly as the file holds it. All of it works while playing. Drag the divider; the wheel zooms around the
   pointer in finer steps (four per doubling); right-drag or the minimap moves the visible area; double-click
   switches between Fit and 100%.
 - **Upscale** (Ctrl+Enter) does the rest of the file the way the saved side says, starting at the playhead, and

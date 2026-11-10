@@ -216,14 +216,15 @@ def app_icon(size: int) -> np.ndarray:
     return sketch.rgba()
 
 
-ICON_NAMES = ("play", "reverse", "pause", "volume", "mute", "fullscreen", "windowed", "sidebar", "add", "delete",
-              "frame_back", "frame_forward")
+ICON_NAMES = ("play", "reverse", "pause", "volume", "volume_low", "volume_none", "mute", "fullscreen", "windowed",
+              "sidebar", "add", "delete", "frame_back", "frame_forward")
 
 
 def icon(name: str, size: int, color: str) -> np.ndarray:
-    """A small control icon (straight RGBA) drawn on a 24-unit grid: play, reverse (play, mirrored), pause, volume,
-    mute, fullscreen, windowed (leave full screen), sidebar, add (a plus), delete (a bin), frame_back or
-    frame_forward (a step of one frame: a triangle against a bar)."""
+    """A small control icon (straight RGBA) drawn on a 24-unit grid: play, reverse (play, mirrored), pause, volume
+    (a speaker with two waves; volume_low one, volume_none none), mute (crossed), fullscreen, windowed (leave full
+    screen), sidebar, add (a plus), delete (a bin), frame_back or frame_forward (a step of one frame: a triangle
+    against a bar)."""
     sketch = Sketch(size, size)
     unit = size / 24
     stroke = max(1.2, 1.9 * unit)
@@ -234,7 +235,7 @@ def icon(name: str, size: int, color: str) -> np.ndarray:
     elif name == "pause":
         for left in (7, 13.5):
             sketch.fill(sketch.rounded_rect(left * unit, 5.5 * unit, (left + 3.5) * unit, 18.5 * unit, 1 * unit), color)
-    elif name in ("volume", "mute"):
+    elif name in ("volume", "volume_low", "volume_none", "mute"):
         speaker = sketch.polygon([(4 * unit, 9.5 * unit), (8 * unit, 9.5 * unit), (13 * unit, 5 * unit),
                                   (13 * unit, 19 * unit), (8 * unit, 14.5 * unit), (4 * unit, 14.5 * unit)])
         sketch.fill(speaker, color)
@@ -242,7 +243,9 @@ def icon(name: str, size: int, color: str) -> np.ndarray:
             waves = np.maximum(sketch.ring(12 * unit, 12 * unit, 4.5 * unit, stroke, -0.9, 0.9),
                                sketch.ring(12 * unit, 12 * unit, 8 * unit, stroke, -0.9, 0.9))
             sketch.fill(waves, color)
-        else:
+        elif name == "volume_low":
+            sketch.fill(sketch.ring(12 * unit, 12 * unit, 4.5 * unit, stroke, -0.9, 0.9), color)
+        elif name == "mute":
             cross = np.maximum(sketch.segment(15.5 * unit, 9 * unit, 21 * unit, 15 * unit, stroke),
                                sketch.segment(21 * unit, 9 * unit, 15.5 * unit, 15 * unit, stroke))
             sketch.fill(cross, color)

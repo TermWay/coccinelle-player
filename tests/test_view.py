@@ -39,25 +39,20 @@ class SpeedSliderTest(unittest.TestCase):
 
     def test_every_tick_reads_back(self):
         for stop in SPEED_STOPS:
-            self.assertEqual(speed_at(speed_fraction(stop), 0.0), stop)
+            self.assertEqual(speed_at(speed_fraction(stop)), stop)
 
     def test_between_ticks_the_speed_is_what_the_value_shows(self):
-        between = speed_at((speed_fraction(0.25) + speed_fraction(0.5)) / 2, 0.0)
+        between = speed_at((speed_fraction(0.25) + speed_fraction(0.5)) / 2)
         self.assertEqual(between, 0.35)
-        self.assertEqual(speed_at((speed_fraction(2.0) + speed_fraction(5.0)) / 2, 0.0), 3.2)
-
-    def test_a_drag_near_a_tick_lands_on_it(self):
-        beside = speed_fraction(1.0) + 0.02
-        self.assertEqual(speed_at(beside, 0.03), 1.0)
-        self.assertNotEqual(speed_at(beside, 0.01), 1.0)
+        self.assertEqual(speed_at((speed_fraction(2.0) + speed_fraction(5.0)) / 2), 3.2)
 
     def test_nothing_lies_between_0_and_the_slowest_speed(self):
-        self.assertEqual(speed_at(STOPPED_SHARE * 0.4, 0.0), 0.0)
-        self.assertEqual(speed_at(STOPPED_SHARE * 0.6, 0.0), SLOWEST_SPEED)
+        self.assertEqual(speed_at(STOPPED_SHARE * 0.4), 0.0)
+        self.assertEqual(speed_at(STOPPED_SHARE * 0.6), SLOWEST_SPEED)
 
     def test_past_the_ends_stays_at_the_ends(self):
-        self.assertEqual(speed_at(-0.5, 0.0), 0.0)
-        self.assertEqual(speed_at(1.5, 0.0), FASTEST_SPEED)
+        self.assertEqual(speed_at(-0.5), 0.0)
+        self.assertEqual(speed_at(1.5), FASTEST_SPEED)
 
     def test_the_keys_go_from_tick_to_tick(self):
         self.assertEqual(next_stop(1.0, True), 2.0)

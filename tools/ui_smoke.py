@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import argparse
 import ctypes
-import math
 import os
 import sys
 import threading
@@ -37,7 +36,8 @@ from fsr4 import media, ui, ui_theme, ui_window, usage  # noqa: E402
 from fsr4.preferences import PreferenceStore  # noqa: E402
 from fsr4.presets import BEST, PresetStore  # noqa: E402
 from fsr4.realesrgan import REAL_ESRGAN  # noqa: E402
-from fsr4.ui_transport import KNOB_INSET, speed_fraction  # noqa: E402
+from fsr4.ui_slider import KNOB_INSET  # noqa: E402
+from fsr4.ui_transport import VOLUME_KEY_DECIBELS, speed_fraction, volume_fraction  # noqa: E402
 
 WM_DROPFILES = 0x0233
 WM_CLOSE = 0x0010
@@ -250,14 +250,21 @@ def main() -> int:
             positions.append(transport.volume_bar.winfo_x())
         check(positions[0] == positions[1], f"the volume stays in place as the time grows: x {positions}")
         volume_bar = transport.volume_bar
-        inset = app.theme.px(8)
-        volume_bar.event_generate("<ButtonPress-1>", x=inset + (volume_bar.winfo_width() - 2 * inset) // 4,
-                                  y=volume_bar.winfo_height() // 2)
+        volume_y = volume_bar.winfo_height() // 2
+        volume_bar.event_generate("<ButtonPress-1>", x=int(round(volume_bar.x_of(volume_fraction(0.2)))), y=volume_y)
         volume_bar.event_generate("<ButtonRelease-1>", x=0, y=0)
-        percent = int(transport.volume_label.cget("text").rstrip("%"))
-        check(abs(percent - 25) <= 2, f"a click a quarter along the volume slider sets about 25%: {percent}%")
-        transport.change_volume(0.1)
-        check(transport.volume_label.cget("text") == "30%", "up steps the volume to the next 10%")
+        percent = float(transport.volume_label.cget("text").rstrip("%"))
+        check(abs(percent - 20) <= 1, f"a click where the volume slider reads 20% sets it: {percent}%")
+        volume_labels = {mark.value: (left + right) / 2 for mark, left, right in volume_bar._labels}
+        check(len(volume_labels) == 6, f"the volume slider labels 0, 1, 3, 10, 30 and 100 ({sorted(volume_labels)})")
+        if 0.1 in volume_labels:
+            for sequence in ("<ButtonPress-1>", "<ButtonRelease-1>"):
+                volume_bar.event_generate(sequence, x=int(round(volume_labels[0.1])), y=volume_y + app.theme.px(13))
+            check(transport.volume == 0.1, f"a click on the 10 label sets 10% ({transport.volume_label.cget('text')})")
+        transport.change_volume(VOLUME_KEY_DECIBELS)
+        check(transport.volume_label.cget("text") == "16%",
+              f"up raises the volume 4 dB ({transport.volume_label.cget('text')})")
+        shot("03c_volume")
         transport.toggle_mute()
         check(transport.volume_label.cget("style") == "Faint.TLabel", "muted, the percentage greys out")
         transport.toggle_mute()
@@ -275,7 +282,8 @@ def main() -> int:
         choose("left", "nearest")
         app.view.set_zoom(2, anchor=center())
         yield 0.6
-        check(app.zoom_var.get() == "2", "zoom chip follows the view")
+        check(app.zoom_slider.current == 2 and app.zoom_label.cget("text") == "200%",
+              f"the zoom slider follows the view ({app.zoom_label.cget('text')})")
         check(app.view.sides["left"] == "nearest", "left side shows the original pixels")
         shot("05_paused_zoom_original")
         view = app.view
@@ -298,22 +306,44 @@ def main() -> int:
         yield 0.2
         check(view.handle_y == handle_y, "once released, the handle stays where it was dragged")
         shot("05_handle_at_pointer")
-        app.zoom_slider_var.set(math.log2(1.5))
-        app._zoom_slid()
+        zoom_slider = app.zoom_slider
+        track_y = zoom_slider.winfo_height() // 2
+
+        def zoom_x(scale: float) -> int:
+            return int(round(zoom_slider.x_of(app._zoom_fraction(scale))))
+
+        def click_zoom(x: float, y: int) -> None:
+            for sequence in ("<ButtonPress-1>", "<ButtonRelease-1>"):
+                zoom_slider.event_generate(sequence, x=int(round(x)), y=y)
+
+        click_zoom(zoom_x(1.5), track_y)
         yield 0.6
-        check(abs(app.view.zoom_scale(app.view.zoom) - 1.5) < 0.01 and app.zoom_var.get() == "",
-              f"the slider zooms to {app.zoom_label.cget('text')}")
+        check(abs(app.view.zoom_scale(app.view.zoom) - 1.5) < 0.02 and app.zoom_label.cget("text") == "150%",
+              f"a click on the zoom slider zooms there ({app.zoom_label.cget('text')})")
         shot("05a_zoom_slider")
-        app.zoom_slider_var.set(math.log2(1.02))
-        app._zoom_slid()
-        check(app.view.zoom == 1 and app.zoom_var.get() == "1", "the slider sticks to 100%")
-        app.view.set_zoom("fit")
+        click_zoom(zoom_x(1.0) + app.theme.px(3), track_y)
+        check(app.view.zoom == 1, f"a click next to the 100% mark lands on it ({app.view.zoom})")
+        zoom_slider.event_generate("<ButtonPress-1>", x=zoom_x(1.0), y=track_y)
+        zoom_slider.event_generate("<B1-Motion>", x=zoom_x(3.0), y=track_y)
+        zoom_slider.event_generate("<ButtonRelease-1>", x=zoom_x(3.0), y=track_y)
+        check(abs(app.view.zoom_scale(app.view.zoom) - 3.0) < 0.05, f"a drag zooms along ({app.zoom_label.cget('text')})")
+        labels = {mark.value: (left + right) / 2 for mark, left, right in zoom_slider._labels}
+        check({1, 8} <= set(labels), f"the zoom slider labels 100% and 800% at least ({sorted(map(str, labels))})")
+        check(app.zoom_fit_var.get() == "", "away from Fit, the Fit button is not lit")
+        if "source" in labels:
+            click_zoom(labels["source"], track_y + app.theme.px(13))
+            check(app.view.zoom == "source", f"a click on the Original label zooms there ({app.view.zoom})")
+        zoom_slider.event_generate("<MouseWheel>", delta=120, x=zoom_x(1.0), y=track_y)
+        check(app.view.zoom_scale(app.view.zoom) > app.view.zoom_scale("source"),
+              f"the wheel over the zoom slider zooms in ({app.zoom_label.cget('text')})")
+        app.zoom_fit_button.invoke()
+        check(app.view.zoom == "fit" and app.zoom_fit_var.get() == "fit", "the Fit button fits the picture and lights")
         app.view.set_zoom(app.view.zoom_step(1))
         check(app.view.fit_scale() < app.view.zoom_scale(app.view.zoom) < app.view.fit_scale() * 1.2,
               f"a wheel notch zooms in a quarter octave ({app.zoom_label.cget('text')})")
         app.view.set_zoom("source")
         yield 0.6
-        check(app.zoom_var.get() == "source", "Original size chip follows the view")
+        check(app.zoom_slider.current == "source", "the zoom slider follows Original size")
         shot("05b_original_size")
         app.view.set_zoom("fit")
         choose("left", "cubic")
@@ -680,6 +710,10 @@ def main() -> int:
         check(button.winfo_x() + button.winfo_width() <= app.transport.controls.winfo_width(),
               f"the playback controls all fit at the minimum size ({button.winfo_x() + button.winfo_width()} "
               f"for {app.transport.controls.winfo_width()})")
+        zoom_label = app.zoom_label
+        check(zoom_label.winfo_x() + zoom_label.winfo_width() <= zoom_label.master.winfo_width(),
+              f"the zoom slider and its value fit at the minimum size ({zoom_label.winfo_x() + zoom_label.winfo_width()}"
+              f" for {zoom_label.master.winfo_width()})")
         content, canvas = app.sidebar_content, app.sidebar_canvas
         fits = content.winfo_reqheight() <= canvas.winfo_height() + 1
         check(fits or app.sidebar_scrollbar.winfo_ismapped(),

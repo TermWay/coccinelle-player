@@ -11,7 +11,7 @@ enlarged by a filter (original pixels, bilinear, bicubic or Lanczos), all at the
 geometry; clicking a side's label tells the window, which opens that side's dropdown. The divider's handle goes to
 the height where the divider is pressed or dragged. A side can be OFF: the other one fills the picture and there is no divider.
 Zoom is Fit, Original
-size (one screen pixel per source pixel, the upscaled side shrunk to match) or any scale from Fit to 800%; from
+size (one screen pixel per source pixel, the upscaled side shrunk to match) or any scale up to 800%; from
 100% up every output pixel is a block of screen pixels (nearest neighbour), so what is drawn is what the file
 holds. The right or middle button pans, the wheel zooms around the cursor in quarter octaves (stopping at
 Fit, Original size and 100% to 800%), double-click switches between Fit and 100%, and the minimap moves the
@@ -630,9 +630,9 @@ class VideoView(tk.Frame):
         return float(zoom)
 
     def zoom_range(self) -> tuple[float, float]:
-        """The smallest and largest scale the slider and the wheel go to: Fit (or 100% for small pictures)
-        to MAX_ZOOM."""
-        return min(self.fit_scale(), 1.0), MAX_ZOOM
+        """The smallest and largest scale the slider and the wheel go to: the smallest of Fit, Original size and
+        100%, to MAX_ZOOM."""
+        return min(self.fit_scale(), self.zoom_scale("source"), 1.0), MAX_ZOOM
 
     def zoom_named(self, scale: float):
         """The zoom level for `scale`: "fit", "source" or a whole number when it is (nearly) one of those."""

@@ -48,8 +48,9 @@ from .ui_art import icon, png_base64
 from .ui_sides import SideBlock, show_widget
 from .ui_theme import Theme, enable_dark_dialogs, style_title_bar
 from .ui_tooltip import Tooltip
-from .ui_transport import Transport, format_time
-from .ui_video import OFF, REFERENCE_FILTERS, ZOOM_LEVELS, VideoView
+from .ui_transport import VOLUME_KEY_DECIBELS, Transport, format_time
+from .ui_slider import Mark, MarkedSlider
+from .ui_video import OFF, REFERENCE_FILTERS, VideoView
 from .ui_window import Curtain, Fullscreen, keep_contents_on_resize, repaint
 
 APP_NAME = "Coccinelle Player"
@@ -67,7 +68,11 @@ REVERSE_CHUNK_SECONDS = 1.0
 REVERSE_AHEAD_SECONDS = 12.0
 HIDE_LEAVE_MS = 600
 CONTROLS_ZONE_MARGIN = 80
-ZOOM_SNAP_OCTAVES = 0.04
+# The zoom slider's marks, (zoom, label, rank): a narrow slider keeps the labels of rank 0.
+ZOOM_TICKS = (("source", "Original", 1), (1, "100%", 0), (2, "200%", 1), (4, "400%", 1), (8, "800%", 0))
+ZOOM_WIDTH = 480  # 96 DPI pixels, the zoom slider's width when there is room
+ZOOM_MIN_WIDTH = 160
+ZOOM_SPARE_WEIGHT = 1000  # the room after the zoom slider takes nearly all the spare width
 SEEK_STEP_SECONDS = 5
 SOURCE_THUMBNAILS = 40
 THUMBNAIL_HEIGHT = 108
@@ -236,7 +241,6 @@ class App:
         self._pointer_pressed = False
         self._last_pointer: tuple[int, int] | None = None
         self._cursor_hidden = False
-        self._setting_zoom_slider = False
         root.title(APP_NAME)
         root.iconphoto(True, *self.theme.icon_photos())
         self.icons = {(name, color): tk.PhotoImage(master=root, data=png_base64(icon(name, self.theme.px(20),
@@ -598,33 +602,29 @@ class App:
                            "fills the picture. The label on the picture opens this list too. Drag the divider to "
                            "move it.")
             self.side_boxes[side] = box
-        zoom_chips = ttk.Frame(self.toolbar)
-        zoom_chips.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(px(8), 0))
-        zoom_chips.columnconfigure(len(ZOOM_LEVELS), weight=1)
-        self.zoom_var = tk.StringVar(value="fit")
-        self.zoom_chips = []
-        zoom_names = {"fit": "Fit", "source": "Original size"}
-        zoom_tips = {"fit": "The whole picture.",
-                     "source": "The source at its own size, one screen pixel per source pixel; the upscaled side is "
-                               "shrunk to match. What upscaling changes at the size you watched the original.",
-                     1: "One screen pixel per upscaled pixel."}
-        for index, level in enumerate(ZOOM_LEVELS):
-            chip = ttk.Radiobutton(zoom_chips, text=zoom_names.get(level) or f"{level * 100}%",
-                                   value=str(level), variable=self.zoom_var, style="Segment.TRadiobutton",
-                                   takefocus=False, command=lambda: self.view.set_zoom(self._zoom_value()))
-            chip.grid(row=0, column=index, padx=(px(5) if index else 0, 0))
-            self.zoom_chips.append(chip)
-            self._tip(chip, zoom_tips.get(level, f"Each upscaled pixel as a {level}×{level} block, to inspect detail."))
-        self.zoom_slider_var = tk.DoubleVar(value=0.0)
-        self.zoom_slider = ttk.Scale(zoom_chips, from_=-2.0, to=3.0, variable=self.zoom_slider_var, length=px(100),
-                                     command=lambda _: self._zoom_slid())
-        self.zoom_slider.grid(row=0, column=len(ZOOM_LEVELS), sticky="ew", padx=(px(14), 0))
-        self._tip(self.zoom_slider, "Any zoom from Fit to 800%. It sticks a little at Fit, Original size and 100% "
-                                    "to 800%. From 100% up every upscaled pixel is drawn as a block, exactly as "
-                                    "the file holds it. The wheel on the picture zooms in finer steps around the "
-                                    "pointer.")
-        self.zoom_label = ttk.Label(zoom_chips, text="", style="Small.TLabel", width=6, anchor="e")
-        self.zoom_label.grid(row=0, column=len(ZOOM_LEVELS) + 1, padx=(px(6), 0))
+        zoom_row = ttk.Frame(self.toolbar)
+        zoom_row.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(px(4), 0))
+        zoom_row.columnconfigure(2, weight=1, minsize=px(ZOOM_MIN_WIDTH))
+        zoom_row.columnconfigure(4, weight=ZOOM_SPARE_WEIGHT)
+        ttk.Label(zoom_row, text="Zoom", style="Small.TLabel").grid(row=0, column=0, padx=(0, px(6)))
+        self.zoom_fit_var = tk.StringVar(value="fit")
+        self.zoom_fit_button = ttk.Radiobutton(zoom_row, text="Fit", value="fit", variable=self.zoom_fit_var,
+                                               style="Segment.TRadiobutton", takefocus=False,
+                                               command=lambda: self.view.set_zoom("fit"))
+        self.zoom_fit_button.grid(row=0, column=1, padx=(0, px(10)))
+        self._tip(self.zoom_fit_button, "The whole picture, as large as the view allows. A double-click on the "
+                                        "picture switches between Fit and 100%.")
+        self.zoom_slider = MarkedSlider(zoom_row, self.theme, ZOOM_WIDTH, on_pick=self._zoom_picked,
+                                        on_wheel=lambda up: self.view.set_zoom(self.view.zoom_step(1 if up else -1)))
+        self.zoom_slider.grid(row=0, column=2, sticky="ew")
+        self._tip(self.zoom_slider, "Zoom: click or drag anywhere up to 800%, or click a mark. Original shows the "
+                                    "source at its own size, one screen pixel per source pixel, the upscaled side "
+                                    "shrunk to match (what upscaling changes at the size you watched the original); "
+                                    "100% is one screen pixel per upscaled pixel, and from there up every upscaled "
+                                    "pixel is drawn as a block, exactly as the file holds it. The wheel here or on "
+                                    "the picture zooms in quarter steps, stopping at Fit and the marks.")
+        self.zoom_label = ttk.Label(zoom_row, text="", style="Small.TLabel", width=5, anchor="w")
+        self.zoom_label.grid(row=0, column=3, padx=(px(6), 0))
         self.view = VideoView(main, self.theme, on_browse=self.browse, on_zoom_changed=self._zoom_changed,
                               on_side_click=self._open_side_box)
         self.view.grid(row=2, column=0, sticky="nsew")
@@ -644,8 +644,10 @@ class App:
                                             "frames a second at 4K with its best motion, so fast speeds wait more.")
         self._tip(self.transport.reverse_button, "Play backwards at the speed of the slider (R).")
         self._tip(self.transport.speed_label, "Click to play forwards at normal speed again (Backspace).")
-        self._tip(self.transport.volume_button, "Mute (M). ↑ and ↓ change the volume.")
-        self._tip(self.transport.volume_bar, "The volume: click or drag it; the wheel, ↑ and ↓ change it too.")
+        self._tip(self.transport.volume_button, "Mute (M). The wheel here, ↑ and ↓ change the volume.")
+        self._tip(self.transport.volume_bar, "The volume, on a decibel scale: equal distances sound like equal "
+                                             "steps (1% is −40 dB, 10% −20 dB). Click or drag it, or click a mark; "
+                                             "the wheel (2 dB) and ↑ ↓ (4 dB) change it too.")
         self._tip(self.transport.fullscreen_button, "Full screen (F11 or F). Esc leaves it.")
         self._tip(self.transport.bar, "Click or drag to jump. The lighter bar is what is upscaled; the small tick is "
                                       "where the upscaler works.")
@@ -732,8 +734,8 @@ class App:
                                  ("<Home>", lambda: self.seek_to(0, True)),
                                  ("<End>", lambda: self.seek_to(self._total() - 1, True)),
                                  ("<m>", self.transport.toggle_mute),
-                                 ("<Up>", lambda: self.transport.change_volume(0.1)),
-                                 ("<Down>", lambda: self.transport.change_volume(-0.1)),
+                                 ("<Up>", lambda: self.transport.change_volume(VOLUME_KEY_DECIBELS)),
+                                 ("<Down>", lambda: self.transport.change_volume(-VOLUME_KEY_DECIBELS)),
                                  ("<bracketleft>", lambda: self.transport.change_speed(False)),
                                  ("<bracketright>", lambda: self.transport.change_speed(True)),
                                  ("<r>", self.transport.toggle_reverse),
@@ -953,10 +955,7 @@ class App:
                 button.grid()
             else:
                 button.grid_remove()
-        comparing = self.view.comparing
-        self._comparing_shown = comparing
-        for widget in self.zoom_chips + [self.zoom_slider]:
-            self._set_state(widget, comparing)
+        self._comparing_shown = self.view.comparing
         self._update_zoom_controls()
 
     def _default_output(self) -> Path:
@@ -967,38 +966,37 @@ class App:
             path = path.with_suffix(Path(current).suffix)
         return free_name(path)
 
-    def _zoom_value(self):
-        value = self.zoom_var.get()
-        return value if value in ("fit", "source") else int(value)
-
-    def _zoom_changed(self, zoom) -> None:
-        self.zoom_var.set(str(zoom) if zoom in ZOOM_LEVELS else "")
+    def _zoom_changed(self, _zoom) -> None:
         self._update_zoom_controls()
 
+    def _zoom_fraction(self, scale: float) -> float:
+        """Where `scale` lies along the zoom slider: its range (`VideoView.zoom_range`) in octaves."""
+        low, high = self.view.zoom_range()
+        return min(1.0, max(0.0, math.log2(scale / low) / math.log2(high / low)))
+
     def _update_zoom_controls(self) -> None:
-        """The slider's range (Fit to 800% in this window, in octaves) and position, and the zoom in percent."""
-        if not self.view.comparing:
+        """The Fit button (lit at Fit), the zoom slider's marks (Original moves with the file, and the whole scale
+        with Fit) and knob, and the zoom in percent; nothing to zoom, they are disabled."""
+        comparing = self.view.comparing
+        self._set_state(self.zoom_fit_button, comparing)
+        self.zoom_slider.set_enabled(comparing)
+        self.zoom_fit_var.set("fit" if comparing and self.view.zoom == "fit" else "")
+        if not comparing:
             self.zoom_label.configure(text="")
             return
-        low, high = self.view.zoom_range()
+        self.zoom_slider.set_marks([Mark(self._zoom_fraction(self.view.zoom_scale(level)), label, level, rank,
+                                         emphasis=level == 1) for level, label, rank in ZOOM_TICKS])
         scale = self.view.zoom_scale(self.view.zoom)
-        self._setting_zoom_slider = True
-        try:
-            self.zoom_slider.configure(from_=math.log2(low), to=math.log2(high))
-            self.zoom_slider_var.set(math.log2(min(high, max(low, scale))))
-        finally:
-            self._setting_zoom_slider = False
+        self.zoom_slider.show(self._zoom_fraction(scale), self.view.zoom)
         self.zoom_label.configure(text=f"{scale * 100:.0f}%")
 
-    def _zoom_slid(self) -> None:
-        """The slider moved: zoom there, sticking to Fit, Original size and whole zooms nearby."""
-        if self._setting_zoom_slider:
+    def _zoom_picked(self, fraction: float, mark: Mark | None) -> None:
+        """The zoom slider clicked or dragged: a mark's zoom, else the scale there to the percent."""
+        if mark is not None:
+            self.view.set_zoom(mark.value)
             return
-        octave = float(self.zoom_slider_var.get())
-        stops = [self.view.zoom_scale("fit"), self.view.zoom_scale("source"), 1.0, 2.0, 4.0, 8.0]
-        nearest = min(stops, key=lambda stop: abs(math.log2(stop) - octave))
-        scale = nearest if abs(math.log2(nearest) - octave) < ZOOM_SNAP_OCTAVES else 2 ** octave
-        self.view.set_zoom(self.view.zoom_named(scale))
+        low, high = self.view.zoom_range()
+        self.view.set_zoom(self.view.zoom_named(round(low * (high / low) ** fraction, 2)))
 
     # ---- what each side shows -------------------------------------------------------------------
 

@@ -214,8 +214,12 @@ has none of those; the tool substitutes, as the quality lab (§14) settled:
   DXGI counts it, Vulkan memory included), whose tooltip also says the tool is independent, not made or endorsed
   by AMD, with AMD's trademarks; "Checking the GPU…" until the check ends, a red dot and "GPU unavailable" if it
   fails.
-- Main area, top to bottom: the error banner; a toolbar with the Left and Right dropdowns, the zoom chips, the
-  zoom slider and the zoom percentage; the picture; the playback controls (videos); the log.
+- Main area, top to bottom: the error banner; a toolbar with the Left and Right dropdowns, then the zoom (Fit
+  button, slider and percentage); the picture; the playback controls (videos); the log.
+- Sliders (zoom, volume, speed) look alike: a track filled up to a round knob that grows under the pointer, and
+  marks under the track with their labels. A click or a drag goes anywhere, landing on a mark within 4 px of it;
+  a click on a label goes to its mark. Where labels would touch, the less useful one gives way, and so do all the
+  labels less useful than it, so the scale stays even; the one under the knob always shows and stands out.
 - Footer: a thin progress bar, the status text, Show log / Hide log, Open and Show in folder (after a save), Stop
   (during a whole-file upscale) and the accent Upscale button.
 - Every setting has a tooltip (after 450 ms, 320 px wide, kept on the pointer's monitor) saying in plain words
@@ -303,12 +307,13 @@ is its own version (§10).
   ends in ▾ and clicking it opens that side's dropdown, on release (on press, the release would pick an entry).
   Where a version is not upscaled yet, its side shows the bicubic source at 45% brightness and its label adds
   "· upscaling…" or "· not upscaled here".
-- Zoom: chips Fit (default), Original size (one screen pixel per source pixel, the upscaled side shrunk to
-  match), 100%, 200%, 400% and 800%, the chip matching the zoom lit; a slider on a log scale from Fit (or 100% if
-  smaller) to 800% that sticks within 0.04 octave of those steps; the wheel over the picture zooms a quarter
-  octave per notch around the pointer, pausing at the same steps; a double-click goes from Fit to 100% at the
-  pointer and from any other zoom back to Fit. Away from Fit, a pill at the bottom left shows "Original size" or
-  the percentage.
+- Zoom: a Fit button (the default, lit at Fit), then a slider (480 px when there is room, down to 160 px) on a log
+  scale from the smallest of Fit, Original size and 100% to 800%, marked Original (one screen pixel per source
+  pixel, the upscaled side shrunk to match), 100%, 200%, 400% and 800%; between marks it zooms to the whole
+  percent, and its value follows it ("137%"). The wheel over the slider zooms a quarter octave per notch around
+  the middle, over the picture around the pointer, pausing at Fit and the marks; a double-click goes from Fit to
+  100% at the pointer and from any other zoom back to Fit. With nothing to compare the button and the slider are
+  disabled. Away from Fit, a pill at the bottom left shows "Original size" or the percentage.
 - Pan with the right or middle button. A minimap at the bottom right (at most 180 px, a third of the view) shows
   the visible part when some is hidden; a click or drag there moves to it.
 - Pixels: at Fit, area averaging when shrinking and bicubic when enlarging; between Fit and 100%, area averaging;
@@ -319,7 +324,8 @@ is its own version (§10).
 - Controls under the picture: the filmstrip, the seek bar, then frame back, play/pause, frame forward, the time,
   mute, the volume, the playback state, the reverse toggle, the speed slider with its value, and full screen. In a
   narrow window the speed slider gives up width first (down to 84 px, labelling only 0, ¼, 1× and 5), then the
-  volume slider, then the volume's percentage, so full screen stays in reach at the minimum size.
+  volume slider (keeping the labels 0 and 100), then the volume's percentage, so full screen stays in reach at the
+  minimum size.
 - Play (Space) plays the upscaled video in real time with its sound. It stops on the last frame; Play there
   starts over (from the end when playing backwards). With nothing to play, the banner says why.
 - The seek bar shows the played part in the accent colour, what is upscaled lighter (ready in every version
@@ -333,13 +339,16 @@ is its own version (§10).
   70 ms. ← and → jump 5 s; Home and End go to the first and last frame.
 - The time reads "0:05.239 / 3:20 · frame 157" (hours when needed, frames counted from 0), monospace and as wide
   as at the last frame, so nothing after it moves.
-- Volume: the speaker button or M mutes (the fill and the percentage turn grey); the 84 px slider fills up to its
-  knob and shows its percentage; click or drag, the wheel moves it 5% and ↑ ↓ 10%, to the next multiple; raising
-  it unmutes. 80% at launch, kept between files.
+- Volume: the speaker button or M mutes (the fill and the percentage turn grey). The 150 px slider is the sound's
+  amplitude in percent on a decibel scale, like the speed's: 0 at its left end, then 1% (−40 dB) to 100%, marked
+  0, 1, 3, 10, 30 and 100 (about 10 dB apart), so equal distances sound like equal steps. Its percentage has two
+  figures (1.3%, 80%); the wheel over it or over the speaker moves it 2 dB and ↑ ↓ 4 dB (from 0 up to 1%, below
+  1% down to 0); raising it unmutes. The speaker shows the level: two waves from 25%, one below, none at 0,
+  crossed when muted. 80% at launch, kept between files.
 - Speed: a 176 px slider on a log scale from 0.05× to 5×, its track on the volume slider's line, marked .05, 0.1, ¼,
   ½, 1×, 2 and 5 under the track, with 0 at its left end and no speed between 0 and 0.05×. A click or a drag goes
-  anywhere (two decimals below 1×, one above), landing on a mark within 4 px; `[`, `]` and the wheel go from mark to
-  mark. Backspace or a click on the value goes back to 1× forwards, and each new file starts there. At 0 playback
+  anywhere (two decimals below 1×, one above), landing on a mark within 4 px or on a clicked label; `[`, `]` and
+  the wheel go from mark to mark. Backspace or a click on the value goes back to 1× forwards, and each new file starts there. At 0 playback
   pauses and the next speed plays on; Play at 0 plays at 1×.
 - Backwards: the toggle beside the slider, or R, plays backwards at the slider's speed; the value then reads
   −0.25×, with a real minus sign. At 0 it sets the direction of the next speed.
@@ -414,7 +423,7 @@ is its own version (§10).
 | Space | play / pause | ← → | 5 seconds back / forward |
 | , . | one frame back / forward | Home End | first / last frame |
 | F, F11 | full screen | Esc | leave full screen, else stop the upscale |
-| M | mute | ↑ ↓ | volume ±10% |
+| M | mute | ↑ ↓ | volume ±4 dB |
 | [ ] | slower / faster | Backspace | 1× forwards |
 | R | backwards / forwards | | |
 | Ctrl+O | open | Ctrl+Enter | upscale |
@@ -425,7 +434,8 @@ is its own version (§10).
 - Mouse: a click on the empty picture opens a file; on the picture, a left press or drag moves the divider, the
   wheel zooms, a right or middle drag pans and a double-click switches Fit and 100%; a label opens its side's
   dropdown; the minimap, the seek bar and the filmstrip take clicks and drags; the frame buttons repeat while
-  held; the volume and the speed slider take clicks, drags and the wheel; a click on the speed value resets it.
+  held; the zoom, the volume and the speed slider take clicks, drags and the wheel (the speaker takes the wheel
+  too); the Fit button fits the picture; a click on the speed value resets it.
   Dropdowns ignore the
   wheel, so scrolling the sidebar never changes a setting.
 
