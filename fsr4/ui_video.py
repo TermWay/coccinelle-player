@@ -8,8 +8,8 @@ whichever thread presents (the Tk thread for interaction, the player thread for 
 
 Each side of the divider shows a layer: an upscaled version (the window names them) or the source
 enlarged by a filter (original pixels, bilinear, bicubic or Lanczos), all at the same
-geometry; clicking a side's label tells the window, which opens that side's dropdown. The divider's handle follows
-the pointer's height over the picture. A side can be OFF: the other one fills the picture and there is no divider.
+geometry; clicking a side's label tells the window, which opens that side's dropdown. The divider's handle goes to
+the height where the divider is pressed or dragged. A side can be OFF: the other one fills the picture and there is no divider.
 Zoom is Fit, Original
 size (one screen pixel per source pixel, the upscaled side shrunk to match) or any scale from Fit to 800%; from
 100% up every output pixel is a block of screen pixels (nearest neighbour), so what is drawn is what the file
@@ -451,7 +451,7 @@ class VideoView(tk.Frame):
         self.zoom = "fit"
         self.center: tuple[float, float] | None = None
         self.split = 0.5
-        self.handle_y: int | None = None  # the pointer's last height over the picture; None: its middle
+        self.handle_y: int | None = None  # where the divider was last pressed or dragged; None: the picture's middle
         self.sides = {"left": "cubic", "right": "unavailable"}
         self.side_labels: dict[str, str] = {}
         self.fullscreen = False
@@ -1018,19 +1018,6 @@ class VideoView(tk.Frame):
             self.handle_y = y
         self.redraw()
 
-    def _follow_pointer(self, y: int) -> None:
-        """Put the divider's handle at the pointer's height while the pointer is over the picture, so it is where
-        the eye is (zoomed in, the middle is often far from it)."""
-        geometry = self._geometry
-        if self.single or not self.comparing or geometry is None or y == self.handle_y:
-            return
-        _, top, _, shown_height = geometry.shown
-        if not top <= y < top + shown_height:
-            return
-        with self._lock:
-            self.handle_y = y
-        self.redraw()
-
     def _move_to_minimap(self, x: int, y: int) -> None:
         box = self._minimap_box
         if box is None:
@@ -1075,4 +1062,3 @@ class VideoView(tk.Frame):
             cursor = "" if self.single else "sb_h_double_arrow"
         if self._pan_origin is None and str(self.cget("cursor")) != cursor:
             self.configure(cursor=cursor)
-        self._follow_pointer(event.y)

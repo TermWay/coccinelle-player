@@ -70,7 +70,7 @@ sub-pixel camera jitter every frame. A video file has none of those, so this too
   Original pixels (each source pixel as a block), Bilinear (what most players do), Bicubic, or Lanczos. Two sides
   upscaled sit side by side, paused or playing (two versions share the GPU, so playing them waits more), and the
   sidebar then asks which one its settings are for, which is also the one Upscale saves. Off turns a side off: the
-  other one fills the picture, without the divider. The divider's handle follows the pointer's height.
+  other one fills the picture, without the divider. Dragging the divider also takes its handle to the pointer's height.
 - **Presets** cover the choices worth comparing: FSR 4 at its best (medium optical flow, no sharpening) with faster,
   sharpened and motionless variants, FSR 3.1, FSR 2.3, AMD's HQ scaler and Real-ESRGAN. The sidebar shows the preset,
   its upscaler and only what that upscaler can change: motion vectors and sharpening for FSR, sharpening for the HQ

@@ -4,7 +4,7 @@
 
 Steps: empty window, a video dropped on it (a real WM_DROPFILES message), its first upscaled frame, a tooltip
 (gone once the window is minimized), a dropdown, the file dialog, playback, a seek into frames not upscaled yet
-(buffering), a paused zoom with the original pixels on the left (the divider's handle at the pointer's height), the
+(buffering), a paused zoom with the original pixels on the left (the handle dragged to the pointer's height), the
 zoom slider and wheel, a side's dropdown opened from its label, a preset saved and two presets upscaled side by side
 (paused and playing), a frame step, playing backwards at a quarter speed, a side turned off, full screen on the
 window's own monitor (the second one when there is one) with its controls showing near the bottom and hiding at
@@ -170,11 +170,11 @@ def main() -> int:
         still = app.view._still
         return still is not None and still[1].get(app.view.sides[side]) is not None
 
-    def move_pointer(height_fraction: float) -> None:
-        """A pointer motion over the picture (the real cursor stays where it is)."""
+    def move_pointer(height_fraction: float, sequence: str = "<Motion>") -> None:
+        """A pointer event over the middle of the picture (the real cursor stays where it is)."""
         view = app.view
         x, y = view.winfo_width() // 2, int(view.winfo_height() * height_fraction)
-        view.event_generate("<Motion>", x=x, y=y, rootx=view.winfo_rootx() + x, rooty=view.winfo_rooty() + y)
+        view.event_generate(sequence, x=x, y=y, rootx=view.winfo_rootx() + x, rooty=view.winfo_rooty() + y)
 
     def center() -> tuple[int, int]:
         return app.view.winfo_width() // 2, app.view.winfo_height() // 2
@@ -278,15 +278,25 @@ def main() -> int:
         check(app.zoom_var.get() == "2", "zoom chip follows the view")
         check(app.view.sides["left"] == "nearest", "left side shows the original pixels")
         shot("05_paused_zoom_original")
+        view = app.view
+        handle_before = view.handle_y
         move_pointer(0.25)
         yield 0.3
-        view = app.view
+        check(view.handle_y == handle_before, "the pointer passing over the picture leaves the handle where it is")
+        move_pointer(0.3, "<ButtonPress-1>")
+        move_pointer(0.25, "<B1-Motion>")
+        move_pointer(0.25, "<ButtonRelease-1>")
+        yield 0.3
         shown_left, _, shown_width, _ = view._geometry.shown
         handle_x = shown_left + int(view.split * shown_width) + round(0.36 * view._handle.shape[0])
         handle_y = int(view.winfo_height() * 0.25)
         pixel = view.snapshot()[handle_y, handle_x, :3]
         check(view.handle_y == handle_y and int(pixel.min()) >= 225,
-              f"zoomed in, the divider's handle follows the pointer's height (pixel {pixel.tolist()} at y {handle_y})")
+              f"zoomed in, dragging the divider takes its handle to the pointer's height (pixel {pixel.tolist()} at "
+              f"y {handle_y})")
+        move_pointer(0.6)
+        yield 0.2
+        check(view.handle_y == handle_y, "once released, the handle stays where it was dragged")
         shot("05_handle_at_pointer")
         app.zoom_slider_var.set(math.log2(1.5))
         app._zoom_slid()
