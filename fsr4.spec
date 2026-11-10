@@ -12,6 +12,7 @@ from PyInstaller.utils.win32.versioninfo import (FixedFileInfo, StringFileInfo, 
 
 ROOT = Path(SPECPATH)
 sys.path.insert(0, str(ROOT))
+from fsr4.build_info import BUILD_FILE, stamp  # noqa: E402
 from fsr4.ui_art import ico_bytes  # noqa: E402
 
 COPYRIGHT = "Copyright (c) 2026 TermWay"
@@ -67,6 +68,10 @@ def version_info(file_name: str) -> VSVersionInfo:
 
 ICON = Path(workpath) / "fsr4.ico"
 ICON.write_bytes(ico_bytes())
+# The commit and time of this build, shown in the window and by --version.
+BUILD_STAMP = Path(workpath) / BUILD_FILE
+BUILD_STAMP.write_text(stamp(ROOT) + "\n", encoding="utf-8")
+print(f"fsr4.spec: build {BUILD_STAMP.read_text(encoding='utf-8').strip()}")
 
 analysis = Analysis(
     [str(ROOT / "run_fsr4.py")],
@@ -78,6 +83,7 @@ analysis = Analysis(
 # optical flow with cv2, and runs ffmpeg itself for all decoding.
 analysis.binaries = [entry for entry in analysis.binaries
                      if not Path(entry[0]).name.lower().startswith("opencv_videoio_ffmpeg")]
+analysis.datas.append((BUILD_FILE, str(BUILD_STAMP), "DATA"))
 archive = PYZ(analysis.pure)
 command_line = EXE(archive, analysis.scripts, [], exclude_binaries=True, name="fsr4", console=True,
                    icon=str(ICON), version=version_info("fsr4.exe"))

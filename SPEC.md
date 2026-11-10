@@ -162,7 +162,7 @@ has none of those; the tool substitutes, as the quality lab (§14) settled:
   1920 × 1080, at 3x 2160 × 1216.
 
 ## 8. Command line
-`fsr4 upscale|ui|info|selftest` (`python -m fsr4` from the source tree; `--version` prints the version).
+`fsr4 upscale|ui|info|selftest` (`python -m fsr4` from the source tree; `--version` prints the version and build).
 
 | `fsr4 upscale <input>` option | Default | Meaning |
 |-------------------------------|---------|---------|
@@ -213,7 +213,9 @@ has none of those; the tool substitutes, as the quality lab (§14) settled:
   program> / <installed> GB" and "● <graphics card> · VRAM <this program> / <card> GB · FSR <version>" (VRAM as
   DXGI counts it, Vulkan memory included), whose tooltip also says the tool is independent, not made or endorsed
   by AMD, with AMD's trademarks; "Checking the GPU…" until the check ends, a red dot and "GPU unavailable" if it
-  fails.
+  fails. Below, faint, which copy runs: "v<version> · <commit> · built <date> <time>" for the executables (written
+  by the build), "· from the sources" when Python runs them; " + changes" follows the commit when tracked files
+  differed from it. The log starts with the same line, after the program's name.
 - Main area, top to bottom: the error banner; a toolbar with the Left and Right dropdowns, then the zoom (Fit
   button, slider and percentage); the picture; the playback controls (videos); the log.
 - Sliders (zoom, volume, speed) look alike: a track filled up to a round knob that grows under the pointer, and
@@ -299,8 +301,9 @@ is its own version (§10).
   settings share one version. Both are upscaled at the same size and encoder, paused or playing, so two FSR settings
   or FSR 4 and FSR 3.1 sit side by side. With no side upscaled, nothing is.
 - The divider is a 2 px line with a round ‹› handle; a left press anywhere on the picture moves it there and
-  dragging follows. The handle sits mid-height until the divider is pressed or dragged, then at the pointer's height
-  (zoomed in, the middle is often far from where one looks), and stays there once released; merely passing over the
+  dragging follows; a press on the handle itself moves nothing, and the drag keeps the point pressed under the
+  pointer. The handle sits mid-height until the divider is pressed or dragged, then at the pointer's height (zoomed
+  in, the middle is often far from where one looks), and stays there once released; merely passing over the
   picture leaves it where it is. It is always whole inside the picture.
 - A label in each top corner names its side: the preset, the settings described ("FSR 3.1 · rough motion ·
   sharpening 0.80"; best motion goes unsaid) or the filter ("Source" at Fit while the source is not enlarged). Outside full screen it

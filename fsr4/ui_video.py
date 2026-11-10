@@ -9,7 +9,8 @@ whichever thread presents (the Tk thread for interaction, the player thread for 
 Each side of the divider shows a layer: an upscaled version (the window names them) or the source
 enlarged by a filter (original pixels, bilinear, bicubic or Lanczos), all at the same
 geometry; clicking a side's label tells the window, which opens that side's dropdown. The divider's handle goes to
-the height where the divider is pressed or dragged. A side can be OFF: the other one fills the picture and there is no divider.
+the height where the divider is pressed or dragged; a drag that starts on the handle keeps the point pressed under
+the pointer. A side can be OFF: the other one fills the picture and there is no divider.
 Zoom is Fit, Original
 size (one screen pixel per source pixel, the upscaled side shrunk to match) or any scale up to 800%; from
 100% up every output pixel is a block of screen pixels (nearest neighbour), so what is drawn is what the file
@@ -515,6 +516,8 @@ class VideoView(tk.Frame):
         self._minimap_box: tuple[int, int, int, int] | None = None
         self._next_minimap_box: tuple[int, int, int, int] | None = None
         self._drag: str | None = None
+        self._handle_center: tuple[int, int] | None = None  # where the handle was last drawn; None: no divider
+        self._grab = (0, 0)  # the pointer's offset from the handle's center during a drag that started on it
         self._pill_pressed: str | None = None
         self._pan_origin: tuple[int, int, float, float] | None = None
         self._blit_failed = False
@@ -823,6 +826,7 @@ class VideoView(tk.Frame):
                        missing: set[str]) -> None:
         px = self.theme.px
         left, top, shown_width, shown_height = geometry.shown
+        handle_center = None
         if not self.single:
             x = left + split
             line = max(1, px(2))
@@ -831,6 +835,8 @@ class VideoView(tk.Frame):
             middle = top + shown_height // 2 if self.handle_y is None else self.handle_y
             middle = max(top + half, min(top + shown_height - half, middle))  # whole, inside the picture
             blend(canvas, self._handle, x - self._handle.shape[1] // 2, middle - half)
+            handle_center = (x, middle)
+        self._handle_center = handle_center  # one assignment: the Tk thread reads it while the player composes
         margin = px(10)
         boxes = {}
         arrow = "" if self.fullscreen or self.on_side_click is None else "  ▾"
@@ -1038,6 +1044,7 @@ class VideoView(tk.Frame):
             self._move_to_minimap(event.x, event.y)
         elif not self.single:
             self._drag = "divider"
+            self._grab = self._handle_grab(event.x, event.y)
             self._move_divider(event.x, event.y)
 
     def _drag_motion(self, event: tk.Event) -> None:
@@ -1049,19 +1056,29 @@ class VideoView(tk.Frame):
     def _release(self, event: tk.Event) -> None:
         side, self._pill_pressed = self._pill_pressed, None
         self._drag = None
+        self._grab = (0, 0)
         self._pan_origin = None
         self._motion(event)
         if side is not None and self._pill_at(event.x, event.y) == side:
             self.on_side_click(side)
+
+    def _handle_grab(self, x: int, y: int) -> tuple[int, int]:
+        """Where a press lands on the handle, from its center: the handle then keeps that point under the pointer
+        (no jump). (0, 0) for a press beside it: the divider comes to the pointer."""
+        center = self._handle_center
+        if center is None or math.hypot(x - center[0], y - center[1]) > self._handle.shape[0] / 2:
+            return 0, 0
+        return x - center[0], y - center[1]
 
     def _move_divider(self, x: int, y: int) -> None:
         geometry = self._geometry
         if geometry is None:
             return
         left, _, shown_width, _ = geometry.shown
+        grab_x, grab_y = self._grab
         with self._lock:
-            self.split = min(1.0, max(0.0, (x - left) / max(shown_width, 1)))
-            self.handle_y = y
+            self.split = min(1.0, max(0.0, (x - grab_x - left) / max(shown_width, 1)))
+            self.handle_y = y - grab_y
         self.redraw()
 
     def _move_to_minimap(self, x: int, y: int) -> None:

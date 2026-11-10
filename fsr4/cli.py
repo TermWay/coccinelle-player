@@ -5,7 +5,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import __version__, log, usage
+from . import build_info, log, usage
 from .ffx import QUALITY_MODE_SCALES, find_sdk_dir
 from .flow import FLOW_METHODS
 from .hq_scaler import FIRST_FFMPEG, HQ_SCALER
@@ -17,9 +17,20 @@ from .media import ENCODERS
 UPSCALERS = {"4": None, "3.1": "3.1.6", "2.3": "2.3.4", "hq": HQ_SCALER, "realesrgan": REAL_ESRGAN,
              "realesrgan-x4plus": REAL_ESRGAN_X4PLUS, "realesrgan-x4plus-anime": REAL_ESRGAN_ANIME}
 
+class VersionAction(argparse.Action):
+    """`--version`: the version with its commit and build, worked out only when asked (git runs from the sources)."""
+
+    def __init__(self, option_strings: list[str], dest: str, help: str | None = None):
+        super().__init__(option_strings, dest, nargs=0, default=argparse.SUPPRESS, help=help)
+
+    def __call__(self, parser: argparse.ArgumentParser, namespace, values, option_string=None) -> None:
+        print(f"fsr4 {build_info.describe()}")
+        parser.exit()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="fsr4", description="Upscale an image or a video with AMD FSR 4.")
-    parser.add_argument("--version", action="version", version=f"fsr4 {__version__}")
+    parser.add_argument("--version", action=VersionAction, help="show the version, its commit and build, and exit")
     commands = parser.add_subparsers(dest="command", required=True)
 
     upscale = commands.add_parser("upscale", help="upscale an image or video file")

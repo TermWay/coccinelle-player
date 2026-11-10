@@ -32,7 +32,7 @@ from tkinter import filedialog, messagebox, ttk
 import cv2
 import numpy as np
 
-from . import log, system, temporary, usage
+from . import build_info, log, system, temporary, usage
 from .ffx import find_sdk_dir
 from .image_preview import ImagePreviewer
 from .realesrgan import STILL_ONLY
@@ -251,6 +251,9 @@ class App:
         self._update_preset_lists()
         self._place_window()
         log.set_sink(lambda line: self.queue.put(("log", line)))
+        version = build_info.describe()
+        self.version_label.configure(text=f"v{version}")
+        log.emit(f"[ui] {APP_NAME} {version}")
         self.drop = self._enable_drop()
         self._bind_keys()
         root.protocol("WM_DELETE_WINDOW", self._close_requested)
@@ -325,6 +328,12 @@ class App:
                                   "frames) / its size, and the version of FSR in AMD's DLL.\n\n"
                                   f"{APP_NAME} is an independent tool, not made or endorsed by AMD; AMD, Radeon "
                                   "and FidelityFX are trademarks of Advanced Micro Devices, Inc.")
+        self.version_label = ttk.Label(status, text="", style="Faint.TLabel", wraplength=px(SIDEBAR_WIDTH - 40),
+                                       justify="left")
+        self.version_label.grid(row=2, column=0, columnspan=2, sticky="w", pady=(px(4), 0))
+        self._tip(self.version_label, "This copy's version and the commit it was made from: for the executables, "
+                                      "with the time they were built; \"from the sources\" when Python runs it. "
+                                      f"\"{build_info.CHANGED_MARK.strip()}\": files differed from that commit.")
         return status
 
     def _main_padding(self) -> tuple[int, int, int, int]:

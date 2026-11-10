@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import window_capture  # noqa: E402
+import fsr4  # noqa: E402
 from fsr4 import media, ui, ui_theme, ui_window, usage  # noqa: E402
 from fsr4.preferences import PreferenceStore  # noqa: E402
 from fsr4.presets import BEST, PresetStore  # noqa: E402
@@ -173,11 +174,14 @@ def main() -> int:
         still = app.view._still
         return still is not None and still[1].get(app.view.sides[side]) is not None
 
-    def move_pointer(height_fraction: float, sequence: str = "<Motion>") -> None:
-        """A pointer event over the middle of the picture (the real cursor stays where it is)."""
+    def pointer_at(x: int, y: int, sequence: str = "<Motion>") -> None:
+        """A pointer event at (x, y) on the picture (the real cursor stays where it is)."""
         view = app.view
-        x, y = view.winfo_width() // 2, int(view.winfo_height() * height_fraction)
         view.event_generate(sequence, x=x, y=y, rootx=view.winfo_rootx() + x, rooty=view.winfo_rooty() + y)
+
+    def move_pointer(height_fraction: float, sequence: str = "<Motion>") -> None:
+        """A pointer event over the middle of the picture."""
+        pointer_at(app.view.winfo_width() // 2, int(app.view.winfo_height() * height_fraction), sequence)
 
     def center() -> tuple[int, int]:
         return app.view.winfo_width() // 2, app.view.winfo_height() // 2
@@ -220,6 +224,9 @@ def main() -> int:
         check(app.gpu_ready is True, f"GPU check: {app.gpu_label.cget('text')}")
         check("RAM" in app.cpu_label.cget("text") and "VRAM" in app.gpu_label.cget("text"),
               f"machine status: {app.cpu_label.cget('text')} | {app.gpu_label.cget('text')}")
+        version = app.version_label.cget("text")
+        check(version.startswith(f"v{fsr4.__version__} · ") and version.endswith(" · from the sources")
+              and "unknown" not in version, f"the version names its commit: {version}")
         check(app.choose_button.cget("text") == "Choose file…", "button reads Choose file… without a file")
         shot("01_empty")
         post_drop(root, [args.video])
@@ -342,6 +349,20 @@ def main() -> int:
         yield 0.2
         check(view.handle_y == handle_y, "once released, the handle stays where it was dragged")
         shot("05_handle_at_pointer")
+        center_x, center_y = view._handle_center
+        reach = view._handle.shape[0] // 3
+        press_x, press_y = center_x - reach, center_y + reach // 2
+        pointer_at(press_x, press_y, "<ButtonPress-1>")
+        check(view._handle_center == (center_x, center_y),
+              f"a press on the handle beside its center does not move it ({view._handle_center}, was "
+              f"{(center_x, center_y)})")
+        pointer_at(press_x + 57, press_y - 41, "<B1-Motion>")
+        moved = view._handle_center
+        pointer_at(press_x, press_y, "<B1-Motion>")
+        pointer_at(press_x, press_y, "<ButtonRelease-1>")
+        check(moved == (center_x + 57, center_y - 41) and view._handle_center == (center_x, center_y),
+              f"dragged by the handle, the point pressed stays under the pointer (moved to {moved}, expected "
+              f"{(center_x + 57, center_y - 41)}; back at {view._handle_center})")
         zoom_slider = app.zoom_slider
         track_y = zoom_slider.winfo_height() // 2
 
