@@ -511,7 +511,12 @@ is its own version (§10).
   `license.md` from tag v2.4.0 of AMD's FidelityFX SDK repository, each through a `.part` file checked against
   its pinned SHA-256 before it takes its place; files that already match are kept, and `--check` only checks.
 - `start.bat` opens the window, with a file dropped on it: the built executable when there is one, else Python
-  after checking the DLLs (downloading them if needed). `upscale.bat` upscales every file dropped on it with the
+  after checking the DLLs (downloading them if needed). With Python there, it first runs `tools/dev_build.py`
+  so it never opens a build older than the sources: when a build input (the package, the spec, the build
+  script, the DLLs, the README, the licenses, the requirements) is newer than `dist\fsr4\`, it builds into
+  `out\dev-build\` with `build_exe.bat` and puts that in place of `dist\fsr4\` when no program runs from there.
+  A build that must wait for such a program stays in `out\dev-build\` for the next run, and meanwhile, or when
+  the build fails, the window opens from the sources. `upscale.bat` upscales every file dropped on it with the
   defaults (2x, HEVC on the GPU, optical flow fast), with no questions, says when one failed, and pauses. Windows
   hands it a dropped name without quotes when it has no space, so names holding `&`, `^`, `,`, `;` or `=` are
   cut: the README says so.

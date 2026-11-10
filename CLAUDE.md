@@ -28,6 +28,10 @@ Python package stay `fsr4`.
   repository is public, so commit messages carry no `Request:` line (this replaces the shared rule): once the
   commit exists, the request goes into `requests/log.md` (git-ignored, never published) under a
   `## <short hash> · <date> · <subject>` heading, quoted as the shared rule says.
+- The user runs and tests the app from `dist\fsr4`: after the commit of every prompt that changed a build input
+  (the package, `fsr4.spec`, the README...), run `python tools/dev_build.py` (in the background: a build takes
+  a few minutes). It builds into `out\dev-build` and swaps in only when nothing runs from `dist\fsr4`; never close
+  the user's windows to make room. Say when the build waits (exit 2): their next Play puts it in place.
 
 ## Checks
 - `python -m unittest discover -s tests` is the test suite; `python -m fsr4 selftest --validate` exercises the

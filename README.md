@@ -126,7 +126,10 @@ fsr4 info                                   # GPU, extensions, FSR versions offe
 fsr4 selftest --validate                    # Vulkan round trip under the validation layer
 ```
 From the source tree, `python -m fsr4 ...` is the same (`python -m fsr4 ui` for the window). `start.bat` and
-`upscale.bat` use the executables in `dist\fsr4\` when they exist, else Python. `build_exe.bat` (after
+`upscale.bat` use the executables in `dist\fsr4\` when they exist, else Python. Before opening one, `start.bat`
+runs `tools/dev_build.py`, which rebuilds them when a source is newer than the build: into `out\dev-build\`, then
+in place of `dist\fsr4\` once no program runs from there (until then the window opens from the sources, and a
+failed build does the same). `build_exe.bat` (after
 `python -m pip install -r requirements-build.txt`) checks the FSR DLLs against their pinned hashes and builds
 the executables with PyInstaller from `fsr4.spec`: `Coccinelle Player.exe` (window, no console) and `fsr4.exe`
 (command line) share one folder of about 170 MB (85 MB zipped), mostly OpenCV and numpy, with the FSR DLLs and
@@ -348,7 +351,8 @@ filter, which scores 0.1 to 0.5 dB above Lanczos for these two (the video model 
 - `tools/gen_vk_types.py`: regenerates the Vulkan structs from `third_party/vulkan_core.h`.
 - `tools/fetch_sdk.py`: downloads the FSR DLLs and checks their pinned hashes (`--check` only checks).
   `tools/collect_licenses.py`: the packaged app's third-party notices (run by `build_exe.bat`).
-  `tools/lab_quality.py`: the PSNR lab.
+  `tools/dev_build.py`: keeps `dist\fsr4\` built from the current sources without touching a running copy
+  (`--force` builds anyway; run by `start.bat`). `tools/lab_quality.py`: the PSNR lab.
 - `tools/ui_smoke.py`: drives the window through every state (drop, first upscaled frame, tooltip, dropdown,
   file dialog, playback, the seek bar's hover label, buffering after a seek, zoom with original pixels, the
   zoom slider (a drag that must keep the picture still) and wheel, a side's dropdown opened from its label, a preset saved and two presets side by side

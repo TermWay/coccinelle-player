@@ -7,6 +7,13 @@ set "INPUT=%~f1"
 cd /d "%~dp0"
 
 if exist "dist\fsr4\Coccinelle Player.exe" (
+    where python >nul 2>nul
+    if not errorlevel 1 (
+        rem The source tree: rebuild first when the sources changed, so this never opens an old build. When the
+        rem build fails, or must wait because a window still runs from dist\fsr4, the window opens from the sources.
+        python tools\dev_build.py
+        if errorlevel 1 goto sources
+    )
     if defined INPUT (
         start "" "dist\fsr4\Coccinelle Player.exe" "%INPUT%"
     ) else (
@@ -15,6 +22,7 @@ if exist "dist\fsr4\Coccinelle Player.exe" (
     exit /b 0
 )
 
+:sources
 where python >nul 2>nul
 if errorlevel 1 (
     echo Python 3.12 is not installed or not on PATH.
