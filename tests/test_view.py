@@ -12,8 +12,8 @@ import numpy as np
 from fsr4.ui_transport import (FASTEST_SPEED, SLOWEST_SPEED, SPEED_STOPS, STOPPED_SHARE, format_precise, format_speed,
                                format_time, next_stop, speed_at, speed_fraction)
 from fsr4.ui_art import Sketch
-from fsr4.ui_video import (VideoView, blend, blend_outline, block_view, compute_geometry, decode_request,
-                           minimap_box, over, reference_view, reframe, step_zoom, upscaled_view)
+from fsr4.ui_video import (VideoView, blend, blend_outline, block_view, clamped_center, compute_geometry,
+                           decode_request, minimap_box, over, reference_view, reframe, step_zoom, upscaled_view)
 
 
 def gradient(width: int, height: int) -> np.ndarray:
@@ -175,12 +175,43 @@ class AnyZoomTest(unittest.TestCase):
     def test_upscaled_pixels_are_blocks(self):
         upscaled = gradient(*self.output_size)
         geometry = compute_geometry((300, 200), self.output_size, 1.5, (321, 181))
-        x0, y0, _, _ = geometry.region
+        start_x, start_y = geometry.start
+        self.assertEqual((start_x, start_y), (221.0, 181 - 200 / 3), "where the center asks, not snapped")
         _, _, width, height = geometry.shown
         self.assertEqual((width, height), (300, 200))
-        columns = ((np.arange(width) + 0.5) / 1.5).astype(int)
-        rows = ((np.arange(height) + 0.5) / 1.5).astype(int)
-        np.testing.assert_array_equal(upscaled_view(upscaled, geometry), upscaled[y0 + rows][:, x0 + columns])
+        columns = np.floor((np.arange(width) + 0.5) / 1.5 + start_x).astype(int)
+        rows = np.floor((np.arange(height) + 0.5) / 1.5 + start_y).astype(int)
+        x0, y0, region_width, region_height = geometry.region
+        self.assertEqual((x0, y0, region_width, region_height),
+                         (columns[0], rows[0], columns[-1] - columns[0] + 1, rows[-1] - rows[0] + 1),
+                         "the region holds exactly the pixels drawn")
+        np.testing.assert_array_equal(upscaled_view(upscaled, geometry), upscaled[rows][:, columns])
+
+    def test_dragging_the_zoom_keeps_the_picture_still(self):
+        """The slider zooms around the view's middle: the output point there stays within half a view pixel of
+        it at every step, both ways, as the view writes the center back between steps."""
+        output_size, view_size = (640, 360), (301, 171)
+        ys, xs = np.mgrid[0:output_size[1], 0:output_size[0]]
+        coded = np.zeros((output_size[1], output_size[0], 4), np.uint8)
+        coded[..., 0], coded[..., 1], coded[..., 2], coded[..., 3] = xs & 255, xs >> 8, ys & 255, ys >> 8
+        steps = [round(value, 2) for value in np.arange(1.0, 8.0001, 0.01)]
+        for center in (None, (200.25, 150.75)):
+            point = center or (output_size[0] / 2, output_size[1] / 2)
+            for zoom in steps + steps[::-1]:
+                geometry = compute_geometry(view_size, output_size, zoom, center)
+                center = clamped_center(view_size, output_size, zoom, center)
+                image = upscaled_view(coded, geometry)
+                left, top, _, _ = geometry.shown
+                columns = image[0, :, 0].astype(int) + 256 * image[0, :, 1].astype(int)
+                rows = image[:, 0, 2].astype(int) + 256 * image[:, 0, 3].astype(int)
+                # Where the pixel holding the point starts, against where it should start.
+                drawn_x = left + int(np.argmax(columns >= int(point[0])))
+                drawn_y = top + int(np.argmax(rows >= int(point[1])))
+                expected_x = view_size[0] / 2 - (point[0] - int(point[0])) * zoom
+                expected_y = view_size[1] / 2 - (point[1] - int(point[1])) * zoom
+                self.assertLessEqual(abs(drawn_x - expected_x), 0.5, f"zoom {zoom}, from {point}")
+                self.assertLessEqual(abs(drawn_y - expected_y), 0.5, f"zoom {zoom}, from {point}")
+            self.assertEqual(center, point, "the center does not drift")
 
     def test_both_sides_line_up(self):
         full = cv2.resize(self.source, self.output_size, interpolation=cv2.INTER_NEAREST)
@@ -210,7 +241,7 @@ class AnyZoomTest(unittest.TestCase):
             x0, y0, width, height = crop
             decoded = upscaled[y0:y0 + height, x0:x0 + width]
             paused = upscaled_view(upscaled, geometry)
-            right = block_view(decoded, geometry.scale, 113, geometry.shown[2] - 113, geometry.shown[3])
+            right = block_view(decoded, geometry, 113, geometry.shown[2] - 113, geometry.shown[3])
             np.testing.assert_array_equal(right, paused[:, 113:], f"zoom {zoom}")
 
     def test_a_picture_decoded_for_the_last_zoom_stays_in_place(self):

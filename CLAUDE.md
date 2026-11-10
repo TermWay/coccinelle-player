@@ -116,6 +116,9 @@ Python package stay `fsr4`.
   (two idle passes later: the paints are idle callbacks too). Copying the screen needs CAPTUREBLT to see it.
 - While playing, a layer whose decoder still works at the previous zoom or position is drawn with `reframe`
   (its picture resampled to where it belongs), never stretched: both sides of the divider must move together.
+- From 100% up the view starts at the exact output position the center asks for (`Geometry.start`, anywhere in
+  an output pixel), and the view keeps the center unsnapped (`clamped_center`): starting at a whole output pixel
+  and writing the snapped center back made the picture wiggle up to 2 px a step and drift during a zoom drag.
 - `tools/window_capture.py` can capture what the screen shows (`screen=True`; `settle=False` to see paints Tk
   has not done yet) but it refuses when another program's window overlaps ours, and PrintWindow captures
   only this process's windows: never capture other windows' content.

@@ -351,7 +351,7 @@ filter, which scores 0.1 to 0.5 dB above Lanczos for these two (the video model 
   `tools/lab_quality.py`: the PSNR lab.
 - `tools/ui_smoke.py`: drives the window through every state (drop, first upscaled frame, tooltip, dropdown,
   file dialog, playback, the seek bar's hover label, buffering after a seek, zoom with original pixels, the
-  zoom slider and wheel, a side's dropdown opened from its label, a preset saved and two presets side by side
+  zoom slider (a drag that must keep the picture still) and wheel, a side's dropdown opened from its label, a preset saved and two presets side by side
   paused and playing, a frame step, playing backwards, a side turned off, full screen on the window's own
   monitor (the second one when there is one) with its controls showing near the bottom and hiding at rest,
   then back where it was, folded sidebar, whole-file save, an image compared with a preset, error, a video opened

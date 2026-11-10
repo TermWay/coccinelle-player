@@ -233,17 +233,20 @@ def tinted(coverage: np.ndarray, color: tuple[int, int, int], opacity: float = 1
 class Geometry:
     """Where the output picture sits in the view. `region` is the part of the output picture shown, in output
     pixels; `shown` is the view rectangle it covers (left, top, width, height); `scale` is view pixels per
-    output pixel."""
+    output pixel; `start` is the output position at the shown rectangle's top-left corner. Fit and zooms below
+    100% resize the region into `shown` (`start` is its corner); from 100% up `start` lies anywhere in the
+    region's first pixel, so the picture can sit at any view pixel instead of jumping a whole output pixel."""
     view_size: tuple[int, int]
     output_size: tuple[int, int]
     fit: bool
     scale: float
     region: tuple[int, int, int, int]
     shown: tuple[int, int, int, int]
+    start: tuple[float, float]
 
     @property
     def key(self) -> tuple:
-        return self.view_size, self.output_size, self.fit, self.scale, self.region, self.shown
+        return self.view_size, self.output_size, self.fit, self.scale, self.region, self.shown, self.start
 
 
 def minimap_box(view_size: tuple[int, int], output_size: tuple[int, int],
@@ -265,41 +268,81 @@ def minimap_box(view_size: tuple[int, int], output_size: tuple[int, int],
     return right - map_width, bottom - map_height, right, bottom
 
 
+def clamped_center(view_size: tuple[int, int], output_size: tuple[int, int], zoom,
+                   center: tuple[float, float] | None, source_size: tuple[int, int] | None = None) -> tuple[float, float]:
+    """`center` (output pixels; None: the picture's middle) moved just enough for the view at `zoom` ("source" or
+    a number) to stay inside the picture. Not snapped to pixels: the view keeps it between zooms, and a
+    snapped one would drift a little at every step of a zoom drag."""
+    out_width, out_height = output_size
+    if zoom == "source":
+        source_width, source_height = source_size or output_size
+        scales = (source_width / out_width, source_height / out_height)
+    else:
+        scales = (float(zoom), float(zoom))
+    clamped = []
+    for view, out, scale, position in zip(view_size, output_size, scales, center or (out_width / 2, out_height / 2)):
+        half = min(out, view / scale) / 2
+        clamped.append(min(max(position, half), out - half))
+    return clamped[0], clamped[1]
+
+
+def _block_axis(view: int, out: int, zoom: float, center: float) -> tuple[int, int, int, int, float]:
+    """One axis of a zoom from 100% up: (first output pixel, output pixels used, view start, view length,
+    output position at the view start). A picture smaller than the view is centred; a larger one starts at the
+    exact position `center` asks for, wherever that falls in an output pixel."""
+    whole = math.ceil(out * zoom - 0.5)  # rounded half down: the last view pixel's centre stays in the picture
+    if whole <= view:
+        return 0, out, (view - whole) // 2, max(1, whole), 0.0
+    start = center - view / (2 * zoom)
+    # The same arithmetic as block_maps, so the region holds exactly the pixels it draws.
+    first = math.floor(0.5 / zoom + start)
+    last = math.floor((view - 1 + 0.5) / zoom + start)
+    return first, last - first + 1, 0, view, start
+
+
 def compute_geometry(view_size: tuple[int, int], output_size: tuple[int, int], zoom,
                      center: tuple[float, float] | None, source_size: tuple[int, int] | None = None) -> Geometry:
     """Fit the whole picture, show it at the source's own size ("source"), or show `zoom` (any positive number)
     view pixels per output pixel, around `center` (output pixels)."""
     view_width, view_height = view_size
     out_width, out_height = output_size
+    if zoom == "fit":
+        scale = min(view_width / out_width, view_height / out_height)
+        shown_width = max(1, min(view_width, int(round(out_width * scale))))
+        shown_height = max(1, min(view_height, int(round(out_height * scale))))
+        return Geometry(view_size, output_size, True, scale, (0, 0, out_width, out_height),
+                        ((view_width - shown_width) // 2, (view_height - shown_height) // 2, shown_width, shown_height),
+                        (0.0, 0.0))
+    center_x, center_y = clamped_center(view_size, output_size, zoom, center, source_size)
     if zoom == "source":
         source_width, source_height = source_size or output_size
         ratio_x, ratio_y = out_width / source_width, out_height / source_height
         shown_width, shown_height = min(view_width, source_width), min(view_height, source_height)
         region_width = min(out_width, int(round(shown_width * ratio_x)))
         region_height = min(out_height, int(round(shown_height * ratio_y)))
-        center_x, center_y = center or (out_width / 2, out_height / 2)
         # On the source's pixel grid, so the original side is an exact copy of its pixels.
         x0 = int(round(round(min(max(center_x - region_width / 2, 0), out_width - region_width) / ratio_x) * ratio_x))
         y0 = int(round(round(min(max(center_y - region_height / 2, 0), out_height - region_height) / ratio_y)
                        * ratio_y))
         x0, y0 = min(x0, out_width - region_width), min(y0, out_height - region_height)
         return Geometry(view_size, output_size, False, shown_width / region_width, (x0, y0, region_width, region_height),
-                        ((view_width - shown_width) // 2, (view_height - shown_height) // 2, shown_width, shown_height))
-    if zoom == "fit":
-        scale = min(view_width / out_width, view_height / out_height)
-        shown_width = max(1, min(view_width, int(round(out_width * scale))))
-        shown_height = max(1, min(view_height, int(round(out_height * scale))))
-        return Geometry(view_size, output_size, True, scale, (0, 0, out_width, out_height),
-                        ((view_width - shown_width) // 2, (view_height - shown_height) // 2, shown_width, shown_height))
+                        ((view_width - shown_width) // 2, (view_height - shown_height) // 2, shown_width, shown_height),
+                        (float(x0), float(y0)))
+    if zoom >= 1:
+        x0, region_width, left, shown_width, start_x = _block_axis(view_width, out_width, zoom, center_x)
+        y0, region_height, top, shown_height, start_y = _block_axis(view_height, out_height, zoom, center_y)
+        return Geometry(view_size, output_size, False, float(zoom), (x0, y0, region_width, region_height),
+                        (left, top, shown_width, shown_height), (start_x, start_y))
+    # Below 100% the region is resized into the view: an output pixel is less than a view pixel.
     region_width = min(out_width, math.ceil(view_width / zoom))
     region_height = min(out_height, math.ceil(view_height / zoom))
-    center_x, center_y = center or (out_width / 2, out_height / 2)
     x0 = int(round(min(max(center_x - region_width / 2, 0), out_width - region_width)))
     y0 = int(round(min(max(center_y - region_height / 2, 0), out_height - region_height)))
     shown_width = min(view_width, int(round(region_width * zoom)))
     shown_height = min(view_height, int(round(region_height * zoom)))
     return Geometry(view_size, output_size, False, float(zoom), (x0, y0, region_width, region_height),
-                    ((view_width - shown_width) // 2, (view_height - shown_height) // 2, shown_width, shown_height))
+                    ((view_width - shown_width) // 2, (view_height - shown_height) // 2, shown_width, shown_height),
+                    (float(x0), float(y0)))
 
 
 def step_zoom(scale: float, steps: int, stops: list[float], low: float, high: float) -> float:
@@ -324,25 +367,29 @@ def reference_shrinks(geometry: Geometry, source_size: tuple[int, int]) -> bool:
 
 
 @functools.lru_cache(maxsize=6)
-def block_maps(scale: float, first: int, columns: int, rows: int) -> tuple[np.ndarray, int, tuple[int, int]]:
+def block_maps(scale: float, start: tuple[float, float], first: int, columns: int,
+               rows: int) -> tuple[np.ndarray, tuple[int, int], tuple[int, int]]:
     """A cv2.remap table (int16 pairs, 4 bytes per view pixel) that draws output pixels as blocks of view pixels
-    at `scale` (1 or more): view column `first + j` shows output column floor((first + j + 0.5) / scale) of the
-    region, view row i output row floor((i + 0.5) / scale). Returns (table, first output column, output
-    (columns, rows) used); the table counts columns from that first one. Shared: never write to it."""
-    column_index = np.floor((np.arange(first, first + columns) + 0.5) / scale).astype(np.int16)
-    start = int(column_index[0])
-    row_index = np.floor((np.arange(rows) + 0.5) / scale).astype(np.int16)
+    at `scale` (1 or more), `start` being the output position at the shown rectangle's top-left corner: view
+    column `first + j` shows output column floor((first + j + 0.5) / scale + start x), view row i output row
+    floor((i + 0.5) / scale + start y). Returns (table, the first output (column, row) used, output (columns,
+    rows) used); the table counts from that first pixel. Shared: never write to it."""
+    column_index = np.floor((np.arange(first, first + columns) + 0.5) / scale + start[0]).astype(np.int64)
+    row_index = np.floor((np.arange(rows) + 0.5) / scale + start[1]).astype(np.int64)
+    first_column, first_row = int(column_index[0]), int(row_index[0])
     table = np.empty((rows, columns, 2), np.int16)
-    table[..., 0] = column_index - start
-    table[..., 1] = row_index[:, None]
-    return table, start, (int(column_index[-1]) - start + 1, int(row_index[-1]) + 1)
+    table[..., 0] = column_index - first_column
+    table[..., 1] = (row_index - first_row)[:, None]
+    return (table, (first_column, first_row),
+            (int(column_index[-1]) - first_column + 1, int(row_index[-1]) - first_row + 1))
 
 
-def block_view(region: np.ndarray, scale: float, first: int, columns: int, rows: int) -> np.ndarray:
-    """View columns `first`..`first + columns` (and `rows` rows) of `region`, output pixels from the shown
-    region's top-left corner, each drawn as a block at `scale` (1 or more)."""
-    table, start, _ = block_maps(scale, first, columns, rows)
-    return cv2.remap(region[:, start:], table, None, cv2.INTER_NEAREST)
+def block_view(region: np.ndarray, geometry: Geometry, first: int, columns: int, rows: int) -> np.ndarray:
+    """View columns `first`..`first + columns` (and `rows` rows) of `geometry` (from 100% up), drawn from
+    `region`, the picture of `geometry.region` at its own pixels: each output pixel a block of view pixels."""
+    table, (column, row), _ = block_maps(geometry.scale, geometry.start, first, columns, rows)
+    x0, y0 = geometry.region[:2]
+    return cv2.remap(region[row - y0:, column - x0:], table, None, cv2.INTER_NEAREST)
 
 
 def reference_view(source: np.ndarray, geometry: Geometry, interpolation: int, columns: int,
@@ -376,9 +423,9 @@ def reference_view(source: np.ndarray, geometry: Geometry, interpolation: int, c
         return cv2.warpAffine(source, matrix, (columns, shown_height), flags=interpolation | cv2.WARP_INVERSE_MAP,
                               borderMode=cv2.BORDER_REPLICATE)
     # 100% and more: the output pixels the view needs, through the filter, then each one as a block.
-    table, start, needed = block_maps(geometry.scale, first, columns, shown_height)
+    table, (column, row), needed = block_maps(geometry.scale, geometry.start, first, columns, shown_height)
     step_x, step_y = source_width / out_width, source_height / out_height
-    matrix = np.array([[step_x, 0, (x0 + start + 0.5) * step_x - 0.5], [0, step_y, (y0 + 0.5) * step_y - 0.5]],
+    matrix = np.array([[step_x, 0, (column + 0.5) * step_x - 0.5], [0, step_y, (row + 0.5) * step_y - 0.5]],
                       np.float32)
     region = cv2.warpAffine(source, matrix, needed, flags=interpolation | cv2.WARP_INVERSE_MAP,
                             borderMode=cv2.BORDER_REPLICATE)
@@ -395,7 +442,7 @@ def upscaled_view(upscaled: np.ndarray, geometry: Geometry) -> np.ndarray:
     region = upscaled[y0:y0 + region_height, x0:x0 + region_width]
     if geometry.scale < 1:
         return cv2.resize(region, (shown_width, shown_height), interpolation=cv2.INTER_AREA)
-    return block_view(region, geometry.scale, 0, shown_width, shown_height)
+    return block_view(region, geometry, 0, shown_width, shown_height)
 
 
 def reframe(image: np.ndarray, old: Geometry, new: Geometry, first: int, columns: int) -> np.ndarray:
@@ -404,10 +451,10 @@ def reframe(image: np.ndarray, old: Geometry, new: Geometry, first: int, columns
     zoom or position stays in place (softer) until its decoder catches up, so it moves with the other side."""
     height, width = image.shape[:2]
     old_x0, old_y0, old_width, old_height = old.region
-    new_x0, new_y0, _, _ = new.region
+    new_x, new_y = new.start
     image_x, image_y = width / old_width, height / old_height  # image pixels per output pixel
-    matrix = np.array([[image_x / new.scale, 0, ((first + 0.5) / new.scale + new_x0 - old_x0) * image_x - 0.5],
-                       [0, image_y / new.scale, (0.5 / new.scale + new_y0 - old_y0) * image_y - 0.5]], np.float32)
+    matrix = np.array([[image_x / new.scale, 0, ((first + 0.5) / new.scale + new_x - old_x0) * image_x - 0.5],
+                       [0, image_y / new.scale, (0.5 / new.scale + new_y - old_y0) * image_y - 0.5]], np.float32)
     return cv2.warpAffine(image, matrix, (columns, new.shown[3]), flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP,
                           borderMode=cv2.BORDER_REPLICATE)
 
@@ -652,13 +699,12 @@ class VideoView(tk.Frame):
     @staticmethod
     def _output_point(geometry: Geometry, x: float, y: float) -> tuple[float, float]:
         left, top = geometry.shown[:2]
-        return (geometry.region[0] + (x - left) / geometry.scale, geometry.region[1] + (y - top) / geometry.scale)
+        return geometry.start[0] + (x - left) / geometry.scale, geometry.start[1] + (y - top) / geometry.scale
 
     def _compute_geometry(self) -> Geometry:
         geometry = compute_geometry(self._view_size, self.output_size, self.zoom, self.center, self.source_size)
         if not geometry.fit:
-            x0, y0, width, height = geometry.region
-            self.center = (x0 + width / 2, y0 + height / 2)
+            self.center = clamped_center(self._view_size, self.output_size, self.zoom, self.center, self.source_size)
         return geometry
 
     # ---- drawing --------------------------------------------------------------------------------
@@ -746,7 +792,7 @@ class VideoView(tk.Frame):
                     return reframe(image, previous, geometry, first, count)
                 image = cv2.resize(image, (shown_width, shown_height), interpolation=cv2.INTER_LINEAR)
             elif not geometry.fit and geometry.scale >= 1:
-                return block_view(image, geometry.scale, first, count, shown_height)
+                return block_view(image, geometry, first, count, shown_height)
             return image[:, first:first + count]
 
         def make() -> np.ndarray:

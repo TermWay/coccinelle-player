@@ -5,7 +5,7 @@
 Steps: empty window, a video dropped on it (a real WM_DROPFILES message), its first upscaled frame, a tooltip
 (gone once the window is minimized), a dropdown, the file dialog, playback, a seek into frames not upscaled yet
 (buffering), a paused zoom with the original pixels on the left (the handle dragged to the pointer's height), the
-zoom slider and wheel, a side's dropdown opened from its label, a preset saved and two presets upscaled side by side
+zoom slider (a drag to 600% and back must keep the picture still around the middle) and wheel, a side's dropdown opened from its label, a preset saved and two presets upscaled side by side
 (paused and playing), a frame step, playing backwards at a quarter speed, a side turned off, full screen on the
 window's own monitor (the second one when there is one) with its controls showing near the bottom and hiding at
 rest, then back where the window was, the folded sidebar, the whole-file upscale and save, AMD's HQ scaler beside
@@ -27,6 +27,9 @@ import tkinter as tk
 from ctypes import wintypes
 from pathlib import Path
 from unittest import mock
+
+import cv2
+import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -179,6 +182,39 @@ def main() -> int:
     def center() -> tuple[int, int]:
         return app.view.winfo_width() // 2, app.view.winfo_height() // 2
 
+    def zoom_drag_shifts(slider, start_x: int, end_x: int, y: int, count: int) -> tuple[float, float]:
+        """Drag `slider` from `start_x` to `end_x` and back in `count` motions each way and measure how far the
+        picture moves sideways: a view enlarged around the view's middle by the change of scale, against the
+        next one (phase correlation on a patch left of the divider, clear of the labels and the minimap). Returns
+        the largest move from one motion to the next and how far the picture is, back at the start, from where it
+        was, in view pixels."""
+        view = app.view
+        width, height = view.winfo_width(), view.winfo_height()
+        rows, columns = slice(int(height * 0.3), int(height * 0.7)), slice(int(width * 0.12), int(width * 0.42))
+        window = cv2.createHanningWindow((columns.stop - columns.start, rows.stop - rows.start), cv2.CV_64F)
+        middle_x, middle_y = width / 2 - 0.5, height / 2 - 0.5  # the view's middle, in pixel-centre coordinates
+
+        def patch(canvas: np.ndarray) -> np.ndarray:
+            return cv2.cvtColor(canvas[rows, columns], cv2.COLOR_BGRA2GRAY).astype(np.float64)
+
+        def moved(before: np.ndarray, ratio: float, after: np.ndarray) -> float:
+            matrix = np.array([[ratio, 0, (1 - ratio) * middle_x], [0, ratio, (1 - ratio) * middle_y]])
+            expected = cv2.warpAffine(before, matrix, (width, height), flags=cv2.INTER_LINEAR)
+            shift, _ = cv2.phaseCorrelate(patch(expected), patch(after), window)
+            return float(np.hypot(*shift))
+
+        slider.event_generate("<ButtonPress-1>", x=start_x, y=y)
+        first, first_scale = view.snapshot(), view.zoom_scale(view.zoom)
+        previous, previous_scale = first, first_scale
+        largest = 0.0
+        for index in list(range(1, count + 1)) + list(range(count - 1, -1, -1)):
+            slider.event_generate("<B1-Motion>", x=int(round(start_x + (end_x - start_x) * index / count)), y=y)
+            current, scale = view.snapshot(), view.zoom_scale(view.zoom)
+            largest = max(largest, moved(previous, scale / previous_scale, current))
+            previous, previous_scale = current, scale
+        slider.event_generate("<ButtonRelease-1>", x=start_x, y=y)
+        return largest, moved(first, previous_scale / first_scale, previous)
+
     def steps():
         yield lambda: app.gpu_ready is not None
         check(app.gpu_ready is True, f"GPU check: {app.gpu_label.cget('text')}")
@@ -327,7 +363,11 @@ def main() -> int:
         zoom_slider.event_generate("<B1-Motion>", x=zoom_x(3.0), y=track_y)
         zoom_slider.event_generate("<ButtonRelease-1>", x=zoom_x(3.0), y=track_y)
         check(abs(app.view.zoom_scale(app.view.zoom) - 3.0) < 0.05, f"a drag zooms along ({app.zoom_label.cget('text')})")
-        labels = {mark.value: (left + right) / 2 for mark, left, right in zoom_slider._labels}
+        largest, drift = zoom_drag_shifts(zoom_slider, zoom_x(1.0), zoom_x(6.0), track_y, 40)
+        check(largest <= 1.5 and drift <= 0.5,
+              f"dragging the zoom slider to 600% and back keeps the picture still around the middle (largest step "
+              f"{largest:.2f} px; back at 100%, {drift:.2f} px from where it was)")
+        labels ={mark.value: (left + right) / 2 for mark, left, right in zoom_slider._labels}
         check({1, 8} <= set(labels), f"the zoom slider labels 100% and 800% at least ({sorted(map(str, labels))})")
         check(app.zoom_fit_var.get() == "", "away from Fit, the Fit button is not lit")
         if "source" in labels:

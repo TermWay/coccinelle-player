@@ -487,6 +487,9 @@ is its own version (§10).
 - While upscaling, the window's 10 ms timer fires at most about 3 ms late (99th percentile, *measured*).
 - While zooming or panning during playback both sides of the divider move together: a picture whose decoder
   still works at the old zoom is resampled to where it belongs, never stretched.
+- Dragging the zoom slider zooms around the view's middle and the picture stays put: the point there stays within
+  half a screen pixel of it at every step, and back at the starting zoom the picture is exactly where it was
+  (*measured* in the window: at most 0.88 px between steps of a drag to 600% and back, 0.00 px off at the end).
 
 ## 12. Packaging
 - `build_exe.bat [output folder] [work folder]` (default `dist` and `build`) checks the FSR DLLs against their
@@ -541,7 +544,7 @@ is its own version (§10).
   seconds are ready, about 0.3 s after Play.
 - `tools/ui_smoke.py` drives the real window through every state (a real drop, the first upscaled frame, a
   tooltip, a dropdown, the file dialog, playback, the seek bar's hover, buffering after a seek, zoom with
-  original pixels, the zoom slider and wheel, a side's dropdown opened from its label, a preset saved and two
+  original pixels, the zoom slider (a drag that must keep the picture still) and wheel, a side's dropdown opened from its label, a preset saved and two
   presets side by side paused and playing, a frame step, playing backwards, a side turned off, full screen on the
   window's own monitor with its controls showing and hiding, the folded sidebar, a whole-file save, an image
   compared with a preset, an error, the minimum size) and saves screenshots, which are read before a window
