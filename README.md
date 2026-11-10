@@ -88,10 +88,10 @@ sub-pixel camera jitter every frame. A video file has none of those, so this too
   from the playhead; the earlier ones are kept, so going back to them is instant.
 - **Images** are upscaled as soon as they open, with every version shown, so presets can be compared before
   Upscale saves the picture.
-- **Preferences**, kept between runs: turn off "Upscale as soon as a file opens" to open files as in a plain player
-  (the source, bicubic) and start FSR only when you choose a preset in the Left or Right list. "Temporary files" is
-  where the pieces of an open video wait (by default the `temp` folder next to the program); choose a drive with
-  room for them.
+- **Preferences**, kept between runs: turn off "Upscale on open", under Choose file, to open files as in a plain
+  player (the source, bicubic) and start FSR only when you choose a preset in the Left or Right list. "Temporary
+  files", under Output, is where the pieces of an open video wait (by default the `temp` folder next to the
+  program); choose a drive with room for them.
 - **Full screen** (F11, F or the button) covers the monitor the window is on and keeps the video; leaving it
   puts the window back exactly where and as it was. Its controls come up when the mouse moves near the bottom
   of the screen, and hide, with the pointer, once the mouse rests, wherever it is.

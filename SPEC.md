@@ -230,7 +230,10 @@ has none of those; the tool substitutes, as the quality lab (§14) settled:
 1. **Source**: the file name ("No file yet"); for a video "<codec> · W × H · <fps> fps", then "[plays as W × H
    · ]3:20 · 12,000 frames · <audio codec, N audio tracks or no audio>"; for an image "<codec> image · W × H".
    Empty, it says "Drop a file anywhere on this window, or choose one."; while probing, "Reading…". The button
-   reads "Choose file…", then "Choose another file…".
+   reads "Choose file…", then "Choose another file…". Under it, the switch "Upscale on open" (on by default; item 6).
+   Off, a file opens as in a plain player: the sides showing a preset are turned off, and when that leaves nothing
+   the first of them shows the source bicubic. Their settings stay, so choosing a preset in a side's list starts
+   upscaling with them.
 2. **Size**: the chips (§7), each with a tooltip giving its ratio and FSR's name for it (Quality, Performance,
    Ultra Performance). Under them "1920 × 1080 → 3840 × 2160" and "2.00× per side · 4.0× the pixels" ("2.37× by
    2.00×" for anamorphic sources), or why that size cannot be made, or "The output size appears once a file is
@@ -254,20 +257,17 @@ has none of those; the tool substitutes, as the quality lab (§14) settled:
    default, "AV1 · GPU (AMF)", "H.264 · GPU (AMF)", "H.264 · CPU (x264)", "HEVC · CPU (x265)") with a note on
    size, speed and the devices that play it, and what happens to the audio ("Audio: AAC copied as is; WMA
    converted to AAC (.mp4 cannot hold it)." or "No audio in this file."). Images disable the encoder.
+   Last, "Temporary files" (item 6): the folder of the pieces (§10), shown with "…" to choose another and Default
+   to go back to the `temp` folder next to the executable (next to the `fsr4` package from source). The folder is
+   made when needed and must take a file, or the banner says why and the folder in use stays. A saved folder that
+   can no longer be used is said in the banner at start, and the default one is used meanwhile.
 5. **Processor**: threads from 1 to every logical processor (default half, shown as "8 of 16") and the priority:
    Normal, Low (default) or Background (quickest but other programs may stutter / other programs stay smooth /
    only spare time). They cap background work only (§10), stay usable while busy and reach the running upscale.
-6. **Preferences**, kept between runs in `%APPDATA%\Coccinelle Player\preferences.json` (written through a
-   temporary file; one that cannot be read is reported in the banner, the defaults are used, and the next change
-   keeps it as `preferences.unreadable`):
-   - "Upscale as soon as a file opens", a switch, on by default. Off, a file opens as in a plain player: the sides
-     showing a preset are turned off, and when that leaves nothing the first of them shows the source bicubic. Their
-     settings stay, so choosing a preset in a side's list starts upscaling with them.
-   - "Temporary files": the folder of the pieces (§10), shown with "…" to choose another and Default to go back to
-     the `temp` folder next to the executable (next to the `fsr4` package from source). The folder is made when
-     needed and must take a file, or the banner says why and the folder in use stays. A saved folder that can no
-     longer be used is said in the banner at start, and the default one is used meanwhile.
-   Both apply from the next file opened.
+6. **Preferences**: "Upscale on open" (Source) and "Temporary files" (Output) are kept between runs in
+   `%APPDATA%\Coccinelle Player\preferences.json` (written through a temporary file; one that cannot be read is
+   reported in the banner, the defaults are used, and the next change keeps it as `preferences.unreadable`). Both
+   apply from the next file opened.
 
 A change applies 450 ms after the last one. Each combination of size, upscaler, motion, sharpening and encoder
 is its own version (§10).
@@ -286,7 +286,7 @@ is its own version (§10).
   spinner. A video then shows frame 0 paused while upscaling starts there, and the upscaled side appears once the
   first half second is ready (1.6 s after opening for 1080p60 to 4K, *measured*); status "Ready · Space plays it
   upscaled · Upscale saves the whole video". An image is upscaled at once with every version shown; status
-  "Ready · press Upscale or Ctrl+Enter to save". With "Upscale as soon as a file opens" off, nothing is upscaled
+  "Ready · press Upscale or Ctrl+Enter to save". With "Upscale on open" off, nothing is upscaled
   until a side shows a preset: status "Ready · nothing is upscaled · choose a preset in the Left or Right list to
   upscale".
 

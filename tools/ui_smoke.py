@@ -649,6 +649,22 @@ def main() -> int:
               f"it plays the source and nothing is upscaled (frame {app.player.position})")
         check(app.status_var.get() == ui.NOTHING_UPSCALED, f"the status says how to upscale ({app.status_var.get()})")
         shot("12_opened_without_upscaling")
+        switch, choose_button, content = app.upscale_on_open_switch, app.choose_button, app.sidebar_content
+        under = (switch.winfo_rootx() == choose_button.winfo_rootx()
+                 and 0 <= switch.winfo_rooty() - choose_button.winfo_rooty() - choose_button.winfo_height() <= 20)
+        switch_right = switch.winfo_rootx() + switch.winfo_width() - content.winfo_rootx()
+        inner_right = content.winfo_width() - app.theme.px(6)
+        check(under and switch_right <= inner_right and switch.winfo_width() >= switch.winfo_reqwidth(),
+              f"the switch sits whole under Choose file (ends at {switch_right} of {inner_right})")
+        folder_y = app.temporary_entry.master.winfo_y()
+        check(app.encoder_choice.winfo_y() < folder_y < app.threads_label.master.winfo_y(),
+              "the temporary folder is in the Output section, under the encoder")
+        app.sidebar_canvas.yview_moveto(max(0.0, (app.output_entry.master.winfo_y() - 60) / content.winfo_reqheight()))
+        yield 0.4
+        check(app.temporary_entry.xview()[1] >= 0.999, f"the folder's field shows the end of its path "
+                                                         f"({app.temporary_entry.xview()})")
+        shot("12a_temporary_folder_in_output")
+        app.sidebar_canvas.yview_moveto(0.0)
         app.toggle_play()
         yield lambda: not app.player.playing
         choose("right", "preset:FSR 4")

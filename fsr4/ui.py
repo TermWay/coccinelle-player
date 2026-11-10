@@ -389,10 +389,13 @@ class App:
         self.source_details = ttk.Label(sidebar, text="Drop a file anywhere on this window, or choose one.",
                                         style="Small.TLabel", wraplength=wrap, justify="left")
         self.source_details.grid(row=row + 1, column=0, sticky="w", pady=(px(2), px(6)))
-        self.choose_button = ttk.Button(sidebar, text="Choose file…", style="Secondary.TButton", command=self.browse)
-        self.choose_button.grid(row=row + 2, column=0, sticky="w")
+        open_row = ttk.Frame(sidebar)
+        open_row.grid(row=row + 2, column=0, sticky="w")
+        self.choose_button = ttk.Button(open_row, text="Choose file…", style="Secondary.TButton", command=self.browse)
+        self.choose_button.grid(row=0, column=0)
         self._tip(self.choose_button, "Open a video or an image (Ctrl+O). You can also drop a file anywhere on "
                                       "the window.")
+        self._build_upscale_on_open(open_row)
 
         row = self._section(sidebar, row + 3, "Size")
         chips = ttk.Frame(sidebar)
@@ -486,8 +489,9 @@ class App:
         self.encoder_note.grid(row=row + 2, column=0, sticky="w", pady=(px(4), 0))
         self.audio_note = ttk.Label(sidebar, text="", style="Faint.TLabel", wraplength=wrap, justify="left")
         self.audio_note.grid(row=row + 3, column=0, sticky="w", pady=(px(3), 0))
+        self._build_temporary_folder(sidebar, row + 4)
 
-        row = self._section(sidebar, row + 4, "Processor")
+        row = self._section(sidebar, row + 6, "Processor")
         threads_row = ttk.Frame(sidebar)
         threads_row.grid(row=row, column=0, sticky="ew")
         threads_row.columnconfigure(1, weight=1)
@@ -513,30 +517,37 @@ class App:
             self._tip(chip, priority.description)
         self._processor_job: str | None = None
         self.threads_label.configure(text=f"{usage.DEFAULT.threads} of {usage.CPU_THREADS}")
-        self._build_preferences(sidebar, row + 2)
         self.setting_widgets = [self.choose_button, self.output_entry, self.save_button, self.encoder_choice,
                                 custom_slider, *self.save_chips]
         self._route_wheel(holder)
         return holder
 
-    def _build_preferences(self, sidebar: ttk.Frame, row: int) -> None:
-        """Whether a file is upscaled as soon as it opens, and the folder of the temporary files; both are kept
-        between runs."""
-        px = self.theme.px
-        row = self._section(sidebar, row, "Preferences")
+    def _build_upscale_on_open(self, open_row: ttk.Frame) -> None:
+        """The switch under Choose file: whether a file is upscaled as soon as it opens (kept between runs)."""
         self.upscale_on_open_var = tk.BooleanVar(value=self.preferences.preferences.upscale_on_open)
         self.upscale_on_open_switch = ttk.Checkbutton(
-            sidebar, text="Upscale as soon as a file opens", variable=self.upscale_on_open_var,
+            open_row, text="Upscale on open", variable=self.upscale_on_open_var,
             style="Switch.TCheckbutton", command=self._upscale_on_open_changed, takefocus=False)
-        self.upscale_on_open_switch.grid(row=row, column=0, sticky="w")
+        self.upscale_on_open_switch.grid(row=1, column=0, sticky="w", pady=(self.theme.px(10), 0))
         self._tip(self.upscale_on_open_switch,
                   "On: a file opens with each side as you left it, and FSR starts on the sides that show a preset.\n"
                   "Off: a file opens as in a plain player, the source enlarged by a classic filter, and nothing is "
                   "upscaled until you choose a preset in the Left or Right list.\nFrom the next file you open.")
-        ttk.Label(sidebar, text="Temporary files", style="Small.TLabel").grid(row=row + 1, column=0, sticky="w",
-                                                                              pady=(px(10), px(4)))
+
+    def _build_temporary_folder(self, sidebar: ttk.Frame, row: int) -> None:
+        """The folder of the temporary files, in the Output section (kept between runs); takes rows `row` and
+        `row + 1`."""
+        px = self.theme.px
+        title_row = ttk.Frame(sidebar)
+        title_row.grid(row=row, column=0, sticky="ew", pady=(px(6), px(2)))
+        title_row.columnconfigure(0, weight=1)
+        ttk.Label(title_row, text="Temporary files", style="Small.TLabel").grid(row=0, column=0, sticky="w")
+        self.temporary_default_button = ttk.Button(title_row, text="Default", style="Ghost.TButton", takefocus=False,
+                                                   command=lambda: self._set_temporary_folder(None))
+        self.temporary_default_button.grid(row=0, column=1, sticky="e")
+        self._tip(self.temporary_default_button, f"Back to the {temporary.DEFAULT_NAME} folder next to {APP_NAME}.")
         folder_row = ttk.Frame(sidebar)
-        folder_row.grid(row=row + 2, column=0, sticky="ew")
+        folder_row.grid(row=row + 1, column=0, sticky="ew")
         folder_row.columnconfigure(0, weight=1)
         self.temporary_var = tk.StringVar()
         self.temporary_entry = ttk.Entry(folder_row, textvariable=self.temporary_var, state="readonly",
@@ -550,10 +561,7 @@ class App:
         browse.grid(row=0, column=1, padx=(px(6), 0))
         self._tip(browse, "Choose another folder, for instance on a drive with more room. From the next file you "
                           "open.")
-        self.temporary_default_button = ttk.Button(folder_row, text="Default", style="Secondary.TButton",
-                                                   command=lambda: self._set_temporary_folder(None))
-        self.temporary_default_button.grid(row=0, column=2, padx=(px(6), 0))
-        self._tip(self.temporary_default_button, f"Back to the {temporary.DEFAULT_NAME} folder next to {APP_NAME}.")
+        self.temporary_entry.bind("<Configure>", lambda _event: self.temporary_entry.xview_moveto(1.0))
         self._show_temporary_folder()
 
     def _use_saved_temporary_folder(self) -> str | None:
@@ -572,7 +580,8 @@ class App:
 
     def _show_temporary_folder(self) -> None:
         self.temporary_var.set(str(temporary.folder()))
-        self.temporary_entry.xview_moveto(1.0)
+        # The end of the path names the folder; the entry lays out its new text when idle.
+        self.root.after_idle(self.temporary_entry.xview_moveto, 1.0)
         show_widget(self.temporary_default_button, self.preferences.preferences.temporary_folder is not None)
 
     def browse_temporary_folder(self) -> None:
