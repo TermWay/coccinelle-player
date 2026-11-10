@@ -662,9 +662,9 @@ def main() -> int:
         gap = switch.winfo_rootx() - choose_button.winfo_rootx() - choose_button.winfo_width()
         switch_right = switch.winfo_rootx() + switch.winfo_width() - content.winfo_rootx()
         inner_right = content.winfo_width() - app.theme.px(6)
-        check(abs(middle_offset) <= 2 and gap >= app.theme.px(8) and inner_right - 2 <= switch_right <= inner_right
+        check(abs(middle_offset) <= 2 and abs(gap - app.theme.px(ui.SWITCH_GAP)) <= 1 and switch_right <= inner_right
               and switch.winfo_width() >= switch.winfo_reqwidth(),
-              f"the switch sits whole at the right end of {choose_button.cget('text')!r}'s line (a gap of {gap}, "
+              f"the switch sits whole just after {choose_button.cget('text')!r} (a gap of {gap}, "
               f"ends at {switch_right} of {inner_right})")
         app.toggle_play()
         yield lambda: not app.player.playing

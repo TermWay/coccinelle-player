@@ -230,8 +230,8 @@ has none of those; the tool substitutes, as the quality lab (§14) settled:
 1. **Source**: the file name ("No file yet"); for a video "<codec> · W × H · <fps> fps", then "[plays as W × H
    · ]3:20 · 12,000 frames · <audio codec, N audio tracks or no audio>"; for an image "<codec> image · W × H".
    Empty, it says "Drop a file anywhere on this window, or choose one."; while probing, "Reading…". The button
-   reads "Choose file…", then "Choose another file…". On its line, at the right end so it stays put when the
-   button's text changes, the switch "Auto upscale" (on by default; tooltip "Upscale as soon as a file opens"; item 6).
+   reads "Choose file…", then "Choose another file…". Just after it on its line (12 px apart: they belong together),
+   the switch "Auto upscale" (on by default; tooltip "Upscale as soon as a file opens"; item 6).
    Off, a file opens as in a plain player: the sides showing a preset are turned off, and when that leaves nothing
    the first of them shows the source bicubic. Their settings stay, so choosing a preset in a side's list starts
    upscaling with them.

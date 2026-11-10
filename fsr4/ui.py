@@ -56,6 +56,7 @@ APP_NAME = "Coccinelle Player"
 POLL_MS = 30
 DRAG_SEEK_SECONDS = 0.12
 SIDEBAR_WIDTH = 340
+SWITCH_GAP = 12  # between Choose file and its switch, which belong together
 SETTINGS_DELAY_MS = 450
 HIDE_CONTROLS_MS = 2500
 REPAINT_SETTLE_MS = 150
@@ -520,13 +521,13 @@ class App:
         return holder
 
     def _build_upscale_on_open(self, open_row: ttk.Frame) -> None:
-        """The switch at the right end of Choose file's line (it stays put when the button's text changes): whether
-        a file is upscaled as soon as it opens, kept between runs."""
+        """The switch just after Choose file, on its line: whether a file is upscaled as soon as it opens, kept
+        between runs."""
         self.upscale_on_open_var = tk.BooleanVar(value=self.preferences.preferences.upscale_on_open)
         self.upscale_on_open_switch = ttk.Checkbutton(
             open_row, text="Auto upscale", variable=self.upscale_on_open_var,
             style="Switch.TCheckbutton", command=self._upscale_on_open_changed, takefocus=False)
-        self.upscale_on_open_switch.grid(row=0, column=1, sticky="e", padx=(self.theme.px(10), 0))
+        self.upscale_on_open_switch.grid(row=0, column=1, sticky="w", padx=(self.theme.px(SWITCH_GAP), 0))
         self._tip(self.upscale_on_open_switch,
                   "Upscale as soon as a file opens.\n"
                   "On: a file opens with each side as you left it, and FSR starts on the sides that show a preset.\n"
