@@ -54,9 +54,11 @@ DIVIDER_CURSOR = "sb_h_double_arrow"  # Tk's name for Windows' IDC_SIZEWE, which
 IDC_SIZEWE = 32644
 SM_CXCURSOR = 13
 DI_NORMAL = 3
-HANDLE_MIN_SIZE = 30  # 96 DPI pixels
-HANDLE_MARGIN = 5  # 96 DPI pixels between the pointer's arrow and the handle's edge, each side
-HANDLE_GROW = 1  # 96 DPI pixels the handle's white outline reaches beyond the pointer's own shape
+HANDLE_GAP = 2.5  # 96 DPI pixels between the pointer's tips and the handle's chevrons
+HANDLE_STROKE = 2.5  # 96 DPI pixels, the chevrons' thickness
+HANDLE_LEAN = math.radians(30)  # the chevrons' arms, from vertical
+HANDLE_ARM = 0.85  # each arm's height against the apex's distance from the middle
+HANDLE_SPAN = 0.6  # the chevrons' outer edges against the disc's radius
 OFF = "off"
 PLACEHOLDER_DIM = 0.45
 
@@ -1017,33 +1019,31 @@ class VideoView(tk.Frame):
         return sprite
 
     def _make_handle(self) -> np.ndarray:
-        """A round button in the window's colours with the divider's pointer (`handle_arrow`) on it as a white
-        outline: the pointer's shape grown by `HANDLE_GROW`, dark where the pointer itself is light. The pointer's
-        hotspot is on the middle pixel, so drawn centred on the pointer, the pointer covers the dark inside and a
-        thin white edge shows around it. The size is odd so that the disc is centred on that pixel."""
-        px, palette = self.theme.px, self.theme.palette
-        grow = max(1, px(HANDLE_GROW))
-        opaque = self.handle_arrow[..., 3]
-        rows, columns = np.nonzero(opaque.max(axis=1))[0], np.nonzero(opaque.max(axis=0))[0]
-        arrow = self.handle_arrow[rows[0]:rows[-1] + 1, columns[0]:columns[-1] + 1].astype(np.float32) / 255
-        arrow = np.pad(arrow, ((grow, grow), (grow, grow), (0, 0)))
-        hotspot_x = self.handle_hotspot[0] - int(columns[0]) + grow
-        hotspot_y = self.handle_hotspot[1] - int(rows[0]) + grow
-        footprint = (arrow[..., 3] > 0).astype(np.float32)  # its faint anti-aliased edge included
-        grown = cv2.dilate(footprint, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * grow + 1,) * 2))
-        light = arrow[..., :3].min(axis=2)  # premultiplied: how light and opaque the pointer is there
-        outline = np.clip(grown - light, 0, 1)
-        reach = max(hotspot_x, arrow.shape[1] - 1 - hotspot_x, hotspot_y, arrow.shape[0] - 1 - hotspot_y)
-        size = max(px(HANDLE_MIN_SIZE), 2 * (reach + px(HANDLE_MARGIN)) + 5) | 1
-        sketch = Sketch(size, size)
+        """A disc in the window's background colour with white chevrons, < >, around the divider's pointer
+        (`handle_arrow`): their inner tips `HANDLE_GAP` beyond the pointer's, so that the pointer, drawn with its
+        hotspot on the handle's middle pixel, fits inside them. The size is odd so that the disc is centred on that
+        pixel."""
+        scale = self.theme.scale
+        footprint = self.handle_arrow[..., 3] > 0
+        rows, columns = np.nonzero(footprint.any(axis=1))[0], np.nonzero(footprint.any(axis=0))[0]
+        hotspot_x, hotspot_y = self.handle_hotspot
+        # the pointer's outer edges from the centre of its hotspot pixel
+        half_width = max(hotspot_x - columns[0], columns[-1] - hotspot_x) + 0.5
+        half_height = max(hotspot_y - rows[0], rows[-1] - hotspot_y) + 0.5
+        stroke, gap = HANDLE_STROKE * scale, HANDLE_GAP * scale
+        apex = half_width + gap + stroke / 2 / math.cos(HANDLE_LEAN)  # where the inner edges meet: half_width + gap
+        arm_height = max(apex * HANDLE_ARM, half_height + gap + stroke)
+        arm_width = arm_height * math.tan(HANDLE_LEAN)
+        radius = (apex + stroke / 2) / HANDLE_SPAN
+        size = int(math.ceil(2 * radius + 4)) | 1
         center = size / 2
-        sketch.fill(sketch.circle(center, center + 1, center - 1), "#000000", opacity=0.35)
-        sketch.fill(sketch.circle(center, center, center - 2), palette.border)
-        sketch.fill(sketch.circle(center, center, center - 2 - max(1, px(1))), palette.field)
-        placed = np.zeros((size, size), np.float32)
-        left, top = size // 2 - hotspot_x, size // 2 - hotspot_y
-        placed[top:top + outline.shape[0], left:left + outline.shape[1]] = outline
-        sketch.fill(placed, "#ffffff")
+        sketch = Sketch(size, size)
+        sketch.fill(sketch.circle(center, center + 1, radius + 1), "#000000", opacity=0.35)
+        sketch.fill(sketch.circle(center, center, radius), self.theme.palette.background)
+        for direction in (-1, 1):
+            tip = center + direction * apex
+            sketch.fill(sketch.polyline([(tip - direction * arm_width, center - arm_height), (tip, center),
+                                         (tip - direction * arm_width, center + arm_height)], stroke), "#ffffff")
         return sketch.premultiplied_bgra()
 
     def _make_spinner(self, size: int) -> list[np.ndarray]:

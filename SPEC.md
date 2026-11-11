@@ -300,12 +300,11 @@ is its own version (§10).
   default). The list shows the preset the side's settings match, or else the settings described. Sides with the same
   settings share one version. Both are upscaled at the same size and encoder, paused or playing, so two FSR settings
   or FSR 4 and FSR 3.1 sit side by side. With no side upscaled, nothing is.
-- The divider is a 2 px line with a round handle in the window's own colours (a button's fill and border), at
-  least 30 px wide, carrying Windows' own ⟷ pointer (the user's pointer scheme and size, at the window's DPI) as a
-  white outline: the pointer's shape grown by 1 px, dark inside where the pointer is light. Over the picture the
-  pointer is that same ⟷. A left press anywhere on the picture moves the divider there and dragging follows, the
-  handle centred on the pointer, so the pointer covers the arrow's dark inside exactly with a 1 px white edge around
-  it. The handle sits mid-height until the divider is pressed or dragged,
+- The divider is a 2 px line with a round handle in the window's background colour carrying two white chevrons,
+  < >, sized around Windows' own ⟷ pointer (the user's pointer scheme and size, at the window's DPI): their tips
+  2.5 px beyond the pointer's, so that the pointer fits inside them. Over the picture the pointer is that same ⟷. A
+  left press anywhere on the picture moves the divider there and dragging follows, the handle centred on the
+  pointer. The handle sits mid-height until the divider is pressed or dragged,
   then at the pointer's height (zoomed in, the middle is often far from where one looks), and stays there once
   released; merely passing over the picture leaves it where it is. It is always whole inside the picture.
 - A label in each top corner names its side: the preset, the settings described ("FSR 3.1 · rough motion ·

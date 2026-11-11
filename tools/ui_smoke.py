@@ -360,17 +360,21 @@ def main() -> int:
         check(view.handle_y == handle_y, "once released, the handle stays where it was dragged")
         shot("05_handle_at_pointer")
 
-        def around_pointer(x: int, y: int) -> tuple[int, int]:
-            """With the system's west-east pointer's hotspot at (x, y): the darkest picture pixel in the 1 px ring
-            just outside the pointer's shape and the lightest one under the pointer's light pixels. White and
-            dark when the handle's outlined arrow lies exactly under the pointer."""
+        def around_pointer(x: int, y: int) -> tuple[int, int, int]:
+            """With the system's west-east pointer's hotspot at (x, y): the lightest picture pixel under the
+            pointer's footprint grown by 1 px (the handle's dark disc when the pointer fits inside its chevrons),
+            then, along the hotspot's row, the pixels between each of the pointer's tips and the white beyond it."""
             arrow, (hotspot_x, hotspot_y) = view.handle_arrow, view.handle_hotspot
             height, width = arrow.shape[:2]
-            shown = view.snapshot()[y - hotspot_y:y - hotspot_y + height, x - hotspot_x:x - hotspot_x + width, :3]
-            shape = (arrow[..., 3] > 0).astype(np.uint8)
-            ring = (cv2.dilate(shape, cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))) > 0) & (shape == 0)
-            light = arrow[..., :3].min(axis=2) >= 128
-            return int(shown[ring].min()), int(shown[light].max())
+            snapshot = view.snapshot()
+            shown = snapshot[y - hotspot_y:y - hotspot_y + height, x - hotspot_x:x - hotspot_x + width, :3]
+            footprint = (arrow[..., 3] > 0).astype(np.uint8)
+            grown = cv2.dilate(footprint, np.ones((3, 3), np.uint8)) > 0
+            tips = np.nonzero(footprint[hotspot_y])[0]
+            left_tip, right_tip = x - hotspot_x + int(tips[0]), x - hotspot_x + int(tips[-1])
+            white = np.nonzero(snapshot[y, :, :3].min(axis=1) >= 200)[0]
+            return (int(shown[grown].max()), left_tip - int(white[white < left_tip].max()) - 1,
+                    int(white[white > right_tip].min()) - right_tip - 1)
 
         center_y = view.handle_y
         reach = view._handle.shape[0] // 3
@@ -381,10 +385,11 @@ def main() -> int:
         dragged = handle_mismatch(press_x + 57, press_y - 41), *around_pointer(press_x + 57, press_y - 41)
         pointer_at(divider_x, center_y, "<B1-Motion>")
         pointer_at(divider_x, center_y, "<ButtonRelease-1>")
-        check(all(mismatch <= 2 and ring >= 240 and inside <= 70 for mismatch, ring, inside in (pressed, dragged)),
-              f"pressed beside its middle and dragged, the handle stays centred on the pointer, its white outline "
-              f"1 px around the pointer and dark under it (largest difference, darkest ring pixel, lightest inside: "
-              f"{pressed} pressed, {dragged} dragged)")
+        check(all(mismatch <= 2 and under <= 60 and 1 <= left <= app.theme.px(4) and 1 <= right <= app.theme.px(4)
+                  for mismatch, under, left, right in (pressed, dragged)),
+              f"pressed beside its middle and dragged, the handle stays centred on the pointer, which fits inside its "
+              f"chevrons (largest difference, lightest pixel under the pointer, gaps to the chevrons: {pressed} "
+              f"pressed, {dragged} dragged)")
         zoom_slider = app.zoom_slider
         track_y = zoom_slider.winfo_height() // 2
 
