@@ -19,7 +19,7 @@ from .hq_scaler import HQ_SCALER, MIN_SIZE as HQ_MIN_SIZE
 from .media import (ENCODER_LIMITS, ENCODER_NAMES, FrameReader, FrameWriter, MediaInfo, describe_audio, is_image,
                     partial_path, probe, read_image, write_image)
 from .pipeline import upscale_stream
-from .realesrgan import MODELS, NOT_INSTALLED, STILL_ONLY, STILL_ONLY_NOTE, Stopped, find_program
+from .realesrgan import MODELS, STILL_ONLY, STILL_ONLY_NOTE, Stopped, find_program, not_installed
 from .upscalers import EXTERNAL_UPSCALERS, create_pipeline
 
 VIDEO_SUFFIX = ".mp4"
@@ -159,7 +159,7 @@ def check_realesrgan(options: JobOptions) -> None:
     if options.upscaler in STILL_ONLY and not is_image(options.input):
         raise ValueError(STILL_ONLY_NOTE)
     if find_program(options.upscaler) is None:
-        raise ValueError(NOT_INSTALLED)
+        raise ValueError(not_installed())
 
 
 def plan_from_info(options: JobOptions, info: MediaInfo) -> JobPlan:

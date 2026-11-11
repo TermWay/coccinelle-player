@@ -37,11 +37,9 @@ REAL_ESRGAN = "realesrgan"
 REAL_ESRGAN_X4PLUS = "realesrgan-x4plus"
 REAL_ESRGAN_ANIME = "realesrgan-x4plus-anime"
 PROGRAM = "realesrgan-ncnn-vulkan.exe"
-# Where the program goes, next to the exe or the package; PATH works too. Its `models` folder sits beside it.
+# Where the program goes (see `search_folders`); PATH works too. Its `models` folder sits beside it.
 FOLDER = Path("bin") / "realesrgan"
 DOWNLOAD = "https://github.com/xinntao/Real-ESRGAN/releases/tag/v0.2.5.0"
-NOT_INSTALLED = (f"Real-ESRGAN is not installed: unzip realesrgan-ncnn-vulkan-20220424-windows.zip from {DOWNLOAD} "
-                 f"into {FOLDER}")
 # 9.5 s and 4.2 s a 1080p picture (measured): in a video, a seek would wait minutes for its chunk.
 STILL_ONLY = frozenset({REAL_ESRGAN_X4PLUS, REAL_ESRGAN_ANIME})
 STILL_ONLY_NOTE = "This Real-ESRGAN model takes seconds a picture: it is for still images. Use Real-ESRGAN for a video."
@@ -80,11 +78,26 @@ class Stopped(Exception):
     """`RealEsrganPipeline.stop` ended the picture being made."""
 
 
+def search_folders() -> list[Path]:
+    """The folders whose `bin\\realesrgan` may hold the program, in order: the packaged executable's and every folder
+    above it (a build in the repository's dist folder finds the repository's), then the package's repository."""
+    folders = []
+    if getattr(sys, "frozen", False):
+        executable_folder = Path(sys.executable).resolve().parent
+        folders += [executable_folder, *executable_folder.parents]
+    folders.append(Path(__file__).resolve().parent.parent)
+    return folders
+
+
+def not_installed() -> str:
+    """Why Real-ESRGAN cannot run, with where to get it and the folder to unzip it into."""
+    return (f"Real-ESRGAN is not installed: unzip realesrgan-ncnn-vulkan-20220424-windows.zip from {DOWNLOAD} "
+            f"into {search_folders()[0] / FOLDER}")
+
+
 def find_program(upscaler: str = REAL_ESRGAN) -> Path | None:
     """Real-ESRGAN's program, with the model of `upscaler` beside it, or None when it is not installed."""
-    places = [Path(__file__).resolve().parent.parent / FOLDER / PROGRAM]
-    if getattr(sys, "frozen", False):
-        places.insert(0, Path(sys.executable).parent / FOLDER / PROGRAM)
+    places = [folder / FOLDER / PROGRAM for folder in search_folders()]
     found = shutil.which(PROGRAM)
     if found is not None:
         places.append(Path(found))
@@ -157,7 +170,7 @@ class RealEsrganPipeline:
     def __init__(self, render_size: tuple[int, int], output_size: tuple[int, int], upscaler: str = REAL_ESRGAN):
         program = find_program(upscaler)
         if program is None:
-            raise FileNotFoundError(NOT_INSTALLED)
+            raise FileNotFoundError(not_installed())
         self.program = program
         self.render_size = render_size
         self.output_size = output_size

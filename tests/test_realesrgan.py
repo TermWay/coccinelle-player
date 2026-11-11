@@ -73,6 +73,22 @@ class ChoicesTest(unittest.TestCase):
                 self.assertEqual(realesrgan.find_program(), program)
                 self.assertIsNone(realesrgan.find_program(REAL_ESRGAN_X4PLUS), "each model has its own weights")
 
+    def test_a_packaged_build_finds_the_program_in_a_folder_above_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory).resolve()
+            build = repository / "dist" / "fsr4"
+            build.mkdir(parents=True)
+            program = repository / realesrgan.FOLDER / realesrgan.PROGRAM
+            (program.parent / "models").mkdir(parents=True)
+            program.touch()
+            (program.parent / "models" / VIDEO_MODEL.weights).touch()
+            with mock.patch.object(realesrgan.sys, "frozen", True, create=True), \
+                    mock.patch.object(realesrgan.sys, "executable", str(build / "Coccinelle Player.exe")), \
+                    mock.patch.object(realesrgan.shutil, "which", return_value=None):
+                self.assertEqual(realesrgan.find_program(), program)
+                self.assertIn(str(build / realesrgan.FOLDER), realesrgan.not_installed(),
+                              "the message names the folder next to the executable")
+
 
 class PlanTest(unittest.TestCase):
     def options(self, **values) -> JobOptions:

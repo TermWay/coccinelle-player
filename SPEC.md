@@ -41,8 +41,9 @@ CLAUDE.md the design notes for working on the code.
   how to install it (`winget install Gyan.FFmpeg.Essentials`); when ffmpeg rejects an option as unknown, the error
   says this ffmpeg is too old and which version is needed.
 - Real-ESRGAN is optional and never bundled: `realesrgan-ncnn-vulkan.exe` with its `models` folder, tested with
-  the release of 2022-04-24 (v0.2.5.0), looked for in `bin\realesrgan\` next to the packaged executable, then in
-  the repository's, then on PATH. Without it the error says where to get it and where to put it.
+  the release of 2022-04-24 (v0.2.5.0), looked for in `bin\realesrgan\` next to the packaged executable or in a
+  folder above it (a build in the repository's `dist` finds the repository's), then in the repository's, then on
+  PATH. Without it the error says where to get it and names the folder to unzip it into.
 - The window is plain tkinter (DPI aware) with ctypes calls into Win32; no GUI package.
 - Every message goes through one logging module, which the window shows. No log file is ever written.
 - No silent failure: an error is logged and stops the work with a plain reason on one line.

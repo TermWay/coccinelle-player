@@ -6,6 +6,7 @@
 The build goes into out\\dev-build (build_exe.bat with that folder), so a window running from dist\\fsr4 neither
 blocks nor breaks it; it then replaces dist\\fsr4 when no program runs from there. Otherwise it waits in
 out\\dev-build and the next run puts it in place (start.bat runs this before it opens the window).
+What was added to dist\\fsr4 by hand (`KEPT`: Real-ESRGAN, ffmpeg) moves into the new build.
 Exit status: 0 when dist\\fsr4 is up to date, 2 when the new build waits because dist\\fsr4 is in use, 1 when the
 build failed.
 """
@@ -32,6 +33,8 @@ INPUT_FOLDERS = ["fsr4", "third_party"]
 INPUT_FILES = ["run_fsr4.py", "fsr4.spec", "build_exe.bat", "requirements.txt", "README.md", "LICENSE",
                "tools/collect_licenses.py", "bin/amd_fidelityfx_loader_vk.dll", "bin/amd_fidelityfx_upscaler_vk.dll",
                "bin/license.md"]
+# What the README says to put into the build's folder by hand: never built, so a new build carries it over.
+KEPT = ["bin/realesrgan", "ffmpeg.exe", "ffprobe.exe"]
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -118,6 +121,11 @@ def install() -> bool:
             previous.rename(DIST)
         raise
     if previous.exists():
+        for name in KEPT:
+            if (previous / name).exists() and not (DIST / name).exists():
+                (DIST / name).parent.mkdir(parents=True, exist_ok=True)
+                (previous / name).rename(DIST / name)
+                print(f"dev_build: kept dist\\fsr4\\{Path(name)}", flush=True)
         shutil.rmtree(previous)
     return True
 

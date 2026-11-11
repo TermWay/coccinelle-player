@@ -55,7 +55,7 @@ def require_realesrgan() -> None:
     """Skip the test class when Real-ESRGAN's program is not installed."""
     from fsr4 import realesrgan
     if realesrgan.find_program() is None:
-        raise unittest.SkipTest(realesrgan.NOT_INSTALLED)
+        raise unittest.SkipTest(realesrgan.not_installed())
 
 
 def require_fsr() -> None:
