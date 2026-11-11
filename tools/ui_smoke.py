@@ -339,38 +339,52 @@ def main() -> int:
         move_pointer(0.25, "<ButtonRelease-1>")
         yield 0.3
         shown_left, _, shown_width, _ = view._geometry.shown
-        handle_x = shown_left + int(view.split * shown_width) + round(0.36 * view._handle.shape[0])
+
+        def handle_mismatch(x: int, y: int) -> int:
+            """The largest difference between the picture and the handle centred on (x, y), over its opaque
+            pixels: 0 when the handle is drawn there."""
+            sprite = view._handle
+            half = sprite.shape[0] // 2
+            shown = view.snapshot()[y - half:y - half + sprite.shape[0], x - half:x - half + sprite.shape[1], :3]
+            opaque = sprite[..., 3] == 255
+            return int(np.abs(shown.astype(int) - sprite[..., :3].astype(int))[opaque].max())
+
+        divider_x = shown_left + int(round(view.split * shown_width))
         handle_y = int(view.winfo_height() * 0.25)
-        pixel = view.snapshot()[handle_y, handle_x, :3]
-        check(view.handle_y == handle_y and int(pixel.min()) >= 225,
-              f"zoomed in, dragging the divider takes its handle to the pointer's height (pixel {pixel.tolist()} at "
-              f"y {handle_y})")
+        mismatch = handle_mismatch(divider_x, handle_y)
+        check(view.handle_y == handle_y and mismatch <= 2,
+              f"zoomed in, dragging the divider takes its handle to the pointer's height (y {handle_y}, largest "
+              f"difference {mismatch})")
         move_pointer(0.6)
         yield 0.2
         check(view.handle_y == handle_y, "once released, the handle stays where it was dragged")
         shot("05_handle_at_pointer")
 
-        def arrow_mismatch(x: int, y: int) -> int:
-            """The largest difference between the picture and the system's west-east pointer with its hotspot at
-            (x, y), over the pointer's opaque pixels: 0 when the handle's arrow lies exactly under the pointer."""
+        def around_pointer(x: int, y: int) -> tuple[int, int]:
+            """With the system's west-east pointer's hotspot at (x, y): the darkest picture pixel in the 1 px ring
+            just outside the pointer's shape and the lightest one under the pointer's light pixels. White and
+            dark when the handle's outlined arrow lies exactly under the pointer."""
             arrow, (hotspot_x, hotspot_y) = view.handle_arrow, view.handle_hotspot
             height, width = arrow.shape[:2]
             shown = view.snapshot()[y - hotspot_y:y - hotspot_y + height, x - hotspot_x:x - hotspot_x + width, :3]
-            opaque = arrow[..., 3] == 255
-            return int(np.abs(shown.astype(int) - arrow[..., :3].astype(int))[opaque].max())
+            shape = (arrow[..., 3] > 0).astype(np.uint8)
+            ring = (cv2.dilate(shape, cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))) > 0) & (shape == 0)
+            light = arrow[..., :3].min(axis=2) >= 128
+            return int(shown[ring].min()), int(shown[light].max())
 
-        center_x, center_y = shown_left + int(round(view.split * shown_width)), view.handle_y
+        center_y = view.handle_y
         reach = view._handle.shape[0] // 3
-        press_x, press_y = center_x - reach, center_y + reach // 2
+        press_x, press_y = divider_x - reach, center_y + reach // 2
         pointer_at(press_x, press_y, "<ButtonPress-1>")
-        pressed = arrow_mismatch(press_x, press_y)
+        pressed = handle_mismatch(press_x, press_y), *around_pointer(press_x, press_y)
         pointer_at(press_x + 57, press_y - 41, "<B1-Motion>")
-        dragged = arrow_mismatch(press_x + 57, press_y - 41)
-        pointer_at(center_x, center_y, "<B1-Motion>")
-        pointer_at(center_x, center_y, "<ButtonRelease-1>")
-        check(pressed <= 2 and dragged <= 2,
-              f"pressed beside its middle and dragged, the handle's arrow lies exactly under the system pointer "
-              f"(largest difference {pressed} pressed, {dragged} dragged)")
+        dragged = handle_mismatch(press_x + 57, press_y - 41), *around_pointer(press_x + 57, press_y - 41)
+        pointer_at(divider_x, center_y, "<B1-Motion>")
+        pointer_at(divider_x, center_y, "<ButtonRelease-1>")
+        check(all(mismatch <= 2 and ring >= 240 and inside <= 70 for mismatch, ring, inside in (pressed, dragged)),
+              f"pressed beside its middle and dragged, the handle stays centred on the pointer, its white outline "
+              f"1 px around the pointer and dark under it (largest difference, darkest ring pixel, lightest inside: "
+              f"{pressed} pressed, {dragged} dragged)")
         zoom_slider = app.zoom_slider
         track_y = zoom_slider.winfo_height() // 2
 

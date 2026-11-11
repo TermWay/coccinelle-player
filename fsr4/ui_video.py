@@ -56,6 +56,7 @@ SM_CXCURSOR = 13
 DI_NORMAL = 3
 HANDLE_MIN_SIZE = 30  # 96 DPI pixels
 HANDLE_MARGIN = 5  # 96 DPI pixels between the pointer's arrow and the handle's edge, each side
+HANDLE_GROW = 1  # 96 DPI pixels the handle's white outline reaches beyond the pointer's own shape
 OFF = "off"
 PLACEHOLDER_DIM = 0.45
 
@@ -1016,21 +1017,34 @@ class VideoView(tk.Frame):
         return sprite
 
     def _make_handle(self) -> np.ndarray:
-        """A light disc with the divider's pointer (`handle_arrow`) on it, its hotspot on the middle pixel: drawn
-        centred on the pointer, the two coincide. The size is odd so that the disc is centred on that pixel."""
+        """A round button in the window's colours with the divider's pointer (`handle_arrow`) on it as a white
+        outline: the pointer's shape grown by `HANDLE_GROW`, dark where the pointer itself is light. The pointer's
+        hotspot is on the middle pixel, so drawn centred on the pointer, the pointer covers the dark inside and a
+        thin white edge shows around it. The size is odd so that the disc is centred on that pixel."""
+        px, palette = self.theme.px, self.theme.palette
+        grow = max(1, px(HANDLE_GROW))
         opaque = self.handle_arrow[..., 3]
         rows, columns = np.nonzero(opaque.max(axis=1))[0], np.nonzero(opaque.max(axis=0))[0]
-        arrow = self.handle_arrow[rows[0]:rows[-1] + 1, columns[0]:columns[-1] + 1]
-        hotspot_x, hotspot_y = self.handle_hotspot[0] - int(columns[0]), self.handle_hotspot[1] - int(rows[0])
+        arrow = self.handle_arrow[rows[0]:rows[-1] + 1, columns[0]:columns[-1] + 1].astype(np.float32) / 255
+        arrow = np.pad(arrow, ((grow, grow), (grow, grow), (0, 0)))
+        hotspot_x = self.handle_hotspot[0] - int(columns[0]) + grow
+        hotspot_y = self.handle_hotspot[1] - int(rows[0]) + grow
+        footprint = (arrow[..., 3] > 0).astype(np.float32)  # its faint anti-aliased edge included
+        grown = cv2.dilate(footprint, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * grow + 1,) * 2))
+        light = arrow[..., :3].min(axis=2)  # premultiplied: how light and opaque the pointer is there
+        outline = np.clip(grown - light, 0, 1)
         reach = max(hotspot_x, arrow.shape[1] - 1 - hotspot_x, hotspot_y, arrow.shape[0] - 1 - hotspot_y)
-        size = max(self.theme.px(HANDLE_MIN_SIZE), 2 * (reach + self.theme.px(HANDLE_MARGIN)) + 5) | 1
+        size = max(px(HANDLE_MIN_SIZE), 2 * (reach + px(HANDLE_MARGIN)) + 5) | 1
         sketch = Sketch(size, size)
         center = size / 2
         sketch.fill(sketch.circle(center, center + 1, center - 1), "#000000", opacity=0.35)
-        sketch.fill(sketch.circle(center, center, center - 2), "#f4f4f5")
-        handle = sketch.premultiplied_bgra()
-        over(handle, arrow, size // 2 - hotspot_x, size // 2 - hotspot_y)
-        return handle
+        sketch.fill(sketch.circle(center, center, center - 2), palette.border)
+        sketch.fill(sketch.circle(center, center, center - 2 - max(1, px(1))), palette.field)
+        placed = np.zeros((size, size), np.float32)
+        left, top = size // 2 - hotspot_x, size // 2 - hotspot_y
+        placed[top:top + outline.shape[0], left:left + outline.shape[1]] = outline
+        sketch.fill(placed, "#ffffff")
+        return sketch.premultiplied_bgra()
 
     def _make_spinner(self, size: int) -> list[np.ndarray]:
         frames = []
