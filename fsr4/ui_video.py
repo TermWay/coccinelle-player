@@ -9,13 +9,13 @@ whichever thread presents (the Tk thread for interaction, the player thread for 
 Each side of the divider shows a layer: an upscaled version (the window names them) or the source
 enlarged by a filter (original pixels, bilinear, bicubic or Lanczos), all at the same
 geometry; clicking a side's label tells the window, which opens that side's dropdown. The divider's handle goes to
-the height where the divider is pressed or dragged; a drag that starts on the handle keeps the point pressed under
-the pointer. A side can be OFF: the other one fills the picture and there is no divider.
+where the divider is pressed or dragged, centred on the pointer, and carries Windows' own west-east pointer drawn
+where the pointer's hotspot falls: while dragging, the pointer covers it exactly. A side can be OFF: the other one fills the picture and there is no divider.
 Zoom is Fit, Original
-size (one screen pixel per source pixel, the upscaled side shrunk to match) or any scale up to 800%; from
+size (one screen pixel per source pixel, the upscaled side shrunk to match) or any scale up to 1600%; from
 100% up every output pixel is a block of screen pixels (nearest neighbour), so what is drawn is what the file
 holds. The right or middle button pans, the wheel zooms around the cursor in quarter octaves (stopping at
-Fit, Original size and 100% to 800%), double-click switches between Fit and 100%, and the minimap moves the
+Fit, Original size and 100% to 1600%), double-click switches between Fit and 100%, and the minimap moves the
 visible area.
 """
 from __future__ import annotations
@@ -36,8 +36,8 @@ from . import log
 from .ui_art import Sketch
 from .ui_theme import Theme
 
-ZOOM_LEVELS: tuple = ("fit", "source", 1, 2, 4, 8)
-MAX_ZOOM = 8.0
+WHOLE_ZOOMS = (1, 2, 4, 8, 16)  # where the wheel pauses from 100% up
+MAX_ZOOM = float(WHOLE_ZOOMS[-1])
 WHEEL_STEP = 2 ** 0.25
 SNAP_TOLERANCE = 0.005
 REFERENCE_FILTERS = {
@@ -50,6 +50,12 @@ MINIMAP_WIDTH = 180
 MINIMAP_MIN = 8
 SPINNER_FRAMES = 24
 DIVIDER_COLOR = (0xf5, 0xf4, 0xf4)
+DIVIDER_CURSOR = "sb_h_double_arrow"  # Tk's name for Windows' IDC_SIZEWE, which the handle draws
+IDC_SIZEWE = 32644
+SM_CXCURSOR = 13
+DI_NORMAL = 3
+HANDLE_MIN_SIZE = 30  # 96 DPI pixels
+HANDLE_MARGIN = 5  # 96 DPI pixels between the pointer's arrow and the handle's edge, each side
 OFF = "off"
 PLACEHOLDER_DIM = 0.45
 
@@ -76,8 +82,20 @@ def _bitmap_header(width: int, height: int) -> BITMAPINFOHEADER:
                             biBitCount=32, biCompression=0)
 
 
+class ICONINFO(ctypes.Structure):
+    _fields_ = [("fIcon", wintypes.BOOL), ("xHotspot", wintypes.DWORD), ("yHotspot", wintypes.DWORD),
+                ("hbmMask", ctypes.c_void_p), ("hbmColor", ctypes.c_void_p)]
+
+
+class BITMAP(ctypes.Structure):
+    _fields_ = [("bmType", wintypes.LONG), ("bmWidth", wintypes.LONG), ("bmHeight", wintypes.LONG),
+                ("bmWidthBytes", wintypes.LONG), ("bmPlanes", wintypes.WORD), ("bmBitsPixel", wintypes.WORD),
+                ("bmBits", ctypes.c_void_p)]
+
+
 class Gdi:
-    """The few user32/gdi32 calls the view needs: blit a BGRA buffer, render text to a coverage mask."""
+    """The few user32/gdi32 calls the view needs: blit a BGRA buffer, render text to a coverage mask, draw a
+    system pointer."""
 
     def __init__(self):
         user32, gdi32 = ctypes.WinDLL("user32"), ctypes.WinDLL("gdi32")
@@ -103,6 +121,13 @@ class Gdi:
         gdi32.SetBkMode.argtypes = [handle, ctypes.c_int]
         gdi32.TextOutW.argtypes = [handle, ctypes.c_int, ctypes.c_int, wintypes.LPCWSTR, ctypes.c_int]
         gdi32.GetTextExtentPoint32W.argtypes = [handle, wintypes.LPCWSTR, ctypes.c_int, ctypes.POINTER(wintypes.SIZE)]
+        gdi32.GetObjectW.argtypes = [handle, ctypes.c_int, ctypes.c_void_p]
+        user32.LoadCursorW.restype = handle
+        user32.LoadCursorW.argtypes = [handle, handle]
+        user32.GetIconInfo.argtypes = [handle, ctypes.POINTER(ICONINFO)]
+        user32.DrawIconEx.argtypes = [handle, ctypes.c_int, ctypes.c_int, handle, ctypes.c_int, ctypes.c_int,
+                                      wintypes.UINT, handle, wintypes.UINT]
+        user32.GetSystemMetricsForDpi.argtypes = [ctypes.c_int, wintypes.UINT]
         self.user32, self.gdi32 = user32, gdi32
 
     def blit(self, window: int, canvas: np.ndarray) -> bool:
@@ -154,6 +179,54 @@ class Gdi:
                 gdi32.DeleteDC(dc)  # first: a font still selected into a DC cannot be deleted
             if font:
                 gdi32.DeleteObject(font)
+
+
+    def pointer(self, cursor_id: int, dpi: int) -> tuple[np.ndarray, tuple[int, int]]:
+        """A system pointer (an IDC_* number, in the user's scheme) as Windows shows it at `dpi`: a premultiplied
+        BGRA sprite, from drawing it over black and over white, and its hotspot in the sprite."""
+        cursor = self.user32.LoadCursorW(None, ctypes.c_void_p(cursor_id))
+        info = ICONINFO()
+        if not cursor or not self.user32.GetIconInfo(cursor, ctypes.byref(info)):
+            raise OSError(f"Windows has no pointer {cursor_id}")
+        try:
+            bitmap = BITMAP()
+            if not self.gdi32.GetObjectW(info.hbmColor or info.hbmMask, ctypes.sizeof(BITMAP), ctypes.byref(bitmap)):
+                raise OSError(f"the bitmap of pointer {cursor_id} cannot be read")
+            native = bitmap.bmWidth
+        finally:
+            for bitmap_handle in (info.hbmMask, info.hbmColor):  # GetIconInfo's copies, the caller's to delete
+                if bitmap_handle:
+                    self.gdi32.DeleteObject(bitmap_handle)
+        size = self.user32.GetSystemMetricsForDpi(SM_CXCURSOR, dpi) or native
+        on_black, on_white = (self._draw_pointer(cursor, size, background)[..., :3].astype(np.int16)
+                              for background in (0x00, 0xff))
+        alpha = np.clip(255 - (on_white - on_black).max(axis=2), 0, 255)
+        sprite = np.dstack([np.minimum(on_black, alpha[..., None]), alpha]).astype(np.uint8)
+        return sprite, (round(info.xHotspot * size / native), round(info.yHotspot * size / native))
+
+    def _draw_pointer(self, cursor: int, size: int, background: int) -> np.ndarray:
+        gdi32 = self.gdi32
+        dc = gdi32.CreateCompatibleDC(None)
+        if not dc:
+            raise OSError("GDI could not create a drawing context")
+        try:
+            bits = ctypes.c_void_p()
+            bitmap = gdi32.CreateDIBSection(dc, ctypes.byref(_bitmap_header(size, size)), 0, ctypes.byref(bits),
+                                            None, 0)
+            if not bitmap:
+                raise OSError("GDI could not create a pointer bitmap")
+            previous = gdi32.SelectObject(dc, bitmap)
+            try:
+                ctypes.memset(bits, background, size * size * 4)
+                if not self.user32.DrawIconEx(dc, 0, 0, cursor, size, size, 0, None, DI_NORMAL):
+                    raise OSError("Windows could not draw the pointer")
+                gdi32.GdiFlush()
+                return np.frombuffer(ctypes.string_at(bits, size * size * 4), np.uint8).reshape(size, size, 4)
+            finally:
+                gdi32.SelectObject(dc, previous)
+                gdi32.DeleteObject(bitmap)
+        finally:
+            gdi32.DeleteDC(dc)
 
 
 _gdi: Gdi | None = None
@@ -516,15 +589,14 @@ class VideoView(tk.Frame):
         self._minimap_box: tuple[int, int, int, int] | None = None
         self._next_minimap_box: tuple[int, int, int, int] | None = None
         self._drag: str | None = None
-        self._handle_center: tuple[int, int] | None = None  # where the handle was last drawn; None: no divider
-        self._grab = (0, 0)  # the pointer's offset from the handle's center during a drag that started on it
         self._pill_pressed: str | None = None
         self._pan_origin: tuple[int, int, float, float] | None = None
         self._blit_failed = False
         self._text_cache: dict[tuple, np.ndarray] = {}
         self._fonts = {name: (font.actual("family"), self._pixel_height(font.actual("size")))
                        for name, font in theme.fonts.items()}
-        self._handle = self._make_handle(px(30))
+        self.handle_arrow, self.handle_hotspot = gdi().pointer(IDC_SIZEWE, int(round(96 * theme.scale)))
+        self._handle = self._make_handle()
         self._spinner_frames = self._make_spinner(px(40))
         self._spinner_index = 0
         self._icon = {False: self._make_drop_icon(px(44), palette.text_faint),
@@ -696,7 +768,7 @@ class VideoView(tk.Frame):
     def zoom_step(self, steps: int):
         """The zoom `steps` wheel notches away (positive zooms in), stopping at Fit, Original size and whole
         zooms on the way."""
-        stops = [self.fit_scale(), self.zoom_scale("source"), 1.0, 2.0, 4.0, 8.0]
+        stops = [self.fit_scale(), self.zoom_scale("source"), *map(float, WHOLE_ZOOMS)]
         return self.zoom_named(step_zoom(self.zoom_scale(self.zoom), steps, stops, *self.zoom_range()))
 
     @staticmethod
@@ -826,7 +898,6 @@ class VideoView(tk.Frame):
                        missing: set[str]) -> None:
         px = self.theme.px
         left, top, shown_width, shown_height = geometry.shown
-        handle_center = None
         if not self.single:
             x = left + split
             line = max(1, px(2))
@@ -835,8 +906,6 @@ class VideoView(tk.Frame):
             middle = top + shown_height // 2 if self.handle_y is None else self.handle_y
             middle = max(top + half, min(top + shown_height - half, middle))  # whole, inside the picture
             blend(canvas, self._handle, x - self._handle.shape[1] // 2, middle - half)
-            handle_center = (x, middle)
-        self._handle_center = handle_center  # one assignment: the Tk thread reads it while the player composes
         margin = px(10)
         boxes = {}
         arrow = "" if self.fullscreen or self.on_side_click is None else "  ▾"
@@ -946,18 +1015,22 @@ class VideoView(tk.Frame):
             self._text_cache[key] = sprite
         return sprite
 
-    def _make_handle(self, size: int) -> np.ndarray:
+    def _make_handle(self) -> np.ndarray:
+        """A light disc with the divider's pointer (`handle_arrow`) on it, its hotspot on the middle pixel: drawn
+        centred on the pointer, the two coincide. The size is odd so that the disc is centred on that pixel."""
+        opaque = self.handle_arrow[..., 3]
+        rows, columns = np.nonzero(opaque.max(axis=1))[0], np.nonzero(opaque.max(axis=0))[0]
+        arrow = self.handle_arrow[rows[0]:rows[-1] + 1, columns[0]:columns[-1] + 1]
+        hotspot_x, hotspot_y = self.handle_hotspot[0] - int(columns[0]), self.handle_hotspot[1] - int(rows[0])
+        reach = max(hotspot_x, arrow.shape[1] - 1 - hotspot_x, hotspot_y, arrow.shape[0] - 1 - hotspot_y)
+        size = max(self.theme.px(HANDLE_MIN_SIZE), 2 * (reach + self.theme.px(HANDLE_MARGIN)) + 5) | 1
         sketch = Sketch(size, size)
         center = size / 2
         sketch.fill(sketch.circle(center, center + 1, center - 1), "#000000", opacity=0.35)
         sketch.fill(sketch.circle(center, center, center - 2), "#f4f4f5")
-        arm = size * 0.12
-        thickness = max(1.2, size * 0.06)
-        for direction in (-1, 1):
-            tip = center + direction * size * 0.24
-            sketch.fill(sketch.polyline([(tip - direction * arm, center - arm), (tip, center),
-                                         (tip - direction * arm, center + arm)], thickness), "#1e2024")
-        return sketch.premultiplied_bgra()
+        handle = sketch.premultiplied_bgra()
+        over(handle, arrow, size // 2 - hotspot_x, size // 2 - hotspot_y)
+        return handle
 
     def _make_spinner(self, size: int) -> list[np.ndarray]:
         frames = []
@@ -1044,7 +1117,6 @@ class VideoView(tk.Frame):
             self._move_to_minimap(event.x, event.y)
         elif not self.single:
             self._drag = "divider"
-            self._grab = self._handle_grab(event.x, event.y)
             self._move_divider(event.x, event.y)
 
     def _drag_motion(self, event: tk.Event) -> None:
@@ -1056,29 +1128,19 @@ class VideoView(tk.Frame):
     def _release(self, event: tk.Event) -> None:
         side, self._pill_pressed = self._pill_pressed, None
         self._drag = None
-        self._grab = (0, 0)
         self._pan_origin = None
         self._motion(event)
         if side is not None and self._pill_at(event.x, event.y) == side:
             self.on_side_click(side)
-
-    def _handle_grab(self, x: int, y: int) -> tuple[int, int]:
-        """Where a press lands on the handle, from its center: the handle then keeps that point under the pointer
-        (no jump). (0, 0) for a press beside it: the divider comes to the pointer."""
-        center = self._handle_center
-        if center is None or math.hypot(x - center[0], y - center[1]) > self._handle.shape[0] / 2:
-            return 0, 0
-        return x - center[0], y - center[1]
 
     def _move_divider(self, x: int, y: int) -> None:
         geometry = self._geometry
         if geometry is None:
             return
         left, _, shown_width, _ = geometry.shown
-        grab_x, grab_y = self._grab
         with self._lock:
-            self.split = min(1.0, max(0.0, (x - grab_x - left) / max(shown_width, 1)))
-            self.handle_y = y - grab_y
+            self.split = min(1.0, max(0.0, (x - left) / max(shown_width, 1)))
+            self.handle_y = y
         self.redraw()
 
     def _move_to_minimap(self, x: int, y: int) -> None:
@@ -1122,6 +1184,6 @@ class VideoView(tk.Frame):
                                                      and self.on_side_click is not None and not self.fullscreen):
             cursor = "hand2"
         else:
-            cursor = "" if self.single else "sb_h_double_arrow"
+            cursor = "" if self.single else DIVIDER_CURSOR
         if self._pan_origin is None and str(self.cget("cursor")) != cursor:
             self.configure(cursor=cursor)

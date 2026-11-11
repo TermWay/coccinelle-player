@@ -79,7 +79,7 @@ sub-pixel camera jitter every frame. A video file has none of those, so this too
   scaler, nothing for Real-ESRGAN. + saves those settings as a preset of your own (the size and the encoder stay the
   file's) in `%APPDATA%\Coccinelle Player\presets.json`, and the bin deletes one.
 - **Zoom:** the Fit button shows the whole picture; the slider beside it is marked like the speed's: Original
-  shows the source at its own pixel size (the upscaled side shrunk to match); 100% to 800% show upscaled pixels
+  shows the source at its own pixel size (the upscaled side shrunk to match); 100% to 1600% show upscaled pixels
   1:1 or enlarged. Click or drag anywhere on it (137%), or click a mark. From 100% up every pixel is drawn as a block, exactly as the file holds it. All of it works while playing. Drag the divider; the wheel zooms around the
   pointer in finer steps (four per doubling); right-drag or the minimap moves the visible area; double-click
   switches between Fit and 100%.

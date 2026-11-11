@@ -349,20 +349,28 @@ def main() -> int:
         yield 0.2
         check(view.handle_y == handle_y, "once released, the handle stays where it was dragged")
         shot("05_handle_at_pointer")
-        center_x, center_y = view._handle_center
+
+        def arrow_mismatch(x: int, y: int) -> int:
+            """The largest difference between the picture and the system's west-east pointer with its hotspot at
+            (x, y), over the pointer's opaque pixels: 0 when the handle's arrow lies exactly under the pointer."""
+            arrow, (hotspot_x, hotspot_y) = view.handle_arrow, view.handle_hotspot
+            height, width = arrow.shape[:2]
+            shown = view.snapshot()[y - hotspot_y:y - hotspot_y + height, x - hotspot_x:x - hotspot_x + width, :3]
+            opaque = arrow[..., 3] == 255
+            return int(np.abs(shown.astype(int) - arrow[..., :3].astype(int))[opaque].max())
+
+        center_x, center_y = shown_left + int(round(view.split * shown_width)), view.handle_y
         reach = view._handle.shape[0] // 3
         press_x, press_y = center_x - reach, center_y + reach // 2
         pointer_at(press_x, press_y, "<ButtonPress-1>")
-        check(view._handle_center == (center_x, center_y),
-              f"a press on the handle beside its center does not move it ({view._handle_center}, was "
-              f"{(center_x, center_y)})")
+        pressed = arrow_mismatch(press_x, press_y)
         pointer_at(press_x + 57, press_y - 41, "<B1-Motion>")
-        moved = view._handle_center
-        pointer_at(press_x, press_y, "<B1-Motion>")
-        pointer_at(press_x, press_y, "<ButtonRelease-1>")
-        check(moved == (center_x + 57, center_y - 41) and view._handle_center == (center_x, center_y),
-              f"dragged by the handle, the point pressed stays under the pointer (moved to {moved}, expected "
-              f"{(center_x + 57, center_y - 41)}; back at {view._handle_center})")
+        dragged = arrow_mismatch(press_x + 57, press_y - 41)
+        pointer_at(center_x, center_y, "<B1-Motion>")
+        pointer_at(center_x, center_y, "<ButtonRelease-1>")
+        check(pressed <= 2 and dragged <= 2,
+              f"pressed beside its middle and dragged, the handle's arrow lies exactly under the system pointer "
+              f"(largest difference {pressed} pressed, {dragged} dragged)")
         zoom_slider = app.zoom_slider
         track_y = zoom_slider.winfo_height() // 2
 
@@ -389,7 +397,7 @@ def main() -> int:
               f"dragging the zoom slider to 600% and back keeps the picture still around the middle (largest step "
               f"{largest:.2f} px; back at 100%, {drift:.2f} px from where it was)")
         labels ={mark.value: (left + right) / 2 for mark, left, right in zoom_slider._labels}
-        check({1, 8} <= set(labels), f"the zoom slider labels 100% and 800% at least ({sorted(map(str, labels))})")
+        check({1, 16} <= set(labels), f"the zoom slider labels 100% and 1600% at least ({sorted(map(str, labels))})")
         check(app.zoom_fit_var.get() == "", "away from Fit, the Fit button is not lit")
         if "source" in labels:
             click_zoom(labels["source"], track_y + app.theme.px(13))

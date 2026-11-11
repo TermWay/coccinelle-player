@@ -69,7 +69,8 @@ REVERSE_AHEAD_SECONDS = 12.0
 HIDE_LEAVE_MS = 600
 CONTROLS_ZONE_MARGIN = 80
 # The zoom slider's marks, (zoom, label, rank): a narrow slider keeps the labels of rank 0.
-ZOOM_TICKS = (("source", "Original", 1), (1, "100%", 0), (2, "200%", 1), (4, "400%", 1), (8, "800%", 0))
+ZOOM_TICKS = (("source", "Original", 1), (1, "100%", 0), (2, "200%", 1), (4, "400%", 1), (8, "800%", 1),
+              (16, "1600%", 0))
 ZOOM_WIDTH = 480  # 96 DPI pixels, the zoom slider's width when there is room
 ZOOM_MIN_WIDTH = 160
 ZOOM_SPARE_WEIGHT = 1000  # the room after the zoom slider takes nearly all the spare width
@@ -626,7 +627,7 @@ class App:
         self.zoom_slider = MarkedSlider(zoom_row, self.theme, ZOOM_WIDTH, on_pick=self._zoom_picked,
                                         on_wheel=lambda up: self.view.set_zoom(self.view.zoom_step(1 if up else -1)))
         self.zoom_slider.grid(row=0, column=2, sticky="ew")
-        self._tip(self.zoom_slider, "Zoom: click or drag anywhere up to 800%, or click a mark. Original shows the "
+        self._tip(self.zoom_slider, "Zoom: click or drag anywhere up to 1600%, or click a mark. Original shows the "
                                     "source at its own size, one screen pixel per source pixel, the upscaled side "
                                     "shrunk to match (what upscaling changes at the size you watched the original); "
                                     "100% is one screen pixel per upscaled pixel, and from there up every upscaled "

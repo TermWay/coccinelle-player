@@ -12,7 +12,7 @@ import numpy as np
 from fsr4.ui_transport import (FASTEST_SPEED, SLOWEST_SPEED, SPEED_STOPS, STOPPED_SHARE, format_precise, format_speed,
                                format_time, next_stop, speed_at, speed_fraction)
 from fsr4.ui_art import Sketch
-from fsr4.ui_video import (VideoView, blend, blend_outline, block_view, clamped_center, compute_geometry,
+from fsr4.ui_video import (MAX_ZOOM, WHOLE_ZOOMS, VideoView, blend, blend_outline, block_view, clamped_center, compute_geometry,
                            decode_request, minimap_box, over, reference_view, reframe, step_zoom, upscaled_view)
 
 
@@ -282,6 +282,22 @@ class AnyZoomTest(unittest.TestCase):
         self.assertAlmostEqual(step_zoom(1.0, -1, stops, 0.3, 8.0), 2 ** -0.25)
         self.assertEqual(step_zoom(1.9, 1, stops, 0.3, 8.0), 2.0)
         self.assertEqual(step_zoom(0.32, -2, stops, 0.3, 8.0), 0.3)
+
+    def test_the_wheel_goes_up_to_1600_percent_drawn_as_blocks(self):
+        stops = [0.3, *map(float, WHOLE_ZOOMS)]
+        scale, seen = 1.0, []
+        for _ in range(30):
+            scale = step_zoom(scale, 1, stops, 0.3, MAX_ZOOM)
+            seen.append(scale)
+        self.assertTrue(any(abs(value - 8.0) < 1e-9 for value in seen), "stops at 800%")
+        self.assertEqual(seen[-1], 16.0)
+        upscaled = gradient(640, 360)
+        geometry = compute_geometry((320, 160), (640, 360), 16, (320, 180))
+        self.assertEqual(geometry.region[2:], (20, 10))
+        view = upscaled_view(upscaled, geometry)
+        x0, y0 = geometry.region[:2]
+        np.testing.assert_array_equal(view[::16, ::16], upscaled[y0:y0 + 10, x0:x0 + 20])
+        np.testing.assert_array_equal(view[15::16, 15::16], upscaled[y0:y0 + 10, x0:x0 + 20])
 
 
 class CompositingTest(unittest.TestCase):
