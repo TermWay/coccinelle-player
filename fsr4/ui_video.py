@@ -54,11 +54,10 @@ DIVIDER_CURSOR = "sb_h_double_arrow"  # Tk's name for Windows' IDC_SIZEWE, which
 IDC_SIZEWE = 32644
 SM_CXCURSOR = 13
 DI_NORMAL = 3
-HANDLE_GAP = 2.5  # 96 DPI pixels between the pointer's tips and the handle's chevrons
-HANDLE_STROKE = 2.5  # 96 DPI pixels, the chevrons' thickness
-HANDLE_LEAN = math.radians(30)  # the chevrons' arms, from vertical
-HANDLE_ARM = 0.85  # each arm's height against the apex's distance from the middle
-HANDLE_SPAN = 0.6  # the chevrons' outer edges against the disc's radius
+HANDLE_GAP = 2.0  # 96 DPI pixels between the pointer's tips and the chevrons' inner tips
+HANDLE_STROKE = 1.8  # 96 DPI pixels, the chevrons' thickness
+HANDLE_OVERHANG = 0.5  # 96 DPI pixels the chevrons' arms reach above and below the pointer's arrowheads
+HANDLE_MARGIN = 2.5  # 96 DPI pixels between the chevrons' outer tips and the disc's edge
 OFF = "off"
 PLACEHOLDER_DIM = 0.45
 
@@ -1019,9 +1018,10 @@ class VideoView(tk.Frame):
         return sprite
 
     def _make_handle(self) -> np.ndarray:
-        """A disc in the window's background colour with white chevrons, < >, around the divider's pointer
-        (`handle_arrow`): their inner tips `HANDLE_GAP` beyond the pointer's, so that the pointer, drawn with its
-        hotspot on the handle's middle pixel, fits inside them. The size is odd so that the disc is centred on that
+        """A disc in the window's background colour with small white chevrons, < >, just outside the divider's
+        pointer (`handle_arrow`): their inner tips `HANDLE_GAP` beyond the pointer's and their 45-degree arms a little
+        taller than its arrowheads, so that the pointer, drawn with its hotspot on the handle's middle pixel, fits
+        inside them. The disc is only as large as the chevrons need; its size is odd so that it is centred on that
         pixel."""
         scale = self.theme.scale
         footprint = self.handle_arrow[..., 3] > 0
@@ -1030,11 +1030,10 @@ class VideoView(tk.Frame):
         # the pointer's outer edges from the centre of its hotspot pixel
         half_width = max(hotspot_x - columns[0], columns[-1] - hotspot_x) + 0.5
         half_height = max(hotspot_y - rows[0], rows[-1] - hotspot_y) + 0.5
-        stroke, gap = HANDLE_STROKE * scale, HANDLE_GAP * scale
-        apex = half_width + gap + stroke / 2 / math.cos(HANDLE_LEAN)  # where the inner edges meet: half_width + gap
-        arm_height = max(apex * HANDLE_ARM, half_height + gap + stroke)
-        arm_width = arm_height * math.tan(HANDLE_LEAN)
-        radius = (apex + stroke / 2) / HANDLE_SPAN
+        stroke = HANDLE_STROKE * scale
+        apex = half_width + HANDLE_GAP * scale + stroke / 2 * math.sqrt(2)  # the inner edges meet the gap beyond
+        arm = half_height + HANDLE_OVERHANG * scale
+        radius = apex + stroke / 2 + HANDLE_MARGIN * scale
         size = int(math.ceil(2 * radius + 4)) | 1
         center = size / 2
         sketch = Sketch(size, size)
@@ -1042,8 +1041,8 @@ class VideoView(tk.Frame):
         sketch.fill(sketch.circle(center, center, radius), self.theme.palette.background)
         for direction in (-1, 1):
             tip = center + direction * apex
-            sketch.fill(sketch.polyline([(tip - direction * arm_width, center - arm_height), (tip, center),
-                                         (tip - direction * arm_width, center + arm_height)], stroke), "#ffffff")
+            sketch.fill(sketch.polyline([(tip - direction * arm, center - arm), (tip, center),
+                                         (tip - direction * arm, center + arm)], stroke), "#ffffff")
         return sketch.premultiplied_bgra()
 
     def _make_spinner(self, size: int) -> list[np.ndarray]:

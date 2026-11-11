@@ -362,18 +362,17 @@ def main() -> int:
 
         def around_pointer(x: int, y: int) -> tuple[int, int, int]:
             """With the system's west-east pointer's hotspot at (x, y): the lightest picture pixel under the
-            pointer's footprint grown by 1 px (the handle's dark disc when the pointer fits inside its chevrons),
-            then, along the hotspot's row, the pixels between each of the pointer's tips and the white beyond it."""
+            pointer's footprint (the handle's dark disc when the pointer fits inside its chevrons), then, along the
+            hotspot's row, the pixels between each of the pointer's tips and the white beyond it."""
             arrow, (hotspot_x, hotspot_y) = view.handle_arrow, view.handle_hotspot
             height, width = arrow.shape[:2]
             snapshot = view.snapshot()
             shown = snapshot[y - hotspot_y:y - hotspot_y + height, x - hotspot_x:x - hotspot_x + width, :3]
-            footprint = (arrow[..., 3] > 0).astype(np.uint8)
-            grown = cv2.dilate(footprint, np.ones((3, 3), np.uint8)) > 0
+            footprint = arrow[..., 3] > 0
             tips = np.nonzero(footprint[hotspot_y])[0]
             left_tip, right_tip = x - hotspot_x + int(tips[0]), x - hotspot_x + int(tips[-1])
             white = np.nonzero(snapshot[y, :, :3].min(axis=1) >= 200)[0]
-            return (int(shown[grown].max()), left_tip - int(white[white < left_tip].max()) - 1,
+            return (int(shown[footprint].max()), left_tip - int(white[white < left_tip].max()) - 1,
                     int(white[white > right_tip].min()) - right_tip - 1)
 
         center_y = view.handle_y
