@@ -360,35 +360,33 @@ def main() -> int:
         check(view.handle_y == handle_y, "once released, the handle stays where it was dragged")
         shot("05_handle_at_pointer")
 
-        def around_pointer(x: int, y: int) -> tuple[int, int, int]:
-            """With the system's west-east pointer's hotspot at (x, y): the lightest picture pixel under the
-            pointer's footprint (the handle's dark disc when the pointer fits inside its chevrons), then, along the
-            hotspot's row, the pixels between each of the pointer's tips and the white beyond it."""
+        def chevrons_under_pointer(x: int, y: int) -> tuple[int, int]:
+            """With the system's west-east pointer's hotspot at (x, y), on the handle's disc: how many white pixels
+            lie under the pointer and how many it leaves visible (none when its arrowheads cover the chevrons)."""
             arrow, (hotspot_x, hotspot_y) = view.handle_arrow, view.handle_hotspot
-            height, width = arrow.shape[:2]
-            snapshot = view.snapshot()
-            shown = snapshot[y - hotspot_y:y - hotspot_y + height, x - hotspot_x:x - hotspot_x + width, :3]
-            footprint = arrow[..., 3] > 0
-            tips = np.nonzero(footprint[hotspot_y])[0]
-            left_tip, right_tip = x - hotspot_x + int(tips[0]), x - hotspot_x + int(tips[-1])
-            white = np.nonzero(snapshot[y, :, :3].min(axis=1) >= 200)[0]
-            return (int(shown[footprint].max()), left_tip - int(white[white < left_tip].max()) - 1,
-                    int(white[white > right_tip].min()) - right_tip - 1)
+            half = view._handle.shape[0] // 2
+            region = view.snapshot()[y - half:y + half + 1, x - half:x + half + 1, :3]
+            white = (region.min(axis=2) >= 200) & (view._handle[..., 3] == 255)
+            covered = np.zeros_like(white)
+            rows, columns = np.nonzero(arrow[..., 3] > 0)
+            rows, columns = rows + half - hotspot_y, columns + half - hotspot_x
+            inside = (rows >= 0) & (rows < white.shape[0]) & (columns >= 0) & (columns < white.shape[1])
+            covered[rows[inside], columns[inside]] = True
+            return int((white & covered).sum()), int((white & ~covered).sum())
 
         center_y = view.handle_y
         reach = view._handle.shape[0] // 3
         press_x, press_y = divider_x - reach, center_y + reach // 2
         pointer_at(press_x, press_y, "<ButtonPress-1>")
-        pressed = handle_mismatch(press_x, press_y), *around_pointer(press_x, press_y)
+        pressed = handle_mismatch(press_x, press_y), *chevrons_under_pointer(press_x, press_y)
         pointer_at(press_x + 57, press_y - 41, "<B1-Motion>")
-        dragged = handle_mismatch(press_x + 57, press_y - 41), *around_pointer(press_x + 57, press_y - 41)
+        dragged = handle_mismatch(press_x + 57, press_y - 41), *chevrons_under_pointer(press_x + 57, press_y - 41)
         pointer_at(divider_x, center_y, "<B1-Motion>")
         pointer_at(divider_x, center_y, "<ButtonRelease-1>")
-        check(all(mismatch <= 2 and under <= 60 and 1 <= left <= app.theme.px(4) and 1 <= right <= app.theme.px(4)
-                  for mismatch, under, left, right in (pressed, dragged)),
-              f"pressed beside its middle and dragged, the handle stays centred on the pointer, which fits inside its "
-              f"chevrons (largest difference, lightest pixel under the pointer, gaps to the chevrons: {pressed} "
-              f"pressed, {dragged} dragged)")
+        check(all(mismatch <= 2 and covered >= 10 and visible <= 2 for mismatch, covered, visible in (pressed, dragged)),
+              f"pressed beside its middle and dragged, the handle stays centred on the pointer, whose arrowheads cover "
+              f"its chevrons (largest difference, white pixels covered, white left visible: {pressed} pressed, "
+              f"{dragged} dragged)")
         zoom_slider = app.zoom_slider
         track_y = zoom_slider.winfo_height() // 2
 
@@ -811,6 +809,7 @@ def main() -> int:
 
     sequence = steps()
     deadline = {"time": 0.0, "condition": None}
+    finished = {"every step": False}
 
     def advance():
         condition = deadline["condition"]
@@ -832,6 +831,7 @@ def main() -> int:
         try:
             step = next(sequence)
         except StopIteration:
+            finished["every step"] = True
             app.close()
             return
         except Exception as error:  # noqa: BLE001 - report and stop
@@ -847,6 +847,8 @@ def main() -> int:
 
     root.after(500, advance)
     root.mainloop()
+    if not finished["every step"] and not failures:
+        check(False, "the window closed before every step ran")
     print(f"{len(failures)} failure(s)")
     return 1 if failures else 0
 

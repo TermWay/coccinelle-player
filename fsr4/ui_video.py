@@ -54,10 +54,10 @@ DIVIDER_CURSOR = "sb_h_double_arrow"  # Tk's name for Windows' IDC_SIZEWE, which
 IDC_SIZEWE = 32644
 SM_CXCURSOR = 13
 DI_NORMAL = 3
-HANDLE_GAP = 2.0  # 96 DPI pixels between the pointer's tips and the chevrons' inner tips
-HANDLE_STROKE = 1.8  # 96 DPI pixels, the chevrons' thickness
-HANDLE_OVERHANG = 0.5  # 96 DPI pixels the chevrons' arms reach above and below the pointer's arrowheads
-HANDLE_MARGIN = 2.5  # 96 DPI pixels between the chevrons' outer tips and the disc's edge
+HANDLE_POINTER = 32  # the standard pointer's pixels: the two sizes below are for it and follow the pointer's size
+HANDLE_STROKE = 1.8  # the chevrons' thickness
+HANDLE_ARM = 3.6  # how far each 45-degree arm reaches back and up (or down) from a chevron's tip
+HANDLE_MARGIN = 4.5  # 96 DPI pixels between the pointer's tips and the disc's edge
 OFF = "off"
 PLACEHOLDER_DIM = 0.45
 
@@ -1018,22 +1018,17 @@ class VideoView(tk.Frame):
         return sprite
 
     def _make_handle(self) -> np.ndarray:
-        """A disc in the window's background colour with small white chevrons, < >, just outside the divider's
-        pointer (`handle_arrow`): their inner tips `HANDLE_GAP` beyond the pointer's and their 45-degree arms a little
-        taller than its arrowheads, so that the pointer, drawn with its hotspot on the handle's middle pixel, fits
-        inside them. The disc is only as large as the chevrons need; its size is odd so that it is centred on that
-        pixel."""
-        scale = self.theme.scale
+        """A disc in the window's background colour, a little wider than the divider's pointer (`handle_arrow`), with
+        two small white chevrons, < >, where the pointer's arrowheads are: drawn with its hotspot on the handle's
+        middle pixel, the pointer covers them. The size is odd so that the disc is centred on that pixel."""
         footprint = self.handle_arrow[..., 3] > 0
-        rows, columns = np.nonzero(footprint.any(axis=1))[0], np.nonzero(footprint.any(axis=0))[0]
-        hotspot_x, hotspot_y = self.handle_hotspot
-        # the pointer's outer edges from the centre of its hotspot pixel
-        half_width = max(hotspot_x - columns[0], columns[-1] - hotspot_x) + 0.5
-        half_height = max(hotspot_y - rows[0], rows[-1] - hotspot_y) + 0.5
-        stroke = HANDLE_STROKE * scale
-        apex = half_width + HANDLE_GAP * scale + stroke / 2 * math.sqrt(2)  # the inner edges meet the gap beyond
-        arm = half_height + HANDLE_OVERHANG * scale
-        radius = apex + stroke / 2 + HANDLE_MARGIN * scale
+        columns = np.nonzero(footprint.any(axis=0))[0]
+        hotspot_x = self.handle_hotspot[0]
+        half_width = max(hotspot_x - columns[0], columns[-1] - hotspot_x) + 0.5  # from the hotspot pixel's centre
+        pointer_scale = self.handle_arrow.shape[1] / HANDLE_POINTER  # Windows sizes pointers in steps, not per DPI
+        stroke, arm = HANDLE_STROKE * pointer_scale, HANDLE_ARM * pointer_scale
+        apex = half_width - stroke / 2 * math.sqrt(2)  # the chevrons' outer edges along the arrowheads' own
+        radius = half_width + HANDLE_MARGIN * self.theme.scale
         size = int(math.ceil(2 * radius + 4)) | 1
         center = size / 2
         sketch = Sketch(size, size)
