@@ -176,6 +176,11 @@ Python package stay `fsr4`.
   ffmpeg skips pictures it cannot decode and still succeeds (the timeline repeats the one before): readers run
   it with `-v level+...` and log the video decoder's first error once per file, for reads from the start
   (after a seek, the pictures before the keyframe fail by design).
+- HDR (PQ, HLG: `MediaInfo.hdr`) is tone-mapped to SDR in `FrameReader` and thumbnails (`tone_map_filters`:
+  zscale to linear, Möbius, measured in the README), after the trim so skipped pictures cost nothing; interlaced
+  sources (`MediaInfo.interlaced`, from the field order) get bwdif first in the chain, one picture per frame, so
+  frame numbers and seeks are unchanged (`SeekTest` has an interlaced case). Pieces are SDR and progressive: the
+  player builds their `MediaInfo` itself. `media.ffmpeg_filters()` says which filters this ffmpeg has.
 - Anamorphic sources (a sample aspect ratio other than 1:1, as on DVDs) come out at the shape players show,
   with square pixels: FSR scales each axis on its own (`job.output_size`, measured as good as one scale), and
   the preview follows from the output size. Images are always taken as square; a tag outside 1:4 to 4:1 is

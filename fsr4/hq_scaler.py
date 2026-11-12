@@ -8,7 +8,6 @@ single picture takes an ffmpeg run of its own (`upscale_picture`).
 """
 from __future__ import annotations
 
-import functools
 import subprocess
 from dataclasses import dataclass
 from typing import Iterator
@@ -16,7 +15,7 @@ from typing import Iterator
 import numpy as np
 
 from .flow import ZeroFlow
-from .media import _CREATE_NO_WINDOW, ffmpeg_failure, tool_path
+from .media import _CREATE_NO_WINDOW, ffmpeg_failure, ffmpeg_filters, tool_path
 from .pipeline import Timings
 
 HQ_SCALER = "amf-hq"
@@ -32,11 +31,9 @@ NEUTRAL_SHARPNESS = 0.75
 DEVICE_ARGUMENTS = ["-init_hw_device", "amf=scaler", "-init_hw_device", "amf=spare", "-filter_hw_device", "scaler"]
 
 
-@functools.cache
 def available() -> bool:
     """Whether this ffmpeg has the scaler's filter."""
-    return " sr_amf " in subprocess.run([tool_path("ffmpeg"), "-hide_banner", "-filters"], check=True,
-                                        capture_output=True, text=True, creationflags=_CREATE_NO_WINDOW).stdout
+    return "sr_amf" in ffmpeg_filters()
 
 
 def filter_sharpness(sharpness: float | None) -> float:

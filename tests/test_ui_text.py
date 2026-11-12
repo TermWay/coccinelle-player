@@ -27,6 +27,12 @@ class TextTest(unittest.TestCase):
         text = ui.describe_source(Path("movie.wmv"), video_info([AudioStream(0, "wmav2", 2)]))
         self.assertEqual(text, "WMV 9 · 1440 × 1080 · 29.97 fps\n3:23 · 6,094 frames · WMA audio")
 
+    def test_describe_hdr_and_interlaced(self):
+        info = video_info([])
+        info.color_transfer, info.interlaced = "arib-std-b67", True
+        self.assertEqual(ui.describe_source(Path("clip.mov"), info).splitlines()[1],
+                         "HLG HDR shown as SDR · interlaced, deinterlaced · 3:23 · 6,094 frames · no audio")
+
     def test_describe_image(self):
         info = MediaInfo(width=1600, height=900, frame_rate=Fraction(0), frame_count=1, duration=None, codec="png")
         self.assertEqual(ui.describe_source(Path("photo.png"), info), "PNG image · 1600 × 900")

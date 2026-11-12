@@ -156,6 +156,10 @@ def describe_source(path: Path, info: MediaInfo) -> str:
     rate = f"{float(info.frame_rate):.3f}".rstrip("0").rstrip(".")
     first = f"{codec_name(info.codec, VIDEO_CODEC_NAMES)} · {size} · {rate} fps"
     parts = []
+    if info.hdr is not None:
+        parts.append(f"{info.hdr} HDR shown as SDR")
+    if info.interlaced:
+        parts.append("interlaced, deinterlaced")
     if info.pixel_aspect != 1:
         parts.append(f"plays as {round(info.display_width)} × {info.height}")
     if info.duration:

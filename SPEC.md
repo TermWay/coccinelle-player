@@ -118,8 +118,15 @@ has none of those; the tool substitutes, as the quality lab (§14) settled:
 - Damaged files: pictures ffmpeg cannot decode are reported once per file in the log; the picture before stands
   in for each, as players do.
 - The frame count from the probe is an estimate until a read reaches the end; work never stops at the estimate.
-- Out of scope: HDR and more than 8 bits (input is processed as 8-bit sRGB), deinterlacing. Decoding runs on the
-  processor.
+- HDR video (PQ or HLG transfer) is tone-mapped to SDR BT.709 as it is decoded (linear light with SDR white at
+  100 nits, Möbius curve), for the preview, the upscale and the filmstrip alike, and logged once per file; the
+  sidebar says "PQ HDR shown as SDR". The output is SDR. An ffmpeg without the zscale filter refuses such a file
+  with the reason. Read as SDR, it would look washed out.
+- Interlaced video (a field order other than progressive: DVDs, TV recordings, camcorders) is deinterlaced
+  (bwdif, one picture per frame, only the pictures flagged interlaced), logged once per file and said in the
+  sidebar. The frame rate and frame numbers stay those of the file.
+- Out of scope: more than 8 bits through the upscaler (input is processed as 8-bit), HDR output. Decoding runs on
+  the processor.
 
 ## 6. Files out
 - Default name: `<name>.fsr4.mp4` for a video, `<name>.fsr4.<ext>` for an image in its own format, next to the

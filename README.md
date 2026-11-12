@@ -331,6 +331,20 @@ On the drawn frame the anime model keeps the colours closest (at most 1.7 levels
 blotches in flat colours. Both run at 4x, so their picture nearly always comes down to the output size: with an area
 filter, which scores 0.1 to 0.5 dB above Lanczos for these two (the video model keeps Lanczos, 0.05 to 0.1 dB above area).
 
+**HDR and interlaced sources.** An HDR video made from an SDR picture (a test pattern beside a fractal, its white at
+203 nits as BT.2408 places it, 10-bit HEVC), then decoded back to SDR, PSNR against the SDR picture:
+
+| Decoding                                   | PQ       | HLG      | Colourfulness (SDR picture: 190) |
+|--------------------------------------------|----------|----------|----------------------------------|
+| As if it were SDR (before)                 | 9.99 dB  | 11.96 dB | 50 and 83: washed out            |
+| Möbius curve, white at 100 nits (chosen)   | 20.97 dB | 21.14 dB | 183                              |
+| Reinhard, white at 100 nits                | 20.80 dB | 20.97 dB | 173                              |
+| Hable, white at 100 nits                   | 16.62 dB | 16.67 dB | 143: darker                      |
+
+Tone mapping costs 1080p HEVC decoding 199 to 154 frames a second, 4K 21 to 19. Deinterlacing (bwdif) a test pattern
+scrolling sideways, woven into interlaced MPEG-2 and H.264: 19.0 dB against the progressive pictures as decoded,
+23.7 dB deinterlaced (`tests/test_formats.py` builds both kinds of file).
+
 ## Layout
 - `fsr4/vk.py`, `fsr4/vk_types.py`, `fsr4/gpu.py`: ctypes Vulkan binding, generated structs, device and copies.
 - `fsr4/ffx.py`: the FSR API (`amd_fidelityfx_loader_vk.dll`) and the upscaling context.
@@ -370,7 +384,8 @@ filter, which scores 0.1 to 0.5 dB above Lanczos for these two (the video model 
 ## Limits
 - No jitter and no real depth means FSR 4 works mostly as a very good spatial upscaler with temporal
   stabilisation; it cannot reconstruct the sub-pixel detail it recovers in games.
-- Input is processed as 8-bit sRGB; HDR video is not handled, and interlaced video is not deinterlaced.
+- Input is processed as 8-bit. HDR video (PQ or HLG, as phones record) is tone-mapped to SDR, so the output is
+  SDR; interlaced video is deinterlaced at its own frame rate (one picture per frame, not one per field).
 - The player plays the first audio track; the saved file keeps every track. Pieces wait in a `fsr4-` folder
   beside the output (about 10 MB per second of 4K) until the file is closed, or in the system's temporary folder when
   the output's cannot take them; folders left by a crash are removed the next time that folder is used.

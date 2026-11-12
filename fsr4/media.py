@@ -13,6 +13,7 @@ losslessly with ffmpeg's concat demuxer.
 from __future__ import annotations
 
 import bisect
+import functools
 import json
 import os
 import re
@@ -78,8 +79,22 @@ LAST_FRAME_SEARCH_SECONDS = 2.0
 _CREATE_NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 _SHOWINFO_TIME = re.compile(r"Parsed_showinfo.*\bn:\s*0\b.*\bpts_time:\s*(-?[\d.]+)")
 _decode_errors_reported: set[Path] = set()
+_conversions_reported: set[Path] = set()
 # ffmpeg logs a decoder's messages under the decoder's name: the codec's name except for these.
 DECODER_NAMES = {"av1": "libdav1d"}
+# HDR transfers by ffprobe's name, with the name people know them by. Such video is tone-mapped to SDR BT.709 as
+# it is decoded: shown as it is, it looks washed out (README).
+HDR_TRANSFERS = {"smpte2084": "PQ", "arib-std-b67": "HLG"}
+# Linear light with 1.0 at this many nits, then Möbius's curve, which leaves everything up to the highlights as
+# it is: of the curves measured, the closest to the SDR picture an HDR video was made from (README).
+SDR_WHITE_NITS = 100
+TONE_MAP_CURVE = "mobius"
+# Colour matrices zscale knows by ffprobe's name; an HDR video tagged otherwise is taken as BT.2020.
+ZSCALE_MATRICES = frozenset({"bt709", "bt2020nc", "bt2020c"})
+# Field orders of interlaced video. bwdif deinterlaces only the pictures flagged interlaced, one per frame, so
+# the frame rate and the numbering stay as they are.
+INTERLACED_FIELD_ORDERS = frozenset({"tt", "bb", "tb", "bt"})
+DEINTERLACE_FILTER = "bwdif=mode=send_frame:parity=auto:deint=interlaced"
 
 
 def tool_path(name: str) -> str:
@@ -93,6 +108,19 @@ def tool_path(name: str) -> str:
         raise FileNotFoundError(f"{name} not found on PATH; install ffmpeg (winget install Gyan.FFmpeg.Essentials, "
                                 f"then open a new window) or put {name}.exe next to the exe")
     return found
+
+
+@functools.cache
+def ffmpeg_filters() -> frozenset[str]:
+    """The names of the filters this ffmpeg has (builds differ: zscale needs libzimg, sr_amf a recent one)."""
+    completed = subprocess.run([tool_path("ffmpeg"), "-hide_banner", "-filters"], check=True, capture_output=True,
+                               text=True, creationflags=_CREATE_NO_WINDOW)
+    names = set()
+    for line in completed.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and "->" in parts[2]:
+            names.add(parts[1])
+    return frozenset(names)
 
 
 def is_image(path: Path) -> bool:
@@ -186,10 +214,19 @@ class MediaInfo:
     container: str = ""
     start_time: float = 0.0
     pixel_aspect: Fraction = Fraction(1)
+    color_transfer: str | None = None
+    color_primaries: str | None = None
+    full_range: bool = False
+    interlaced: bool = False
 
     @property
     def has_audio(self) -> bool:
         return bool(self.audio)
+
+    @property
+    def hdr(self) -> str | None:
+        """"PQ" or "HLG" for an HDR video (it is tone-mapped to SDR as it is decoded), None for SDR."""
+        return HDR_TRANSFERS.get(self.color_transfer or "")
 
     @property
     def display_width(self) -> float:
@@ -203,8 +240,9 @@ class MediaInfo:
 
     @property
     def needs_hd_matrix(self) -> bool:
-        """Untagged HD YUV decodes with BT.709, like players do (ffmpeg would assume BT.601)."""
-        return self.color_matrix is None and self.height >= HD_HEIGHT and self.width >= HD_HEIGHT
+        """Untagged HD YUV decodes with BT.709, like players do (ffmpeg would assume BT.601). HDR video gets its
+        matrix from the tone mapping instead."""
+        return self.color_matrix is None and self.hdr is None and self.height >= HD_HEIGHT and self.width >= HD_HEIGHT
 
     @property
     def seeks_by_index(self) -> bool:
@@ -220,7 +258,8 @@ def probe(path: Path) -> MediaInfo:
     command = [
         tool_path("ffprobe"), "-v", "error", "-show_entries",
         "stream=index,codec_type,codec_name,width,height,r_frame_rate,avg_frame_rate,nb_frames,duration,channels,"
-        "color_space,pix_fmt,start_time,sample_aspect_ratio:stream_disposition=attached_pic"
+        "color_space,color_transfer,color_primaries,color_range,field_order,pix_fmt,start_time,sample_aspect_ratio"
+        ":stream_disposition=attached_pic"
         ":stream_side_data=rotation"
         ":format=duration,format_name,start_time",
         "-of", "json", file_argument(path),
@@ -280,7 +319,6 @@ def parse_probe(data: dict, path: Path) -> MediaInfo:
         # ffmpeg rotates the decoded frames upright, so the RGBA frames have the swapped size.
         width, height = height, width
         pixel_aspect = 1 / pixel_aspect
-    color_space = video.get("color_space")
     audio_streams = [stream for stream in streams if stream.get("codec_type") == "audio"]
     start_time = _parse_seconds(data.get("format", {}).get("start_time"))
     if start_time is None:
@@ -288,12 +326,51 @@ def parse_probe(data: dict, path: Path) -> MediaInfo:
     return MediaInfo(
         width=width, height=height, frame_rate=frame_rate, frame_count=frame_count, duration=duration,
         codec=video.get("codec_name", "?"), stream_index=int(video["index"]),
-        color_matrix=color_space if color_space and color_space not in ("unknown", "reserved") else None,
-        rotation=rotation,
+        color_matrix=_known(video.get("color_space")), rotation=rotation,
         audio=[AudioStream(position, stream.get("codec_name", "?"), int(stream.get("channels") or 2),
                            _parse_seconds(stream.get("start_time")) or start_time)
                for position, stream in enumerate(audio_streams)],
-        container=data.get("format", {}).get("format_name", ""), start_time=start_time, pixel_aspect=pixel_aspect)
+        container=data.get("format", {}).get("format_name", ""), start_time=start_time, pixel_aspect=pixel_aspect,
+        color_transfer=_known(video.get("color_transfer")), color_primaries=_known(video.get("color_primaries")),
+        full_range=video.get("color_range") == "pc",
+        interlaced=not is_image(path) and video.get("field_order") in INTERLACED_FIELD_ORDERS)
+
+
+def _known(tag: str | None) -> str | None:
+    """A colour tag from ffprobe, None when it says it does not know."""
+    return tag if tag and tag not in ("unknown", "reserved", "unspecified") else None
+
+
+def tone_map_filters(info: MediaInfo) -> list[str]:
+    """ffmpeg filters turning an HDR picture (PQ or HLG) into SDR BT.709 RGB, the way an SDR screen shows it:
+    linear light with SDR white at `SDR_WHITE_NITS`, BT.709 primaries, `TONE_MAP_CURVE` for the highlights, then
+    BT.709's gamma. Empty for SDR; raises when this ffmpeg lacks the filters (zscale comes with libzimg)."""
+    if info.hdr is None:
+        return []
+    missing = {"zscale", "tonemap"} - ffmpeg_filters()
+    if missing:
+        raise RuntimeError(f"this video is HDR ({info.hdr}): turning it into SDR needs ffmpeg's "
+                           f"{' and '.join(sorted(missing))} filter, which this ffmpeg lacks; the gyan.dev "
+                           f"essentials build has it (winget install Gyan.FFmpeg.Essentials)")
+    matrix = info.color_matrix if info.color_matrix in ZSCALE_MATRICES else "bt2020nc"
+    primaries = "bt709" if info.color_primaries == "bt709" else "bt2020"
+    source = (f"tin={info.color_transfer}:pin={primaries}:min={matrix}:"
+              f"rin={'full' if info.full_range else 'limited'}")
+    return [f"zscale={source}:t=linear:p=bt709:m=gbr:r=full:npl={SDR_WHITE_NITS}", "format=gbrpf32le",
+            f"tonemap=tonemap={TONE_MAP_CURVE}:desat=0",
+            "zscale=tin=linear:pin=bt709:min=gbr:rin=full:t=bt709:p=bt709:m=gbr:r=full", "format=gbrp"]
+
+
+def report_conversions(path: Path, info: MediaInfo) -> None:
+    """Say once per file that its pictures are changed as they are decoded (HDR to SDR, deinterlaced)."""
+    if path in _conversions_reported or (info.hdr is None and not info.interlaced):
+        return
+    _conversions_reported.add(path)
+    if info.hdr is not None:
+        log.emit(f"[media] {path.name} is HDR ({info.hdr}): it is tone-mapped to SDR (BT.709), and an upscaled "
+                 f"copy is SDR")
+    if info.interlaced:
+        log.emit(f"[media] {path.name} is interlaced: it is deinterlaced (bwdif) before upscaling")
 
 
 def _popen(command: list[str], background: bool = False, **kwargs) -> subprocess.Popen:
@@ -489,6 +566,7 @@ class FrameReader:
         self._buffers = [bytearray(self.frame_bytes), bytearray(self.frame_bytes)]
         self._next_buffer = 0
         self._attempt = 0
+        report_conversions(path, info)
         self._start(SEEK_MARGIN_SECONDS)
 
     def command(self, seek: float | None) -> list[str]:
@@ -500,7 +578,9 @@ class FrameReader:
         threads = usage.current().ffmpeg_threads if self.background else None
         if threads is not None:
             command += ["-threads", str(threads)]
-        filters = []
+        # Deinterlacing goes first, on the pictures as decoded (it reads the ones around each); tone mapping
+        # after the trim, so the pictures left out are not converted.
+        filters = [DEINTERLACE_FILTER] if info.interlaced else []
         if self.timeline:
             command += ["-copyts"]
             if seek is not None:
@@ -511,6 +591,7 @@ class FrameReader:
             if seek is not None:
                 filters.append("showinfo=checksum=0")
             filters += [f"fps=fps={rate_text(info.frame_rate)}:start_time=0", f"trim=start_pts={self.start_frame}"]
+        filters += tone_map_filters(info)
         if self.crop:
             x, y, width, height = self.crop
             filters.append(f"crop={width}:{height}:{x}:{y}:exact=1")
@@ -843,7 +924,8 @@ def read_thumbnail(path: Path, info: MediaInfo, frame: int, height: int) -> np.n
     scale = f"scale={width}:{height}:flags=area" + (":in_color_matrix=bt709" if info.needs_hd_matrix else "")
     command = [tool_path("ffmpeg"), "-v", "error", "-nostdin", "-noaccurate_seek",
                "-ss", f"{info.frame_seconds(frame):.6f}", "-skip_frame", "nokey", "-i", file_argument(path),
-               "-map", f"0:{info.stream_index}", "-an", "-sn", "-dn", "-frames:v", "1", "-vf", scale,
+               "-map", f"0:{info.stream_index}", "-an", "-sn", "-dn", "-frames:v", "1",
+               "-vf", ",".join([*tone_map_filters(info), scale]),
                "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
     completed = subprocess.run(command, capture_output=True,
                                creationflags=_CREATE_NO_WINDOW | usage.background_creation_flags())

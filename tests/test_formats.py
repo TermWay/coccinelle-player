@@ -3,11 +3,14 @@
 Each sample is generated with ffmpeg, decoded with FrameReader, re-encoded with FrameWriter together with the
 source's audio, and the result is probed: frame count, frame size, audio codecs and A/V duration must match.
 """
+import dataclasses
 import json
 import subprocess
 import tempfile
 import unittest
+from fractions import Fraction
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 
@@ -34,6 +37,33 @@ def video_source(width: int = WIDTH, height: int = HEIGHT) -> list[str]:
 def audio_source(frequency: int = 440, channels: int = 2) -> list[str]:
     layout = "stereo" if channels == 2 else "mono"
     return ["-f", "lavfi", "-i", f"sine=frequency={frequency}:sample_rate=48000,aformat=channel_layouts={layout}"]
+
+
+def moving_source(seconds: float = 3) -> list[str]:
+    """A test picture scrolling sideways at 20 pictures a second: every moment differs from the one before."""
+    return ["-f", "lavfi", "-i", f"testsrc2=size={WIDTH}x{HEIGHT}:rate=20,scroll=horizontal=0.04", "-t", str(seconds)]
+
+
+def interlaced_sample(root: Path, name: str, *extra: str) -> Path:
+    """`moving_source` woven into interlaced frames at 10 a second (top field first): MPEG-2 for .mpg, else H.264."""
+    source = root / name
+    codec = (["-c:v", "mpeg2video", "-q:v", "2", "-top", "1"] if name.endswith(".mpg")
+             else ["-c:v", "libx264", "-x264opts", "tff=1", "-pix_fmt", "yuv420p"])
+    ffmpeg(*moving_source(), "-vf", "tinterlace=mode=interleave_top,setfield=tff", "-flags", "+ildct+ilme", *codec,
+           *extra, str(source))
+    return source
+
+
+def luma(frame: np.ndarray) -> np.ndarray:
+    return frame[..., :3].astype(np.float64).mean(axis=2)
+
+
+def rgb(frame: np.ndarray) -> np.ndarray:
+    return frame[..., :3].astype(np.float64)
+
+
+def psnr(first: np.ndarray, second: np.ndarray) -> float:
+    return float(10 * np.log10(255 ** 2 / max(1e-9, np.mean((first - second) ** 2))))
 
 
 def probe_streams(path: Path) -> list[dict]:
@@ -215,6 +245,68 @@ class FormatTest(unittest.TestCase):
         # SMPTE HD bars: the fourth bar is green, about (12, 220, 2) in BT.709; BT.601 decoding gives ~(0, 185, 0).
         self.assertGreater(green[1], 210)
 
+    def test_hdr_is_tone_mapped_to_the_sdr_picture(self):
+        """An HDR video made from an SDR picture (its white at 203 nits, as BT.2408 places it) decodes close to
+        that picture; read as if it were SDR, it is the washed-out one players without tone mapping show."""
+        picture = self.root / "sdr.png"
+        ffmpeg("-f", "lavfi", "-i", "testsrc2=size=192x128", "-frames:v", "1", "-update", "1", str(picture))
+        reference = rgb(media.read_image(picture))
+        for transfer, name in (("smpte2084", "PQ"), ("arib-std-b67", "HLG")):
+            source = self.root / f"{name}.mkv"
+            ffmpeg("-loop", "1", "-i", str(picture), "-frames:v", "3", "-r", "10",
+                   "-vf", "format=gbrpf32le,zscale=tin=709:pin=709:min=gbr:rin=full:t=linear:p=709:m=gbr:r=full:"
+                          f"npl=203,zscale=p=2020,zscale=t={transfer}:m=2020_ncl:r=tv:npl=203,format=yuv420p10le",
+                   "-c:v", "libx265", "-x265-params",
+                   f"colorprim=bt2020:transfer={transfer}:colormatrix=bt2020nc:lossless=1:log-level=error",
+                   str(source))
+            info = media.probe(source)
+            self.assertEqual(info.hdr, name)
+            lines = []
+            log.set_sink(lines.append)
+            try:
+                frame = media.read_frame(source, info)
+            finally:
+                log.set_sink(None)
+            self.assertTrue(any(f"is HDR ({name})" in line for line in lines), lines)
+            washed_out = media.read_frame(source, dataclasses.replace(info, color_transfer=None))
+            mapped, plain = psnr(rgb(frame), reference), psnr(rgb(washed_out), reference)
+            # Measured 19.3 dB (PQ) and 19.0 dB (HLG) against 8.9 and 10.7 read as SDR.
+            self.assertGreater(mapped, 18, name)
+            self.assertGreater(mapped, plain + 6, name)
+            thumbnail = media.read_thumbnail(source, info, 0, 64).astype(np.float64)
+            self.assertAlmostEqual(thumbnail.mean(), frame[..., :3].mean(), delta=6)
+
+    def test_hdr_needs_zscale(self):
+        info = media.MediaInfo(width=64, height=64, frame_rate=Fraction(25), frame_count=1, duration=None,
+                               codec="hevc", color_transfer="smpte2084")
+        with mock.patch.object(media, "ffmpeg_filters", return_value=frozenset({"tonemap", "scale"})):
+            with self.assertRaisesRegex(RuntimeError, r"HDR \(PQ\).*zscale filter"):
+                media.tone_map_filters(info)
+        self.assertEqual(media.tone_map_filters(dataclasses.replace(info, color_transfer="bt709")), [])
+
+    def test_interlaced_video_is_deinterlaced(self):
+        """Each interlaced frame holds two moments, one per field; deinterlaced, it is the first one again."""
+        truth_path = self.root / "progressive.mkv"
+        ffmpeg(*moving_source(), "-c:v", "ffv1", "-pix_fmt", "yuv444p", str(truth_path))
+        truth = [luma(frame) for frame in media.FrameReader(truth_path, media.probe(truth_path))]
+        for source in (interlaced_sample(self.root, "interlaced.mpg"), interlaced_sample(self.root, "interlaced.mp4")):
+            info = media.probe(source)
+            self.assertTrue(info.interlaced, source.name)
+            combed = [luma(frame) for frame in media.FrameReader(source, dataclasses.replace(info, interlaced=False))]
+            woven = [luma(frame) for frame in media.FrameReader(source, info)]
+            self.assertEqual(len(woven), len(combed))
+            # Frame n of the interlaced video starts at picture 2n of the progressive one (the ends lack a neighbour).
+            before = np.mean([psnr(frame, truth[2 * index]) for index, frame in enumerate(combed) if 0 < index < 9])
+            after = np.mean([psnr(frame, truth[2 * index]) for index, frame in enumerate(woven) if 0 < index < 9])
+            self.assertGreater(after, before + 3, source.name)
+
+    def test_progressive_video_is_not_deinterlaced(self):
+        source = self.root / "progressive.mp4"
+        ffmpeg(*video_source(), "-t", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(source))
+        info = media.probe(source)
+        self.assertFalse(info.interlaced)
+        self.assertNotIn("bwdif", " ".join(media.FrameReader(source, info, max_frames=1).command(None)))
+
 
 @needs.ffmpeg
 class SeekTest(unittest.TestCase):
@@ -286,6 +378,10 @@ class SeekTest(unittest.TestCase):
         source = self.long_sample("seek.ogv", *OGG_VIDEO, "-g", "25", "-c:a", "libopus")
         self.assertFalse(media.probe(source).seeks_by_index)
         self.assert_seeks_exact(source)
+
+    def test_interlaced_mpeg_ps(self):
+        source = interlaced_sample(self.root, "seek_interlaced.mpg", "-g", "12")
+        self.assert_seeks_exact(source, starts=(1, 2, 7, 13, 21))
 
     def test_variable_frame_rate(self):
         source = self.root / "seek_vfr.mkv"
