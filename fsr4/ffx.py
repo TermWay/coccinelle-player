@@ -203,6 +203,20 @@ class FfxError(RuntimeError):
         self.code = code
 
 
+class NoFsr4Error(ValueError):
+    """The FSR DLL offers no FSR 4 on this graphics card (it needs RDNA 4); `versions` are the ones it offers."""
+
+    def __init__(self, card: str, versions: list[str]):
+        offered = " and ".join(f"FSR {name}" for name in versions) or "no upscaler"
+        super().__init__(f"FSR 4 needs a Radeon RX 9000 card: the FSR DLL offers only {offered} on the {card}")
+        self.versions = versions
+
+
+def offers_fsr4(versions: list[str]) -> bool:
+    """Whether the upscaler versions the DLL offers a card ("4.1.2", "3.1.6", ...) include an FSR 4."""
+    return any(name.startswith("4.") for name in versions)
+
+
 def find_sdk_dir(explicit: str | None = None) -> Path:
     """Locate the folder holding the two FSR DLLs: `--sdk` (which must hold them), else `bin/` next to the exe or
     the package."""
@@ -263,7 +277,10 @@ def _resource(image: Image | None, state: int) -> FfxApiResource:
 
 
 class Upscaler:
-    """One FSR Upscaling context on a `Gpu`, for fixed render and output sizes."""
+    """One FSR Upscaling context on a `Gpu`, for fixed render and output sizes.
+
+    `provider` names one of the DLL's upscaler versions ("3.1.6"); None asks for FSR 4 and raises `NoFsr4Error`
+    on a card the DLL offers none for, rather than run an older upscaler under its name."""
 
     def __init__(self, gpu: Gpu, render_size: tuple[int, int], upscale_size: tuple[int, int], flags: int,
                  sdk_dir: Path, verbose: bool = False, debug_checking: bool = False, provider: str | None = None):
@@ -277,11 +294,16 @@ class Upscaler:
         self.device_context = VkDeviceContext(
             vkDevice=gpu.device, vkPhysicalDevice=gpu.physical_device, vkDeviceProcAddr=vk.address_of_vkGetDeviceProcAddr())
         self.versions = self._query_versions()
+        names = [name for _, name in self.versions]
+        if verbose:
+            log.emit(f"[fsr] available upscaler versions: {', '.join(names)}")
+        if provider is None and not offers_fsr4(names):
+            # The DLL would quietly pick its newest (FSR 3.1 on older cards): FSR 4 is asked for, so refuse.
+            raise NoFsr4Error(gpu.device_name, names)
         self.context = c_void_p()
         self._create_context(flags | (FFX_UPSCALE_ENABLE_DEBUG_CHECKING if debug_checking else 0), provider)
         self.version_name = self._provider_version()
         if verbose:
-            log.emit(f"[fsr] available upscaler versions: {', '.join(name for _, name in self.versions)}")
             log.emit(f"[fsr] context created with {self.version_name}, render {render_size[0]}x{render_size[1]} "
                   f"-> {upscale_size[0]}x{upscale_size[1]}, GPU memory {self.gpu_memory_bytes() / 1048576:.0f} MB")
 

@@ -17,7 +17,9 @@ CLAUDE.md the design notes for working on the code.
 
 ## 2. Platforms and reference machine
 - Windows, tested on Windows 11. A Radeon RX 9000 card (FSR 4's FP8 model) with a current Adrenalin driver. AMD
-  also lists the RX 7000 series (FSR 4's INT8 model): not refused, not tested.
+  also lists the RX 7000 series (FSR 4's INT8 model), not tested. The FSR DLL says which upscalers it offers each
+  card; on one it offers no FSR 4 for (an integrated Radeon here: FSR 3.1.6 and 2.3.4 only), FSR 4 is refused with
+  that reason, never replaced by the DLL's newest, and FSR 3.1, 2.3, the HQ scaler and Real-ESRGAN still run.
 - Linux: not supported yet (AMD ships FSR 4 only as signed Windows DLLs, and the window draws, plays sound, takes
   dropped files and goes full screen through Win32). macOS: not supported. The README says both.
 - Reference machine: Radeon RX 9070 XT, a 16-core (32-thread) processor, Windows 11.
@@ -64,7 +66,10 @@ has none of those; the tool substitutes, as the quality lab (§14) settled:
   and feeding a still image several times (no gain). An image gets one pass with no motion.
 - FSR 4 ignores the SDK's five upscale tuning keys (its output stayed identical to the bit): they are not
   offered. The upscaler is FSR 4 by default; FSR 3.1.6 and 2.3.4, from the same DLL through its version override,
-  are offered to compare against. A version the DLL lacks is an error naming those it has.
+  are offered to compare against. A version the DLL lacks is an error naming those it has. Asked for FSR 4, the DLL
+  would quietly run its newest upscaler on a card it offers no FSR 4 for: the tool checks the versions offered
+  first and refuses ("FSR 4 needs a Radeon RX 9000 card: the FSR DLL offers only FSR 3.1.6 and FSR 2.3.4 on the
+  <card>").
 - AMD's HQ scaler (ffmpeg's `sr_amf`, Video SR 1.1) is offered beside them: faster, with no motion vectors and no
   history, each frame on its own. It runs in the encoder's ffmpeg, so a video's frames reach it at their own size
   and only the encoded file holds them upscaled. It needs an ffmpeg that has the filter (without one, an error
@@ -189,7 +194,8 @@ has none of those; the tool substitutes, as the quality lab (§14) settled:
   track's fate, the GPU, the FSR version and its memory, the timings. Errors: "fsr4: <reason>" on stderr, one
   line.
 - Exit codes: 0 done; 2 for a wrong request (input missing, scale out of range, sharpening outside 0 to 1, size
-  the encoder refuses, output is the input, upscaler not in the DLL); 1 for a failure (ffmpeg, Vulkan, FSR, missing DLLs or OpenCV) or no
+  the encoder refuses, output is the input, upscaler not in the DLL, FSR 4 on a card without it, which adds
+  "; --upscaler 3.1 or 2.3 runs one of those"); 1 for a failure (ffmpeg, Vulkan, FSR, missing DLLs or OpenCV) or no
   frame written. Ctrl+C stops the decoder and deletes the partial output.
 
 ## 9. The window
@@ -214,9 +220,15 @@ has none of those; the tool substitutes, as the quality lab (§14) settled:
   program> / <installed> GB" and "● <graphics card> · VRAM <this program> / <card> GB · FSR <version>" (VRAM as
   DXGI counts it, Vulkan memory included), whose tooltip also says the tool is independent, not made or endorsed
   by AMD, with AMD's trademarks; "Checking the GPU…" until the check ends, a red dot and "GPU unavailable" if it
-  fails. Below, faint, which copy runs: "v<version> · <commit> · built <date> <time>" for the executables (written
-  by the build), "· from the sources" when Python runs them; " + changes" follows the commit when tracked files
-  differed from it. The log starts with the same line, after the program's name.
+  fails. On a card without FSR 4 the dot is amber and the line ends "· no FSR 4"; a banner gives the reason and
+  says the FSR 4 presets cannot run there while FSR 3.1, FSR 2.3, the HQ scaler and Real-ESRGAN can. Everything
+  that names FSR 4 (presets in every list, the Upscaler entry, the label on the picture) then adds "· not on this
+  card"; the Upscaler note says FSR 4 runs only on a Radeon RX 9000 card and FSR 3.1 and 2.3 run on this one. A side
+  showing FSR 4 there is never upscaled (the dimmed source, with that label), and a saved side showing it says the
+  reason under the size, with Upscale disabled. Below, faint, which copy runs: "v<version> · <commit> · built
+  <date> <time>" for the executables (written by the build), "· from the sources" when Python runs them;
+  " + changes" follows the commit when tracked files differed from it. The log starts with the same line, after
+  the program's name.
 - Main area, top to bottom: the error banner; a toolbar with the Left and Right dropdowns, then the zoom (Fit
   button, slider and percentage); the picture; the playback controls (videos); the log.
 - Sliders (zoom, volume, speed) look alike: a track filled up to a round knob that grows under the pointer, and

@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from . import build_info, log, usage
-from .ffx import QUALITY_MODE_SCALES, find_sdk_dir
+from .ffx import QUALITY_MODE_SCALES, NoFsr4Error, find_sdk_dir
 from .flow import FLOW_METHODS
 from .hq_scaler import FIRST_FFMPEG, HQ_SCALER
 from .realesrgan import REAL_ESRGAN, REAL_ESRGAN_ANIME, REAL_ESRGAN_X4PLUS
@@ -16,6 +16,7 @@ from .media import ENCODERS
 
 UPSCALERS = {"4": None, "3.1": "3.1.6", "2.3": "2.3.4", "hq": HQ_SCALER, "realesrgan": REAL_ESRGAN,
              "realesrgan-x4plus": REAL_ESRGAN_X4PLUS, "realesrgan-x4plus-anime": REAL_ESRGAN_ANIME}
+NO_FSR4_HINT = "; --upscaler 3.1 or 2.3 runs one of those"
 
 class VersionAction(argparse.Action):
     """`--version`: the version with its commit and build, worked out only when asked (git runs from the sources)."""
@@ -131,7 +132,7 @@ def run_upscale(args) -> int:
         result = run_job(options, progress=progress)
     except (ValueError, RuntimeError, OSError) as error:
         close_line()
-        print(f"fsr4: {error}", file=sys.stderr)
+        print(f"fsr4: {error}{NO_FSR4_HINT if isinstance(error, NoFsr4Error) else ''}", file=sys.stderr)
         return 2 if isinstance(error, ValueError) else 1
     finally:
         log.set_sink(None)
@@ -151,6 +152,9 @@ def main(argv: list[str] | None = None) -> int:
             from .selftest import run
             return run(validate=args.validate)
         return run_info(args)
+    except NoFsr4Error as error:  # `info` has listed what the card offers
+        print(f"fsr4: {error}", file=sys.stderr)
+        return 2
     except (RuntimeError, OSError) as error:  # no Vulkan driver, no GPU, no FSR DLLs: said in one line
         print(f"fsr4: {error}", file=sys.stderr)
         return 1

@@ -16,6 +16,8 @@ from .ui_theme import Theme
 from .upscalers import EXTERNAL_UPSCALERS
 
 DEFAULT_SHARPNESS = 0.4
+NOT_HERE = "not on this card"  # follows the name of a preset or an upscaler this graphics card cannot run
+NO_FSR4_NOTE = "FSR 4 runs only on a Radeon RX 9000 card. FSR 3.1 and 2.3, from the same DLL, run on this one."
 UPSCALER_CHOICES = {
     None: ("FSR 4 · machine learning",
            "AMD's newest upscaler, a neural network made for RDNA 4. The best results here."),
@@ -78,6 +80,7 @@ class SideBlock(ttk.Frame):
                  on_cancel_name: Callable):
         super().__init__(parent)
         px = theme.px
+        self.fsr4_missing = False  # the graphics card cannot run FSR 4, once the window knows
         self.columnconfigure(0, weight=1)
         self._title(0, "Preset", px)
         preset_row = ttk.Frame(self)
@@ -155,7 +158,7 @@ class SideBlock(ttk.Frame):
         """Set the widgets to `how`; a model only for still images needs `still`, or the video model takes its place.
         What the upscaler has no use for stays as it was, for the next upscaler that has."""
         self.upscalers = [upscaler for upscaler in UPSCALER_CHOICES if still or upscaler not in STILL_ONLY]
-        self.upscaler_choice.configure(values=[UPSCALER_CHOICES[upscaler][0] for upscaler in self.upscalers])
+        self.upscaler_choice.configure(values=[self._upscaler_label(upscaler) for upscaler in self.upscalers])
         upscaler = how.upscaler if how.upscaler in self.upscalers else REAL_ESRGAN
         self.upscaler_choice.current(self.upscalers.index(upscaler))
         if upscaler not in EXTERNAL_UPSCALERS:
@@ -165,6 +168,13 @@ class SideBlock(ttk.Frame):
             self.sharpen_var.set(how.sharpness is not None)
             if how.sharpness is not None:
                 self.sharpness_var.set(how.sharpness)
+
+    def _upscaler_label(self, upscaler: str | None) -> str:
+        """The upscaler's entry in the list, "FSR 4 · not on this card" when the card cannot run it."""
+        label = UPSCALER_CHOICES[upscaler][0]
+        if upscaler is None and self.fsr4_missing:
+            return f"{label.partition(' · ')[0]} · {NOT_HERE}"
+        return label
 
     def how(self) -> Preset:
         """What the widgets say, with only what the upscaler has: no motion or sharpening when it takes none."""
@@ -188,7 +198,8 @@ class SideBlock(ttk.Frame):
         upscaler = self.upscalers[self.upscaler_choice.current()]
         motion, sharpens = upscaler not in EXTERNAL_UPSCALERS and not image, upscaler not in MODELS
         self.preset_choice.set(preset)
-        self.upscaler_note.configure(text=UPSCALER_CHOICES[upscaler][1])
+        missing = upscaler is None and self.fsr4_missing
+        self.upscaler_note.configure(text=NO_FSR4_NOTE if missing else UPSCALER_CHOICES[upscaler][1])
         self.motion_note.configure(text=MOTION_CHOICES[self.motion_choice.current()][3])
         sharpening = self.sharpen_var.get()
         self.sharpness_label.configure(text=f"{self.sharpness_var.get():.2f}" if sharpening else "off")

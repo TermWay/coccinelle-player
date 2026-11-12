@@ -45,12 +45,12 @@ from .presets import BEST, OFF_LABEL, SOURCE_LABELS, Preset, PresetStore
 from .render import RenderSettings, Renderer, clean_stale_directories
 from .timeline import intersect_ranges
 from .ui_art import icon, png_base64
-from .ui_sides import SideBlock, show_widget
+from .ui_sides import NOT_HERE, SideBlock, show_widget
 from .ui_theme import Theme, enable_dark_dialogs, style_title_bar
 from .ui_tooltip import Tooltip
 from .ui_transport import VOLUME_KEY_DECIBELS, Transport, format_time
 from .ui_slider import Mark, MarkedSlider
-from .ui_video import OFF, REFERENCE_FILTERS, VideoView
+from .ui_video import OFF, REFERENCE_FILTERS, UNAVAILABLE, VideoView
 from .ui_window import Curtain, Fullscreen, keep_contents_on_resize, repaint
 
 APP_NAME = "Coccinelle Player"
@@ -220,6 +220,7 @@ class App:
         self.render_position: int | None = None
         self.render_speed = 0.0
         self.gpu_ready: bool | None = None
+        self.fsr4_missing: str | None = None  # why the card cannot run FSR 4, when the probe found so
         self.log_visible = False
         self.sidebar_visible = True
         self.fullscreen = False
@@ -599,7 +600,8 @@ class App:
             group = ttk.Frame(self.toolbar)
             group.grid(row=0, column=column, sticky=sticky)
             ttk.Label(group, text=side.capitalize(), style="Small.TLabel").grid(row=0, column=0, padx=(0, px(6)))
-            box = ttk.Combobox(group, state="readonly", width=24, height=14)
+            # Wide enough for "FSR 4 · fast motion · not on this card": the list is as wide as the box.
+            box = ttk.Combobox(group, state="readonly", width=28, height=14)
             box.grid(row=0, column=1)
             box.bind("<<ComboboxSelected>>", lambda _, side=side: self._side_chosen(side))
             box.bind("<MouseWheel>", lambda _: "break")
@@ -820,9 +822,22 @@ class App:
         return self._side_how(side) if side is not None else BEST
 
     def _plan(self) -> JobPlan | None:
+        """The saved side's plan, None without a file; raises ValueError when it cannot be upscaled as set."""
         if self.info is None or self.input_path is None:
             return None
-        return plan_from_info(self._options(), self.info)
+        options = self._options()
+        problem = self._upscaler_problem(options.upscaler)
+        if problem is not None:
+            raise ValueError(problem)
+        return plan_from_info(options, self.info)
+
+    def _upscaler_problem(self, upscaler: str | None) -> str | None:
+        """Why this graphics card cannot run `upscaler` (FSR 4 needs RDNA 4), or None."""
+        return self.fsr4_missing if upscaler is None else None
+
+    def _preset_label(self, preset: Preset) -> str:
+        """A preset's entry in the lists, marked when this card cannot run its upscaler."""
+        return f"{preset.name} · {NOT_HERE}" if self._upscaler_problem(preset.upscaler) else preset.name
 
     def _render_settings(self) -> RenderSettings | None:
         try:
@@ -923,8 +938,8 @@ class App:
         saved = self._saved_side()
         for side, block in self.side_blocks.items():
             match = self.presets.matching(self._how_settings(side))
-            block.refresh(side == saved, image, idle, match.name if match is not None else CUSTOM_PRESET,
-                          match is not None and not match.builtin)
+            preset = self._preset_label(match) if match is not None else CUSTOM_PRESET
+            block.refresh(side == saved, image, idle, preset, match is not None and not match.builtin)
         self._update_side_boxes()
         show_widget(self.save_row, all(self._side_how(side) is not None for side in DEFAULT_SIDES))
         show_widget(self.save_note, saved is None)
@@ -1025,14 +1040,14 @@ class App:
 
     def _side_entries(self) -> list[tuple[str, str]]:
         """(label, choice) of the side lists: the presets, the source filters, off."""
-        return ([(preset.name, f"preset:{preset.name}") for preset in self._offered_presets()]
+        return ([(self._preset_label(preset), f"preset:{preset.name}") for preset in self._offered_presets()]
                 + [(SOURCE_LABELS[name], name) for name in REFERENCE_FILTERS]
                 + [(OFF_LABEL, OFF)])
 
     def _update_preset_lists(self) -> None:
         """The lists after presets or the file changed; a model this file cannot use leaves its side."""
         labels = [label for label, _ in self._side_entries()]
-        names = [preset.name for preset in self._offered_presets()]
+        names = [self._preset_label(preset) for preset in self._offered_presets()]
         for side, block in self.side_blocks.items():
             block.load(block.how(), self._still())
             block.set_presets(names)
@@ -1092,7 +1107,8 @@ class App:
     def _preset_chosen(self, side: str) -> None:
         """Load a preset into the settings of `side`."""
         block = self.side_blocks[side]
-        preset = self.presets.find(block.preset_choice.get())
+        index = block.preset_choice.current()  # the entries may carry a mark after the name
+        preset = self._offered_presets()[index] if index >= 0 else None
         block.preset_choice.selection_clear()
         self.root.focus_set()
         if preset is not None:
@@ -1143,9 +1159,13 @@ class App:
         self._refresh()
 
     def _side_label(self, settings: RenderSettings) -> str:
-        """What the label on the picture says: the preset these settings are, or the settings."""
+        """What the label on the picture says: the preset these settings are, or the settings; marked when this
+        card cannot run them."""
         match = self.presets.matching(settings)
-        return match.name if match is not None else settings.describe()
+        if match is not None:
+            return self._preset_label(match)
+        label = settings.describe()
+        return f"{label} · {NOT_HERE}" if self._upscaler_problem(settings.upscaler) else label
 
     def _update_layers(self) -> None:
         """Turn what each side shows into the view's layers, and have those versions upscaled and played. Two
@@ -1156,8 +1176,15 @@ class App:
         sides, labels, layers = {}, {}, {}
         for side, choice in self.side_choices.items():
             how = self._side_how(side)
-            if how is None or current is None:
-                sides[side] = choice if how is None else "unavailable"
+            if how is None:
+                sides[side] = choice
+                continue
+            if self._upscaler_problem(how.upscaler) is not None:
+                sides[side] = UNAVAILABLE  # never handed to the renderer
+                labels[side] = self._side_label(self._how_settings(side))
+                continue
+            if current is None:
+                sides[side] = UNAVAILABLE
                 continue
             settings = how.applied_to(current)
             labels[side] = self._side_label(settings)
@@ -1592,7 +1619,7 @@ class App:
             self._show_banner("Neither side is upscaled: choose a preset in the Left or Right list.")
             return
         try:
-            plan = plan_from_info(self._options(), self.info)
+            plan = self._plan()
         except ValueError as error:
             self._show_banner(str(error))
             return
@@ -1727,25 +1754,38 @@ class App:
     # ---- messages from the workers --------------------------------------------------------------
 
     def _probe_gpu(self) -> None:
+        """Start FSR once on the card the upscaler will use: FSR 4, or else the newest upscaler the DLL offers there,
+        so the window can say that FSR 4 cannot run and still offer the others."""
+        fsr4_missing = None
         try:
-            from .ffx import FFX_UPSCALE_ENABLE_AUTO_EXPOSURE, Upscaler
+            from .ffx import FFX_UPSCALE_ENABLE_AUTO_EXPOSURE, NoFsr4Error, Upscaler
             from .gpu import Gpu
             gpu = Gpu(verbose=False)
             try:
-                upscaler = Upscaler(gpu, (256, 144), (512, 288), FFX_UPSCALE_ENABLE_AUTO_EXPOSURE, find_sdk_dir(None))
+                sdk_dir = find_sdk_dir(None)
+                try:
+                    upscaler = Upscaler(gpu, (256, 144), (512, 288), FFX_UPSCALE_ENABLE_AUTO_EXPOSURE, sdk_dir)
+                except NoFsr4Error as error:
+                    if not error.versions:
+                        raise
+                    fsr4_missing = str(error)
+                    log.emit(f"[ui] {fsr4_missing}")
+                    upscaler = Upscaler(gpu, (256, 144), (512, 288), FFX_UPSCALE_ENABLE_AUTO_EXPOSURE, sdk_dir,
+                                        provider=error.versions[0])
                 name, version = gpu.device_name, upscaler.version_name
                 upscaler.destroy()
             finally:
                 gpu.destroy()
         except Exception as error:  # noqa: BLE001 - shown in the header and the banner
-            self.queue.put(("gpu", False, str(error), None))
+            self.queue.put(("gpu", False, str(error), None, None))
             return
         try:
             video_memory = system.VideoMemory(name)
         except Exception as error:  # noqa: BLE001 - the header shows the card without its memory; logged
             log.emit(f"[ui] error: the graphics card's memory use is unavailable: {error}")
             video_memory = None
-        self.queue.put(("gpu", True, f"{name.replace('AMD ', '')}|FSR {version}", video_memory))
+        fsr = f"FSR {version}" if fsr4_missing is None else "no FSR 4"
+        self.queue.put(("gpu", True, f"{name.replace('AMD ', '')}|{fsr}", video_memory, fsr4_missing))
 
     def _clean_temp(self) -> None:
         try:
@@ -1794,15 +1834,25 @@ class App:
         self.log_text.see("end")
         self.log_text.configure(state="disabled")
 
-    def _on_gpu(self, ready: bool, text: str, video_memory: system.VideoMemory | None) -> None:
+    def _on_gpu(self, ready: bool, text: str, video_memory: system.VideoMemory | None,
+                fsr4_missing: str | None) -> None:
         self.gpu_ready = ready
         palette = self.theme.palette
-        self.gpu_dot.configure(foreground=palette.success if ready else palette.error)
+        self.gpu_dot.configure(foreground=palette.error if not ready else palette.warning if fsr4_missing
+                               else palette.success)
         self.gpu_text = text if ready else "GPU unavailable"
         self.video_memory = video_memory
         self._show_machine(again=False)
         if not ready:
             self._show_banner(f"FSR 4 cannot start on this machine: {text}")
+        if fsr4_missing is not None:
+            self.fsr4_missing = fsr4_missing
+            for block in self.side_blocks.values():
+                block.fsr4_missing = True
+            self._show_banner(f"{fsr4_missing}. The FSR 4 presets cannot run here; FSR 3.1, FSR 2.3, the HQ scaler "
+                              "and Real-ESRGAN can.")
+            self._update_preset_lists()
+            self._update_layers()
         self._refresh()
 
     def _show_machine(self, again: bool = True) -> None:

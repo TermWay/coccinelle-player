@@ -41,6 +41,7 @@ class Palette:
     accent_soft: str = "#391a18"
     accent_text: str = "#ffaba1"
     success: str = "#3fb950"
+    warning: str = "#e3a23b"
     error: str = "#f2555a"
     error_soft: str = "#3b1a1c"
     error_text: str = "#ffb4b6"

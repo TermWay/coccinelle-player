@@ -59,6 +59,7 @@ HANDLE_STROKE = 1.8  # the chevrons' thickness
 HANDLE_ARM = 3.6  # how far each 45-degree arm reaches back and up (or down) from a chevron's tip
 HANDLE_MARGIN = 4.5  # 96 DPI pixels between the pointer's tips and the disc's edge
 OFF = "off"
+UNAVAILABLE = "unavailable"  # a side whose upscaler cannot run: the dimmed source and its label, as given
 PLACEHOLDER_DIM = 0.45
 
 
@@ -575,7 +576,7 @@ class VideoView(tk.Frame):
         self.center: tuple[float, float] | None = None
         self.split = 0.5
         self.handle_y: int | None = None  # where the divider was last pressed or dragged; None: the picture's middle
-        self.sides = {"left": "cubic", "right": "unavailable"}
+        self.sides = {"left": "cubic", "right": UNAVAILABLE}
         self.side_labels: dict[str, str] = {}
         self.fullscreen = False
         self.hover = False
@@ -894,6 +895,8 @@ class VideoView(tk.Frame):
                 return "Source"
             return REFERENCE_FILTERS[layer][0]
         label = self.side_labels.get(side, "Upscaled")
+        if layer == UNAVAILABLE and side in self.side_labels:
+            return label
         return f"{label} · {self.status or 'not upscaled here'}" if missing else label
 
     def _draw_overlays(self, canvas: np.ndarray, geometry: Geometry, source: np.ndarray, split: int,

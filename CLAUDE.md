@@ -145,8 +145,12 @@ Python package stay `fsr4`.
   a picture: `plan_from_info` refuses them for a video, and `RealEsrganPipeline.stop` (`ImagePreviewer`'s, a job's
   cancel) ends a picture at once: closing a previewer joins its worker on the Tk thread.
 - FSR 4 ignores the SDK's upscale tuning keys (verified bit-identical); `ffx.Upscaler(provider=...)` selects the
-  DLL's FSR 3.1.6 or 2.3.4 through `ffxOverrideVersion` for comparisons. The frame count from the probe is an
-  estimate until a read reaches the end (`Timeline.exact`); never stop rendering at the estimate.
+  DLL's FSR 3.1.6 or 2.3.4 through `ffxOverrideVersion` for comparisons. With no provider the DLL runs its newest
+  upscaler for the card, FSR 3.1 on a card it offers no FSR 4 for, so `Upscaler` raises `NoFsr4Error` there; the
+  window's GPU probe falls back to the newest offered and marks FSR 4 "not on this card" (`App.fsr4_missing`). The
+  integrated Radeon of this machine is such a card (`--gpu 1`; `tests/test_fsr4_offered.py` finds it). The frame
+  count from the probe is an estimate until a read reaches the end (`Timeline.exact`); never stop rendering at the
+  estimate.
 - Frame numbers must be exact across seeks: `FrameReader` reads on a constant-rate grid anchored at the file
   start (`setpts`, `fps`, `trim` with `-copyts`), verifies the first frame's timestamp, and needs a
   `KeyframeIndex` for containers without an index (TS, PS, FLV, Ogg). Never seek with plain `-ss` and a count.

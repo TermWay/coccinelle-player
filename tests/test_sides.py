@@ -6,7 +6,7 @@ from fsr4.hq_scaler import HQ_SCALER
 from fsr4.presets import BEST, BUILTIN, Preset
 from fsr4.realesrgan import REAL_ESRGAN, REAL_ESRGAN_ANIME, STILL_ONLY
 from fsr4.render import UPSCALER_NAMES
-from fsr4.ui_sides import MOTION_CHOICES, UPSCALER_CHOICES, SideBlock
+from fsr4.ui_sides import MOTION_CHOICES, NO_FSR4_NOTE, NOT_HERE, UPSCALER_CHOICES, SideBlock
 from fsr4.ui_theme import Theme
 
 
@@ -128,6 +128,18 @@ class SideBlockTest(unittest.TestCase):
         for widget in (self.block.preset_choice, self.block.upscaler_choice, self.block.motion_choice,
                        self.block.sharpen_switch, self.block.sharpness_scale, self.block.save_preset_button):
             self.assertTrue(widget.instate(["disabled"]))
+
+    def test_fsr4_is_marked_on_a_card_without_it(self):
+        self.show(BEST)
+        self.assertEqual(self.block.upscaler_choice.get(), UPSCALER_CHOICES[None][0])
+        self.block.fsr4_missing = True
+        self.show(BEST)
+        self.assertEqual(self.block.upscaler_choice.get(), f"FSR 4 · {NOT_HERE}")
+        self.assertEqual(self.block.upscaler_note.cget("text"), NO_FSR4_NOTE)
+        self.assertIsNone(self.block.how().upscaler)  # still reads back as FSR 4: the window refuses it, not the block
+        self.show(preset("3.1.6"))
+        self.assertEqual(self.block.upscaler_choice.get(), UPSCALER_CHOICES["3.1.6"][0])
+        self.assertEqual(self.block.upscaler_note.cget("text"), UPSCALER_CHOICES["3.1.6"][1])
 
     def test_every_upscaler_has_a_label_and_a_note(self):
         self.assertCountEqual(UPSCALER_CHOICES, UPSCALER_NAMES)

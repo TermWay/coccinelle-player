@@ -19,7 +19,9 @@ sub-pixel camera jitter every frame. A video file has none of those, so this too
 ## Requirements
 - Windows and a Radeon RX 9000 card (FSR 4's FP8 model) with a current Adrenalin driver. AMD's requirements
   also name the RX 7000 series (FSR 4's INT8 model; the RX 6000 series appears only in AMD's timings): untested
-  here.
+  here. On a card the FSR DLL offers no FSR 4 for, FSR 4 is refused with the reason (never swapped for FSR 3.1
+  behind its name), and FSR 3.1, FSR 2.3, AMD's HQ scaler and Real-ESRGAN still run: `fsr4 info` lists what the
+  DLL offers your card.
 - ffmpeg 5.1 or later (6.0 or later for the AV1 GPU encoder, 8.0 or later for AMD's HQ scaler), with ffprobe, on PATH or next to `fsr4.exe`. All
   decoding and encoding goes through it, and it is not included (see License). One way to install it:
   `winget install Gyan.FFmpeg.Essentials`, then open a new window.
@@ -98,7 +100,8 @@ sub-pixel camera jitter every frame. A video file has none of those, so this too
   sets how many threads upscaling may use (1 to all) and its priority (Normal, Low, Background).
 - When it is saved, Open plays the file and Show in folder selects it. Show log (Ctrl+L) has the details;
   errors appear in a red banner. The foot of the sidebar names the processor and the graphics card, with the
-  memory this program uses on each (RAM, VRAM) against what is installed.
+  memory this program uses on each (RAM, VRAM) against what is installed; an amber dot and "no FSR 4" there mean
+  the card cannot run FSR 4, and its presets say "not on this card".
 
 | Key | Action | Key | Action |
 |-----|--------|-----|--------|
