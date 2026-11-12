@@ -7,8 +7,9 @@ of a file land on exactly the same frame n as a read from the start, whatever th
 upscaled pieces join without a duplicated or missing frame and stay in sync with the audio.
 
 Encoding converts back with BT.709 for HD output and tags the file, copies every audio track an MP4 can hold
-and re-encodes the others (WMA, PCM, Vorbis, Opus, FLAC, ...) to AAC. Pieces encoded separately are joined
-losslessly with ffmpeg's concat demuxer.
+and re-encodes the others (WMA, PCM, Vorbis, Opus, FLAC, ...) to AAC, and keeps the subtitle tracks the output
+can hold (all in MKV, the text ones in MP4 and MOV). Pieces encoded separately are joined losslessly with
+ffmpeg's concat demuxer.
 """
 from __future__ import annotations
 
@@ -63,6 +64,11 @@ IMAGE_QUALITY = {".jpg": ["-q:v", "2"], ".jpeg": ["-q:v", "2"], ".webp": ["-qual
 # Audio codecs an MP4/MOV file holds and every common player decodes: these are copied, the rest re-encoded.
 MP4_AUDIO_COPY = frozenset({"aac", "mp3", "ac3", "eac3", "alac"})
 COPY_ANY_AUDIO_SUFFIXES = frozenset({".mkv"})
+# Subtitles: Matroska holds every kind and copies them; MP4 and MOV hold only their own text format, which the
+# text kinds are converted to (styling is lost). Picture subtitles (Blu-ray, DVD, DVB) cannot go in those.
+MP4_SUFFIXES = frozenset({".mp4", ".m4v", ".mov"})
+TEXT_SUBTITLES = frozenset({"subrip", "srt", "ass", "ssa", "webvtt", "mov_text", "text", "microdvd", "subviewer",
+                            "subviewer1", "sami", "realtext", "jacosub", "mpl2", "pjs", "stl", "vplayer"})
 AAC_KBPS_PER_CHANNEL = 96
 HD_HEIGHT = 720
 # Pixel shapes seen in real video run from 8:9 (4:3 NTSC DVD) to 2:1; outside this the tag is broken.
@@ -209,6 +215,14 @@ class AudioStream:
 
 
 @dataclass
+class SubtitleStream:
+    """One subtitle track; `position` is its rank among the file's subtitle streams (`-map 1:s:<position>`)."""
+    position: int
+    codec: str
+    language: str = ""
+
+
+@dataclass
 class MediaInfo:
     """What ffprobe reports about the video stream that gets upscaled, and the audio around it."""
     width: int
@@ -221,6 +235,7 @@ class MediaInfo:
     color_matrix: str | None = None
     rotation: int = 0
     audio: list[AudioStream] = field(default_factory=list)
+    subtitles: list[SubtitleStream] = field(default_factory=list)
     container: str = ""
     start_time: float = 0.0
     pixel_aspect: Fraction = Fraction(1)
@@ -270,7 +285,7 @@ def probe(path: Path) -> MediaInfo:
         "stream=index,codec_type,codec_name,width,height,r_frame_rate,avg_frame_rate,nb_frames,duration,channels,"
         "color_space,color_transfer,color_primaries,color_range,field_order,pix_fmt,start_time,sample_aspect_ratio"
         ":stream_disposition=attached_pic"
-        ":stream_side_data=rotation"
+        ":stream_side_data=rotation:stream_tags=language"
         ":format=duration,format_name,start_time",
         "-of", "json", file_argument(path),
     ]
@@ -340,6 +355,9 @@ def parse_probe(data: dict, path: Path) -> MediaInfo:
         audio=[AudioStream(position, stream.get("codec_name", "?"), int(stream.get("channels") or 2),
                            _parse_seconds(stream.get("start_time")) or start_time)
                for position, stream in enumerate(audio_streams)],
+        subtitles=[SubtitleStream(position, stream.get("codec_name", "?"), stream.get("tags", {}).get("language", ""))
+                   for position, stream in enumerate(stream for stream in streams
+                                                     if stream.get("codec_type") == "subtitle")],
         container=data.get("format", {}).get("format_name", ""), start_time=start_time, pixel_aspect=pixel_aspect,
         color_transfer=_known(video.get("color_transfer")), color_primaries=_known(video.get("color_primaries")),
         full_range=video.get("color_range") == "pc",
@@ -739,6 +757,55 @@ def describe_audio(audio: list[AudioStream], output: Path) -> list[str]:
     return lines
 
 
+def subtitle_codec(stream: SubtitleStream, output: Path) -> str | None:
+    """How a subtitle track goes into `output`: "copy", "mov_text" (converted to MP4's text format) or None (it
+    cannot: a picture subtitle in MP4 or MOV, or any subtitle in another container)."""
+    suffix = output.suffix.lower()
+    if suffix in COPY_ANY_AUDIO_SUFFIXES:
+        return "copy"
+    if suffix in MP4_SUFFIXES and stream.codec in TEXT_SUBTITLES:
+        return "copy" if stream.codec == "mov_text" else "mov_text"
+    return None
+
+
+def subtitle_arguments(subtitles: list[SubtitleStream], output: Path) -> list[str]:
+    """Map the source's subtitle tracks (input 1) that `output` can hold, copied or converted (`subtitle_codec`)."""
+    arguments: list[str] = []
+    kept = 0
+    for stream in subtitles:
+        codec = subtitle_codec(stream, output)
+        if codec is not None:
+            arguments += ["-map", f"1:s:{stream.position}", f"-c:s:{kept}", codec]
+            kept += 1
+    return arguments
+
+
+def describe_subtitles(subtitles: list[SubtitleStream], output: Path) -> list[str]:
+    """One line per subtitle track saying whether it is copied, converted or left out."""
+    lines = []
+    for stream in subtitles:
+        codec = subtitle_codec(stream, output)
+        name = f"subtitle track {stream.position + 1}: {stream.codec}" + (f" ({stream.language})" if stream.language
+                                                                          else "")
+        if codec == "copy":
+            lines.append(f"{name}, copied")
+        elif codec is not None:
+            lines.append(f"{name}, converted to MP4 text (its styling is lost)")
+        else:
+            lines.append(f"{name} cannot go in {output.suffix or 'this file'}, left out (.mkv keeps it)")
+    return lines
+
+
+def source_arguments(source: Path | None, audio: list[AudioStream], subtitles: list[SubtitleStream],
+                     output: Path) -> list[str]:
+    """The source as input 1 with its audio and subtitle tracks mapped for `output` (the video is input 0's);
+    nothing when there is no track to take from it."""
+    tracks = audio_arguments(audio, output) + subtitle_arguments(subtitles, output)
+    if source is None or not tracks:
+        return []
+    return ["-i", file_argument(source), "-map", "0:v:0"] + tracks
+
+
 def color_arguments(height: int, first_filter: str | None = None) -> list[str]:
     """RGB to YUV with the matrix players assume for this size, and the matching tags; `first_filter` runs before."""
     if height >= HD_HEIGHT:
@@ -755,14 +822,14 @@ def color_arguments(height: int, first_filter: str | None = None) -> list[str]:
 def codec_tag_arguments(encoder: str, output: Path) -> list[str]:
     """The encoder's `-tag:v` for MP4/MOV outputs (Apple players want hvc1 for HEVC); none for MKV."""
     arguments = ENCODERS[encoder]
-    if output.suffix.lower() not in (".mp4", ".mov", ".m4v") or "-tag:v" not in arguments:
+    if output.suffix.lower() not in MP4_SUFFIXES or "-tag:v" not in arguments:
         return []
     index = arguments.index("-tag:v")
     return arguments[index:index + 2]
 
 
 class FrameWriter:
-    """Feeds RGBA uint8 frames to ffmpeg, which encodes them and adds the source's audio tracks.
+    """Feeds RGBA uint8 frames to ffmpeg, which encodes them and adds the source's audio and subtitle tracks.
 
     The file is written as `partial_path(path)` and renamed to `path` by `close` once the encoder succeeded;
     `abort` and a failed `close` delete it. `gop` sets the keyframe interval (pieces use a short one so playback
@@ -773,7 +840,7 @@ class FrameWriter:
     def __init__(self, path: Path, width: int, height: int, frame_rate: Fraction, encoder: str,
                  audio_source: Path | None = None, audio: list[AudioStream] | None = None,
                  audio_seconds: float | None = None, gop: int | None = None, background: bool = False,
-                 scale: EncoderScale | None = None):
+                 scale: EncoderScale | None = None, subtitles: list[SubtitleStream] | None = None):
         if encoder not in ENCODERS:
             raise ValueError(f"unknown encoder {encoder}; choose from {', '.join(ENCODERS)}")
         self.path = path
@@ -791,11 +858,10 @@ class FrameWriter:
             command += DEVICE_ARGUMENTS
             video_filter = scale.video_filter(width, height)
         command += ["-f", "rawvideo", "-pix_fmt", "rgba", "-s", f"{source_width}x{source_height}", "-r", rate, "-i", "-"]
-        tracks = audio or []
-        if audio_source is not None and tracks:
-            if audio_seconds is not None:
-                command += ["-t", f"{audio_seconds:.3f}"]
-            command += ["-i", file_argument(audio_source), "-map", "0:v:0"] + audio_arguments(tracks, path)
+        source = source_arguments(audio_source, audio or [], subtitles or [], path)
+        if source and audio_seconds is not None:
+            command += ["-t", f"{audio_seconds:.3f}"]  # an input option: the source's tracks end with the video
+        command += source
         command += ENCODERS[encoder]
         if gop is not None:
             command += ["-g", str(gop)]
@@ -859,18 +925,18 @@ def concat_list(paths: list[Path]) -> str:
 
 
 def join_pieces(pieces: list[Path], output: Path, encoder: str, audio_source: Path | None,
-                audio: list[AudioStream], seconds: float | None = None) -> None:
+                audio: list[AudioStream], seconds: float | None = None,
+                subtitles: list[SubtitleStream] | None = None) -> None:
     """Join separately encoded pieces of one stream into `output` without re-encoding, adding the source's
-    audio from its start (cut to `seconds` when the pieces cover only the beginning). Written through
-    `partial_path(output)`, so a failed join leaves an existing `output` untouched."""
+    audio and subtitles from its start (cut to `seconds` when the pieces cover only the beginning). Written
+    through `partial_path(output)`, so a failed join leaves an existing `output` untouched."""
     if not pieces:
         raise ValueError("nothing to join")
     listing = pieces[0].parent / f"{output.stem}.join.txt"
     partial = partial_path(output)
     command = [tool_path("ffmpeg"), "-v", "error", "-nostdin", "-y", "-f", "concat", "-safe", "0",
                "-i", file_argument(listing)]
-    if audio_source is not None and audio:
-        command += ["-i", file_argument(audio_source), "-map", "0:v:0"] + audio_arguments(audio, output)
+    command += source_arguments(audio_source, audio, subtitles or [], output)
     command += ["-c:v", "copy"] + codec_tag_arguments(encoder, output)
     if seconds is not None:
         command += ["-t", f"{seconds:.6f}"]

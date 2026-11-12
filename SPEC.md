@@ -157,7 +157,10 @@ has none of those; the tool substitutes, as the quality lab (§14) settled:
   needs another encoder or another size").
 - Audio: every track is kept. AAC, MP3, AC-3, E-AC-3 and ALAC are copied into an MP4; the rest (WMA, PCM, Vorbis,
   Opus, FLAC, MP2...) become AAC at 96 kb/s per channel (at least two). An MKV copies every track as is.
-  Subtitles and data streams are dropped.
+- Subtitles: an MKV copies every track as is. An MP4 or MOV holds only its own text format: text subtitles (SRT,
+  ASS, WebVTT...) are converted to it, losing their styling, and picture subtitles (PGS from Blu-ray, DVD, DVB)
+  are left out, which the Output note and the command line's log say. Any other container gets none. They end
+  with the video when only its start is saved. Data streams are dropped.
 - Images: the format follows the output's suffix; every input image format can be written. PNG, TIFF and WebP
   keep the source's transparency, scaled up; JPEG is written at quality 2 (ffmpeg's scale) and WebP at 95.
 
@@ -261,7 +264,8 @@ has none of those; the tool substitutes, as the quality lab (§14) settled:
 
 ### Settings
 1. **Source**: the file name ("No file yet"); for a video "<codec> · W × H · <fps> fps", then "[plays as W × H
-   · ]3:20 · 12,000 frames · <audio codec, N audio tracks or no audio>"; for an image "<codec> image · W × H".
+   · ]3:20 · 12,000 frames · <audio codec, N audio tracks or no audio>[ · N subtitle tracks]"; for an image
+   "<codec> image · W × H".
    Empty, it says "Drop a file anywhere on this window, or choose one."; while probing, "Reading…". The button
    reads "Choose file…", then "Choose another file…". Just after it on its line (12 px apart: they belong together),
    the switch "Auto upscale" (on by default; tooltip "Upscale as soon as a file opens"; item 6).
@@ -286,11 +290,13 @@ has none of those; the tool substitutes, as the quality lab (§14) settled:
    0.5 gives crisper edges, high values leave halos. Without Real-ESRGAN's program, a saved side showing it says how
    to install it under the size, and Upscale stays disabled.
 4. **Output**: with no side upscaled, a note says so and Upscale stays disabled. Then
-   the output path (§6; tooltip: .mp4 plays everywhere, .mkv keeps every audio track), "…" for a
+   the output path (§6; tooltip: .mp4 plays everywhere, .mkv keeps every audio and subtitle track), "…" for a
    Save-as dialog (MP4, Matroska, QuickTime; PNG, JPEG, WebP for images), the encoder ("HEVC · GPU (AMF)"
    default, "AV1 · GPU (AMF)", "H.264 · GPU (AMF)", "H.264 · CPU (x264)", "HEVC · CPU (x265)") with a note on
    size, speed and the devices that play it, and what happens to the audio ("Audio: AAC copied as is; WMA
-   converted to AAC (.mp4 cannot hold it)." or "No audio in this file."). Images disable the encoder.
+   converted to AAC (.mp4 cannot hold it)." or "No audio in this file.") and to the subtitles ("Subtitles: SRT
+   converted to MP4 text; PGS left out (.mp4 cannot hold it; .mkv keeps every kind)."). Images disable the
+   encoder.
 5. **Processor**: threads from 1 to every logical processor (default half, shown as "8 of 16") and the priority:
    Normal, Low (default) or Background (quickest but other programs may stutter / other programs stay smooth /
    only spare time). They cap background work only (§10), stay usable while busy and reach the running upscale.

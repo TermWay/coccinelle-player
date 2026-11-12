@@ -9,7 +9,7 @@ if not needs.HAS_OPENCV:
     raise unittest.SkipTest("opencv-python is not installed (the window needs it)")
 
 from fsr4 import ui
-from fsr4.media import AudioStream, MediaInfo
+from fsr4.media import AudioStream, MediaInfo, SubtitleStream
 
 
 def video_info(audio: list[AudioStream]) -> MediaInfo:
@@ -32,6 +32,17 @@ class TextTest(unittest.TestCase):
         info.color_transfer, info.interlaced = "arib-std-b67", True
         self.assertEqual(ui.describe_source(Path("clip.mov"), info).splitlines()[1],
                          "HLG HDR shown as SDR · interlaced, deinterlaced · 3:23 · 6,094 frames · no audio")
+
+    def test_subtitle_plan(self):
+        info = video_info([])
+        self.assertEqual(ui.describe_subtitle_plan(info, Path("out.mp4")), "")
+        info.subtitles = [SubtitleStream(0, "subrip"), SubtitleStream(1, "hdmv_pgs_subtitle"),
+                          SubtitleStream(2, "dvd_subtitle")]
+        self.assertEqual(ui.describe_subtitle_plan(info, Path("out.mp4")),
+                         "Subtitles: SRT converted to MP4 text; DVD, PGS left out (.mp4 cannot hold them; "
+                         ".mkv keeps every kind).")
+        self.assertEqual(ui.describe_subtitle_plan(info, Path("out.mkv")), "Subtitles: DVD, PGS, SRT kept as is.")
+        self.assertTrue(ui.describe_source(Path("film.mkv"), info).endswith(" · no audio · 3 subtitle tracks"))
 
     def test_window_geometry(self):
         self.assertEqual(ui.parse_geometry("1280x860+-1600+40"), (-1600, 40, 1280, 860))

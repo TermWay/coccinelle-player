@@ -16,8 +16,8 @@ from . import log, temporary
 from .ffx import QUALITY_MODE_SCALES, find_sdk_dir
 from .flow import create_flow
 from .hq_scaler import HQ_SCALER, MIN_SIZE as HQ_MIN_SIZE
-from .media import (ENCODER_LIMITS, ENCODER_NAMES, FrameReader, FrameWriter, MediaInfo, describe_audio, is_image,
-                    partial_path, probe, read_image, write_image)
+from .media import (ENCODER_LIMITS, ENCODER_NAMES, FrameReader, FrameWriter, MediaInfo, describe_audio,
+                    describe_subtitles, is_image, partial_path, probe, read_image, write_image)
 from .pipeline import upscale_stream
 from .realesrgan import MODELS, STILL_ONLY, STILL_ONLY_NOTE, Stopped, find_program, not_installed
 from .upscalers import EXTERNAL_UPSCALERS, create_pipeline
@@ -220,7 +220,7 @@ def run_job(options: JobOptions, progress: ProgressCallback | None = None,
         kind = "image" if job.image_mode else f"{job.info.codec} video, {float(job.info.frame_rate):.3f} fps"
         log.emit(f"[fsr4] {options.input.name}: {width}x{height} -> {out_width}x{out_height} ({job.describe_scale()}), {kind}")
         if not job.image_mode:
-            for line in describe_audio(job.info.audio, job.output):
+            for line in describe_audio(job.info.audio, job.output) + describe_subtitles(job.info.subtitles, job.output):
                 log.emit(f"[fsr4] {line}")
 
     gpu = Gpu(gpu_index=options.gpu, validate=options.validate, verbose=options.verbose) if uses_fsr else None
@@ -281,7 +281,7 @@ def _run_video(options: JobOptions, job: JobPlan, pipeline, progress: ProgressCa
     audio_seconds = options.frames / float(info.frame_rate) if options.frames and info.frame_rate else None
     writer = FrameWriter(job.output, job.output_size[0], job.output_size[1], info.frame_rate, options.codec,
                          audio_source=options.input, audio=info.audio, audio_seconds=audio_seconds,
-                         scale=pipeline.encoder_scale)
+                         scale=pipeline.encoder_scale, subtitles=info.subtitles)
     total = info.frame_count
     if options.frames is not None:
         total = min(options.frames, total) if total else options.frames

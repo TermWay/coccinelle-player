@@ -40,7 +40,7 @@ from .image_preview import ImagePreviewer
 from .realesrgan import STILL_ONLY
 from .job import JobOptions, JobPlan, JobResult, default_output, plan_from_info, run_job
 from .media import (COPY_ANY_AUDIO_SUFFIXES, IMAGE_SUFFIXES, MP4_AUDIO_COPY, VIDEO_SUFFIXES, KeyframeIndex, MediaInfo,
-                    ffmpeg_version, is_image, probe, read_frame, read_thumbnail)
+                    ffmpeg_version, is_image, probe, read_frame, read_thumbnail, subtitle_codec)
 from .player import Player
 from .preferences import PreferenceStore
 from .presets import BEST, OFF_LABEL, SOURCE_LABELS, Preset, PresetStore
@@ -117,7 +117,8 @@ NOTHING_UPSCALED = "Ready · nothing is upscaled · choose a preset in the Left 
 OPEN_TYPES = [("Videos and images", " ".join(f"*{suffix}" for suffix in VIDEO_SUFFIXES + IMAGE_SUFFIXES)),
               ("Videos", " ".join(f"*{suffix}" for suffix in VIDEO_SUFFIXES)),
               ("Images", " ".join(f"*{suffix}" for suffix in IMAGE_SUFFIXES)), ("All files", "*.*")]
-VIDEO_SAVE_TYPES = [("MP4 video", "*.mp4"), ("Matroska video (keeps every audio track as is)", "*.mkv"),
+VIDEO_SAVE_TYPES = [("MP4 video", "*.mp4"),
+                    ("Matroska video (keeps every audio and subtitle track as is)", "*.mkv"),
                     ("QuickTime video", "*.mov")]
 IMAGE_SAVE_TYPES = [("PNG image", "*.png"), ("JPEG image", "*.jpg"), ("WebP image", "*.webp")]
 VIDEO_CODEC_NAMES = {"h264": "H.264", "hevc": "HEVC", "av1": "AV1", "vp9": "VP9", "vp8": "VP8", "wmv1": "WMV 7",
@@ -129,6 +130,9 @@ VIDEO_CODEC_NAMES = {"h264": "H.264", "hevc": "HEVC", "av1": "AV1", "vp9": "VP9"
 AUDIO_CODEC_NAMES = {"aac": "AAC", "mp3": "MP3", "ac3": "AC-3", "eac3": "E-AC-3", "wmav1": "WMA", "wmav2": "WMA",
                      "wmapro": "WMA Pro", "wmavoice": "WMA Voice", "opus": "Opus", "vorbis": "Vorbis", "flac": "FLAC",
                      "alac": "ALAC", "mp2": "MP2", "dts": "DTS", "truehd": "TrueHD", "cook": "RealAudio"}
+SUBTITLE_CODEC_NAMES = {"subrip": "SRT", "srt": "SRT", "ass": "ASS", "ssa": "SSA", "webvtt": "WebVTT",
+                        "mov_text": "MP4 text", "hdmv_pgs_subtitle": "PGS", "dvd_subtitle": "DVD",
+                        "dvb_subtitle": "DVB", "dvb_teletext": "Teletext"}
 
 
 def codec_name(codec: str, names: dict[str, str]) -> str:
@@ -186,6 +190,8 @@ def describe_source(path: Path, info: MediaInfo) -> str:
         parts.append(f"{' + '.join(names)} {tracks}")
     else:
         parts.append("no audio")
+    if info.subtitles:
+        parts.append(f"{len(info.subtitles)} subtitle track{'s' if len(info.subtitles) > 1 else ''}")
     return first + "\n" + " · ".join(parts)
 
 
@@ -203,6 +209,28 @@ def describe_audio_plan(info: MediaInfo, output: Path) -> str:
         names = ", ".join(sorted({codec_name(t.codec, AUDIO_CODEC_NAMES) for t in converted}))
         parts.append(f"{names} converted to AAC ({output.suffix or 'this format'} cannot hold it)")
     return "Audio: " + "; ".join(parts) + "."
+
+
+def describe_subtitle_plan(info: MediaInfo, output: Path) -> str:
+    """What happens to the subtitles, in one line; empty when the file has none."""
+    if not info.subtitles:
+        return ""
+    kept = {"copy": [], "mov_text": [], None: []}
+    for track in info.subtitles:
+        kept[subtitle_codec(track, output)].append(track)
+
+    def names(tracks: list) -> str:
+        return ", ".join(sorted({codec_name(track.codec, SUBTITLE_CODEC_NAMES) for track in tracks}))
+
+    parts = []
+    if kept["copy"]:
+        parts.append(f"{names(kept['copy'])} kept as is")
+    if kept["mov_text"]:
+        parts.append(f"{names(kept['mov_text'])} converted to MP4 text")
+    if kept[None]:
+        parts.append(f"{names(kept[None])} left out ({output.suffix or 'this format'} cannot hold "
+                     f"{'it' if len(kept[None]) == 1 else 'them'}; .mkv keeps every kind)")
+    return "Subtitles: " + "; ".join(parts) + "."
 
 
 def to_bgra(rgba: np.ndarray) -> np.ndarray:
@@ -506,7 +534,7 @@ class App:
         for key in ("<Return>", "<Escape>"):
             self.output_entry.bind(key, lambda _: self.root.focus_set())  # done typing: the keys play again
         self._tip(self.output_entry, "Where the upscaled file is saved. .mp4 plays everywhere; .mkv keeps every "
-                                     "audio track exactly as it is.")
+                                     "audio and subtitle track exactly as it is.")
         self.save_button = ttk.Button(output_row, text="…", width=3, style="Secondary.TButton",
                                       command=self.browse_output)
         self.save_button.grid(row=0, column=1, padx=(px(6), 0))
@@ -1018,7 +1046,9 @@ class App:
                                       style="Strong.TLabel")
             across, down = plan.scales
             self.size_note.configure(text=f"{plan.describe_scale('×')} per side · {across * down:.1f}× the pixels")
-            self.audio_note.configure(text="" if image else describe_audio_plan(self.info, plan.output))
+            self.audio_note.configure(text="" if image else " ".join(
+                part for part in (describe_audio_plan(self.info, plan.output),
+                                  describe_subtitle_plan(self.info, plan.output)) if part))
         else:
             self.size_label.configure(style="Faint.TLabel",
                                       text="Cannot upscale with these settings." if problem

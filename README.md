@@ -387,7 +387,8 @@ scrolling sideways, woven into interlaced MPEG-2 and H.264: 19.0 dB against the 
   stabilisation; it cannot reconstruct the sub-pixel detail it recovers in games.
 - Input is processed as 8-bit. HDR video (PQ or HLG, as phones record) is tone-mapped to SDR, so the output is
   SDR; interlaced video is deinterlaced at its own frame rate (one picture per frame, not one per field).
-- The player plays the first audio track; the saved file keeps every track. Pieces wait in a `fsr4-` folder
+- The player plays the first audio track and shows no subtitles; the saved file keeps every audio track, and the
+  subtitles its container holds (all in .mkv; text ones, converted, in .mp4 and .mov). Pieces wait in a `fsr4-` folder
   beside the output (about 10 MB per second of 4K) until the file is closed, or in the system's temporary folder when
   the output's cannot take them; folders left by a crash are removed the next time that folder is used.
 

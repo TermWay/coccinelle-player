@@ -167,6 +167,53 @@ class FormatTest(unittest.TestCase):
         _, mkv_streams = self.roundtrip(source, "out.mkv")
         self.assertEqual(self.audio_codecs(mkv_streams), ["opus", "vorbis"], "MKV output copies any audio")
 
+    def subtitled_sample(self) -> Path:
+        """An MKV with an English SRT track and an ASS track, both shown during the 2 seconds of video."""
+        subtitles = self.root / "lines.srt"
+        subtitles.write_text("1\n00:00:00,200 --> 00:00:00,900\nHello\n\n2\n00:00:01,200 --> 00:00:01,800\nWorld\n",
+                             encoding="utf-8")
+        source = self.root / "subtitled.mkv"
+        ffmpeg(*video_source(), *audio_source(), "-i", str(subtitles), "-i", str(subtitles), "-t", str(FRAMES / RATE),
+               "-map", "0:v", "-map", "1:a", "-map", "2", "-map", "3", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+               "-c:a", "libopus", "-c:s:0", "srt", "-c:s:1", "ass", "-metadata:s:s:0", "language=eng", str(source))
+        return source
+
+    def subtitle_codecs(self, path: Path) -> list[str]:
+        return [stream["codec_name"] for stream in probe_streams(path) if stream["codec_type"] == "subtitle"]
+
+    def test_subtitles_are_kept(self):
+        source = self.subtitled_sample()
+        info = media.probe(source)
+        self.assertEqual([(track.position, track.codec, track.language) for track in info.subtitles],
+                         [(0, "subrip", "eng"), (1, "ass", "")])
+        for name, expected in (("out.mkv", ["subrip", "ass"]), ("out.mp4", ["mov_text", "mov_text"])):
+            output = self.root / name
+            writer = media.FrameWriter(output, info.width, info.height, info.frame_rate, "x264", audio_source=source,
+                                       audio=info.audio, subtitles=info.subtitles)
+            for frame in media.FrameReader(source, info):
+                writer.write(frame)
+            writer.close()
+            self.assertEqual(self.subtitle_codecs(output), expected, name)
+            self.assertEqual(media.probe(output).subtitles[0].language, "eng", name)
+
+    def test_joined_pieces_keep_the_subtitles_up_to_their_end(self):
+        source = self.subtitled_sample()
+        info = media.probe(source)
+        frames = [frame.copy() for frame in media.FrameReader(source, info)]
+        pieces = []
+        for index, (start, end) in enumerate(((0, 6), (6, 12))):
+            piece = self.root / f"piece_{index}.mp4"
+            writer = media.FrameWriter(piece, info.width, info.height, info.frame_rate, "x264")
+            for frame in frames[start:end]:
+                writer.write(frame)
+            writer.close()
+            pieces.append(piece)
+        output = self.root / "joined.mkv"
+        media.join_pieces(pieces, output, "x264", source, info.audio, 12 / RATE, info.subtitles)
+        self.assertEqual(self.subtitle_codecs(output), ["subrip", "ass"])
+        durations = [float(stream["duration"]) for stream in probe_streams(output) if "duration" in stream]
+        self.assertLessEqual(max(durations, default=0), 12 / RATE + 0.05, "every track ends with the video")
+
     def test_ogg_with_vorbis_audio(self):
         source = self.root / "sample.ogg"
         ffmpeg(*video_source(), *audio_source(), "-t", str(FRAMES / RATE), *OGG_VIDEO, "-c:a", "libvorbis",
@@ -305,7 +352,11 @@ class FormatTest(unittest.TestCase):
         ffmpeg(*video_source(), "-t", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(source))
         info = media.probe(source)
         self.assertFalse(info.interlaced)
-        self.assertNotIn("bwdif", " ".join(media.FrameReader(source, info, max_frames=1).command(None)))
+        reader = media.FrameReader(source, info, max_frames=1)
+        try:
+            self.assertNotIn("bwdif", " ".join(reader.command(None)))
+        finally:
+            reader.stop()
 
 
 @needs.ffmpeg
@@ -412,6 +463,20 @@ class ArgumentTest(unittest.TestCase):
                                      "-map", "1:a:1", "-c:a:1", "copy",
                                      "-map", "1:a:2", "-c:a:2", "aac", "-b:a:2", "576k"])
         self.assertEqual(media.audio_arguments(tracks, Path("out.mkv")).count("copy"), 3)
+
+    def test_subtitle_arguments(self):
+        tracks = [media.SubtitleStream(0, "hdmv_pgs_subtitle"), media.SubtitleStream(1, "subrip", "fre"),
+                  media.SubtitleStream(2, "mov_text")]
+        self.assertEqual(media.subtitle_arguments(tracks, Path("out.mp4")),
+                         ["-map", "1:s:1", "-c:s:0", "mov_text", "-map", "1:s:2", "-c:s:1", "copy"])
+        self.assertEqual(media.subtitle_arguments(tracks, Path("out.mkv")).count("copy"), 3)
+        self.assertEqual(media.subtitle_arguments(tracks, Path("out.webm")), [])
+        self.assertEqual(media.describe_subtitles(tracks, Path("out.mp4")),
+                         ["subtitle track 1: hdmv_pgs_subtitle cannot go in .mp4, left out (.mkv keeps it)",
+                          "subtitle track 2: subrip (fre), converted to MP4 text (its styling is lost)",
+                          "subtitle track 3: mov_text, copied"])
+        self.assertEqual(media.source_arguments(Path("in.mkv"), [], tracks[:1], Path("out.mp4")), [],
+                         "no input is added when nothing is taken from it")
 
     def test_frame_rate_guess(self):
         from fractions import Fraction

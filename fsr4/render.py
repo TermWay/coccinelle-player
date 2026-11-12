@@ -328,7 +328,7 @@ class Renderer:
             raise RuntimeError(f"only {frames} of {version.timeline.total} frames are upscaled")
         seconds = frames / self.rate if frames < version.timeline.total else None
         join_pieces([piece.path for piece in pieces], output, version.settings.encoder, self.source,
-                    self.info.audio, seconds)
+                    self.info.audio, seconds, self.info.subtitles)
         return frames
 
     # ---- the worker thread ----------------------------------------------------------------------

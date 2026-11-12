@@ -171,7 +171,8 @@ Python package stay `fsr4`.
   thread caps; playback never does. x265 takes its thread cap through `-x265-params pools=`, not `-threads`.
 - Media rules (`fsr4/media.py`): pick the first video stream that is not an attached picture; decode untagged
   HD as BT.709; read video at a constant rate; encode with BT.709 tags via `setparams` (ffmpeg takes encoder
-  tags from the frames); copy only MP4-safe audio (`MP4_AUDIO_COPY`), re-encode the rest to AAC; drain
+  tags from the frames); copy only MP4-safe audio (`MP4_AUDIO_COPY`), re-encode the rest to AAC; keep the
+  subtitles the output holds (`subtitle_codec`: MKV copies, MP4/MOV take text as mov_text); drain
   ffmpeg's stderr on a thread. GPU encoders have frame size limits (`ENCODER_LIMITS`, checked when planning).
   ffmpeg skips pictures it cannot decode and still succeeds (the timeline repeats the one before): readers run
   it with `-v level+...` and log the video decoder's first error once per file, for reads from the start
