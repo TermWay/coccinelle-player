@@ -29,5 +29,26 @@ class MachineTest(unittest.TestCase):
         self.assertTrue(all(width > 0 and height > 0 for _, _, width, height, _ in screens))
 
 
+
+class PlacementTest(unittest.TestCase):
+    """Where a window left on some monitor comes back (`ui_window.placement_on_screen`)."""
+
+    SCREENS = [(0, 0, 1920, 1080, True), (-2560, -200, 2560, 1440, False)]
+
+    def test_a_place_on_a_monitor_is_kept(self):
+        for place in ((100, 50, 1280, 860), (-2400, -100, 1600, 900)):
+            self.assertEqual(ui_window.placement_on_screen(place, self.SCREENS, 32), place)
+
+    def test_a_window_hanging_off_its_monitor_is_moved_onto_it(self):
+        self.assertEqual(ui_window.placement_on_screen((1000, 900, 1280, 860), self.SCREENS, 32), (640, 220, 1280, 860))
+
+    def test_a_window_larger_than_its_monitor_is_made_to_fit(self):
+        self.assertEqual(ui_window.placement_on_screen((10, 10, 2560, 1600), self.SCREENS, 32), (0, 0, 1920, 1080))
+
+    def test_a_monitor_that_is_gone_gives_nothing(self):
+        self.assertIsNone(ui_window.placement_on_screen((4000, 100, 1280, 860), self.SCREENS, 32))
+        self.assertIsNone(ui_window.placement_on_screen((100, -400, 1280, 860), self.SCREENS[:1], 32))
+
+
 if __name__ == "__main__":
     unittest.main()

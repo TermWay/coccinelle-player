@@ -32,10 +32,23 @@ class PreferencesTest(unittest.TestCase):
         self.assertIsNone(store.load_error)
         self.assertEqual(store.preferences, Preferences(False))
         store.change(upscale_on_open=True)
-        self.assertEqual(json.loads(self.path.read_text(encoding="utf-8")), {"version": 1, "upscale_on_open": True})
+        saved = json.loads(self.path.read_text(encoding="utf-8"))
+        self.assertNotIn("temporary_folder", saved)
+        self.assertTrue(saved["upscale_on_open"])
+
+    def test_the_window_is_kept_as_it_was_left(self):
+        PreferenceStore(self.path).change(window=(-1600, 40, 1280, 860), maximized=True, volume=0.35,
+                                          sidebar_folded=True)
+        self.assertEqual(PreferenceStore(self.path).preferences,
+                         Preferences(window=(-1600, 40, 1280, 860), maximized=True, volume=0.35, sidebar_folded=True))
+
+    def test_a_file_from_before_the_window_was_kept_reads(self):
+        self.path.write_text('{"version": 1, "upscale_on_open": false}', encoding="utf-8")
+        self.assertEqual(PreferenceStore(self.path).preferences, Preferences(upscale_on_open=False))
 
     def test_an_unreadable_file_gives_the_defaults_and_is_kept_aside(self):
-        for content in ("{not json", '{"upscale_on_open": "yes"}', "[]"):
+        for content in ("{not json", '{"upscale_on_open": "yes"}', "[]", '{"volume": 2}', '{"volume": true}',
+                        '{"window": [0, 0, 800]}', '{"window": [0, 0, 0, 600]}', '{"sidebar_folded": 1}'):
             with self.subTest(content=content):
                 self.path.write_text(content, encoding="utf-8")
                 store = PreferenceStore(self.path)

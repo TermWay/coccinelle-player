@@ -18,6 +18,7 @@ GWL_STYLE = -16
 GCL_STYLE = -26
 CS_VREDRAW, CS_HREDRAW = 0x1, 0x2
 SW_RESTORE = 9
+SW_SHOWMAXIMIZED = 3
 WS_OVERLAPPEDWINDOW = 0x00CF0000
 MONITOR_DEFAULTTONEAREST = 2
 MONITORINFOF_PRIMARY = 1
@@ -113,6 +114,21 @@ def monitors() -> list[tuple[int, int, int, int, bool]]:
 
     _check(user32.EnumDisplayMonitors(None, None, _MonitorEnumProc(add), 0), "list the monitors")
     return found
+
+
+def placement_on_screen(place: tuple[int, int, int, int], screens: list[tuple[int, int, int, int, bool]],
+                        title_height: int) -> tuple[int, int, int, int] | None:
+    """`place` (left, top, width, height), made to fit the monitor that holds the middle of its title bar, or None
+    when no monitor does (the monitor it was on is gone): a window put back there could not be reached."""
+    left, top, width, height = place
+    grip_x, grip_y = left + width // 2, top + title_height // 2
+    for screen_left, screen_top, screen_width, screen_height, _primary in screens:
+        if screen_left <= grip_x < screen_left + screen_width and screen_top <= grip_y < screen_top + screen_height:
+            width, height = min(width, screen_width), min(height, screen_height)
+            left = max(screen_left, min(left, screen_left + screen_width - width))
+            top = max(screen_top, min(top, screen_top + screen_height - height))
+            return left, top, width, height
+    return None
 
 
 def frame_handle(window: tk.Misc) -> int:
@@ -240,6 +256,11 @@ class Fullscreen:
     @property
     def active(self) -> bool:
         return self._style is not None
+
+    @property
+    def was_maximized(self) -> bool:
+        """Whether the window was maximized before full screen (leaving maximizes it again)."""
+        return self._placement is not None and self._placement.showCmd == SW_SHOWMAXIMIZED
 
     def enter(self) -> None:
         if self.active:

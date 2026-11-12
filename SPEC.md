@@ -212,8 +212,11 @@ has none of those; the tool substitutes, as the quality lab (§14) settled:
   dialogs, the app's own icon (a ladybug seen from above, facing right, its head a play triangle under the
   shell) and the ladybug's red as the accent colour. Every choice is the same themed dropdown; there is no
   native menu.
-- Title "Coccinelle Player" ("42% · Coccinelle Player" during a whole-file upscale). It opens centred at
-  1280 × 860 (at most 92% × 88% of the screen), never smaller than 960 × 640, at the display's DPI.
+- Title "Coccinelle Player" ("42% · Coccinelle Player" during a whole-file upscale). It opens where it was
+  closed, at the size it had, maximized if it was (closed in full screen: as it was before full screen), with
+  the sidebar folded or not and the volume as they were. The first time, or when the monitor it was on is gone
+  (logged), it opens centred on the main monitor at 1280 × 860 (at most 92% × 88% of the screen); a window
+  partly off its monitor is moved onto it. Never smaller than 960 × 640, at the display's DPI.
 - No header: the name and icon are only in the title bar, not repeated below it, and the sidebar and the toolbar
   start at the top of the window.
 - Sidebar (340 px wide): the settings, top to bottom (below). The button that folds it away starts its first line,
@@ -290,7 +293,8 @@ has none of those; the tool substitutes, as the quality lab (§14) settled:
 6. **Preferences**: "Auto upscale" (Source) is kept between runs in
    `%APPDATA%\Coccinelle Player\preferences.json` (written through a temporary file; one that cannot be read is
    reported in the banner, the defaults are used, and the next change keeps it as `preferences.unreadable`; fields
-   of other versions are ignored). It applies from the next file opened.
+   of other versions are ignored). It applies from the next file opened. The window's place, size, maximized
+   state, volume and folded sidebar are written there when it closes (a failure is logged).
 
 A change applies 450 ms after the last one. Each combination of size, upscaler, motion, sharpening and encoder
 is its own version (§10).

@@ -33,6 +33,11 @@ class TextTest(unittest.TestCase):
         self.assertEqual(ui.describe_source(Path("clip.mov"), info).splitlines()[1],
                          "HLG HDR shown as SDR · interlaced, deinterlaced · 3:23 · 6,094 frames · no audio")
 
+    def test_window_geometry(self):
+        self.assertEqual(ui.parse_geometry("1280x860+-1600+40"), (-1600, 40, 1280, 860))
+        with self.assertRaises(ValueError):
+            ui.parse_geometry("1280x860-8+40")
+
     def test_describe_image(self):
         info = MediaInfo(width=1600, height=900, frame_rate=Fraction(0), frame_count=1, duration=None, codec="png")
         self.assertEqual(ui.describe_source(Path("photo.png"), info), "PNG image · 1600 × 900")

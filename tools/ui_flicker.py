@@ -250,7 +250,9 @@ def main() -> int:
     usage.apply(usage.DEFAULT.threads, usage.DEFAULT.priority)
     root = tk.Tk()
     root.withdraw()
-    app = ui.App(root, preferences=PreferenceStore(args.video.resolve().parent / "ui_flicker_preferences.json"))
+    preferences_file = args.video.resolve().parent / "ui_flicker_preferences.json"
+    preferences_file.unlink(missing_ok=True)  # each run opens the window as a first run does
+    app = ui.App(root, preferences=PreferenceStore(preferences_file))
     presets_file = args.video.resolve().parent / "ui_flicker_presets.json"
     presets_file.unlink(missing_ok=True)
     app.presets = PresetStore(presets_file)

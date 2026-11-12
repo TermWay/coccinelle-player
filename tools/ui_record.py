@@ -51,7 +51,9 @@ def main() -> int:
     usage.apply(usage.DEFAULT.threads, usage.DEFAULT.priority)
     root = tk.Tk()
     root.withdraw()
-    app = ui.App(root, preferences=PreferenceStore(args.out.with_name(args.out.stem + "_preferences.json")))
+    preferences_file = args.out.with_name(args.out.stem + "_preferences.json")
+    preferences_file.unlink(missing_ok=True)  # each run opens the window as a first run does
+    app = ui.App(root, preferences=PreferenceStore(preferences_file))
     presets_file = args.out.with_name(args.out.stem + "_presets.json")
     presets_file.unlink(missing_ok=True)
     app.presets = PresetStore(presets_file)

@@ -18,6 +18,7 @@ import ctypes
 import math
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -51,7 +52,7 @@ from .ui_tooltip import Tooltip
 from .ui_transport import VOLUME_KEY_DECIBELS, Transport, format_time
 from .ui_slider import Mark, MarkedSlider
 from .ui_video import OFF, REFERENCE_FILTERS, UNAVAILABLE, VideoView
-from .ui_window import Curtain, Fullscreen, keep_contents_on_resize, repaint
+from .ui_window import Curtain, Fullscreen, keep_contents_on_resize, monitors, placement_on_screen, repaint
 
 APP_NAME = "Coccinelle Player"
 POLL_MS = 30
@@ -148,6 +149,15 @@ def free_name(path: Path) -> Path:
     return candidate
 
 
+def parse_geometry(geometry: str) -> tuple[int, int, int, int]:
+    """Tk's "WIDTHxHEIGHT+LEFT+TOP" (a coordinate may be "+-8") as (left, top, width, height)."""
+    match = re.fullmatch(r"(\d+)x(\d+)\+(-?\d+)\+(-?\d+)", geometry)
+    if match is None:
+        raise ValueError(f"unexpected window geometry {geometry!r}")
+    width, height, left, top = (int(group) for group in match.groups())
+    return left, top, width, height
+
+
 def describe_source(path: Path, info: MediaInfo) -> str:
     """Two short lines about a probed file for the sidebar."""
     size = f"{info.width} × {info.height}"
@@ -236,6 +246,7 @@ class App:
         self.video_memory: system.VideoMemory | None = None
         self.gpu_text = ""
         self.screen = Fullscreen(root)
+        self._normal_place: tuple[int, int, int, int] | None = None  # where the window is when not maximized
         self._repaint_job: str | None = None
         keep_contents_on_resize(root)
         self.presets = PresetStore()
@@ -253,10 +264,11 @@ class App:
                                                                                        color)))
                       for name in ("sidebar", "add", "delete")
                       for color in (self.theme.palette.text_secondary, self.theme.palette.text_faint)}
+        log.set_sink(lambda line: self.queue.put(("log", line)))
         self._build()
         self._update_preset_lists()
         self._place_window()
-        log.set_sink(lambda line: self.queue.put(("log", line)))
+        self._restore_layout()
         version = build_info.describe()
         self.version_label.configure(text=f"v{version}")
         log.emit(f"[ui] {APP_NAME} {version}")
@@ -718,12 +730,44 @@ class App:
         return footer
 
     def _place_window(self) -> None:
+        """Where the window was left, maximized again if it was; centred on the main monitor the first time, or
+        when the monitor it was on is gone."""
         px = self.theme.px
         screen_width, screen_height = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
         width = min(px(1280), int(screen_width * 0.92))
         height = min(px(860), int(screen_height * 0.88))
         self.root.minsize(min(px(960), width), min(px(640), height))
-        self.root.geometry(f"{width}x{height}+{(screen_width - width) // 2}+{max(0, (screen_height - height) // 3)}")
+        place = (max(0, (screen_width - width) // 2), max(0, (screen_height - height) // 3), width, height)
+        preferences = self.preferences.preferences
+        if preferences.window is not None:
+            saved = placement_on_screen(preferences.window, monitors(), px(32))
+            if saved is None:
+                log.emit("[ui] the monitor the window was on is gone: it opens on the main one")
+            else:
+                place = saved
+        left, top, width, height = place
+        self.root.geometry(f"{width}x{height}+{left}+{top}")  # "+-8" is 8 left of the screen, "-8" from its right
+        self._normal_place = place
+        if preferences.window is not None and preferences.maximized:
+            self.root.state("zoomed")
+
+    def _restore_layout(self) -> None:
+        """The volume and the sidebar as the window was left."""
+        preferences = self.preferences.preferences
+        self.transport.set_volume(preferences.volume)
+        if preferences.sidebar_folded:
+            self.sidebar_visible = False
+            self._lay_out_sidebar()
+
+    def _save_layout(self) -> None:
+        """Keep where the window is, the volume and the sidebar for the next run; a failure is logged (the window
+        is closing, there is no banner to show it in)."""
+        maximized = self.screen.was_maximized if self.fullscreen else self.root.state() == "zoomed"
+        try:
+            self.preferences.change(window=self._normal_place, maximized=maximized, volume=self.transport.volume,
+                                    sidebar_folded=not self.sidebar_visible)
+        except OSError as error:
+            log.emit(f"[ui] error: cannot save the window's place and volume: {error}")
 
     def _enable_drop(self):
         if os.name != "nt":
@@ -1449,13 +1493,16 @@ class App:
             return
         self.sidebar_visible = not self.sidebar_visible
         with self._behind_curtain():
-            if self.sidebar_visible:
-                self.sidebar.grid()
-                self.unfold_button.grid_remove()
-            else:
-                self.sidebar.grid_remove()
-                self.unfold_button.grid()
-            self.main.configure(padding=self._main_padding())
+            self._lay_out_sidebar()
+
+    def _lay_out_sidebar(self) -> None:
+        if self.sidebar_visible:
+            self.sidebar.grid()
+            self.unfold_button.grid_remove()
+        else:
+            self.sidebar.grid_remove()
+            self.unfold_button.grid()
+        self.main.configure(padding=self._main_padding())
 
     def toggle_fullscreen(self) -> None:
         """Full screen on the monitor the window is on, or back to the window exactly as it was."""
@@ -1552,6 +1599,8 @@ class App:
         it by several steps of a drag, then repaint it all once it stops."""
         if event.widget is not self.root:
             return
+        if not self.fullscreen and self.root.state() == "normal":
+            self._normal_place = parse_geometry(self.root.geometry())
         self.root.update_idletasks()
         if self._repaint_job is not None:
             self.root.after_cancel(self._repaint_job)
@@ -1735,6 +1784,7 @@ class App:
         if self.closing:
             return  # already waiting for it
         self.closing = True
+        self._save_layout()
         if self.image_running:
             self.image_cancel.set()
         if self.saving:
