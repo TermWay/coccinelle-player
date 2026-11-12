@@ -28,6 +28,17 @@ class MachineTest(unittest.TestCase):
         self.assertEqual(sum(primary for *_, primary in screens), 1, "one primary monitor")
         self.assertTrue(all(width > 0 and height > 0 for _, _, width, height, _ in screens))
 
+    def test_display_driver(self):
+        self.assertIsNone(system.display_driver("No such card"))
+        video = system.VideoMemory("")
+        try:
+            card = video.description
+        finally:
+            video.close()
+        driver = system.display_driver(card)
+        if driver is None:
+            self.skipTest(f"{card} has no display adapter entry of that name (a virtual machine's adapter)")
+        self.assertIn("Windows driver ", driver)
 
 
 class PlacementTest(unittest.TestCase):

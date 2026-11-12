@@ -123,6 +123,16 @@ def ffmpeg_filters() -> frozenset[str]:
     return frozenset(names)
 
 
+@functools.cache
+def ffmpeg_version() -> str:
+    """ffmpeg's version line without its copyright ("ffmpeg version 7.1-essentials_build..."), for bug reports."""
+    completed = subprocess.run([tool_path("ffmpeg"), "-hide_banner", "-version"], check=True, capture_output=True,
+                               text=True, encoding="utf-8", errors="replace", creationflags=_CREATE_NO_WINDOW)
+    if not completed.stdout.strip():
+        return "ffmpeg printed no version"
+    return completed.stdout.splitlines()[0].split(" Copyright")[0].strip()
+
+
 def is_image(path: Path) -> bool:
     return path.suffix.lower() in IMAGE_SUFFIXES
 

@@ -45,6 +45,7 @@ from fsr4.ui_transport import VOLUME_KEY_DECIBELS, speed_fraction, volume_fracti
 
 WM_DROPFILES = 0x0233
 WM_CLOSE = 0x0010
+CF_UNICODETEXT = 13
 GMEM_MOVEABLE_ZEROINIT = 0x0042
 DIALOG_CLASS = "#32770"
 DIALOG_SECONDS = 30
@@ -108,6 +109,27 @@ def close_dialog(title: str, screenshot: Path, found: list, done: threading.Even
 
 class DROPFILES(ctypes.Structure):
     _fields_ = [("pFiles", wintypes.DWORD), ("pt", wintypes.POINT), ("fNC", wintypes.BOOL), ("fWide", wintypes.BOOL)]
+
+
+def clipboard_text(window: tk.Misc) -> str | None:
+    """The clipboard's text ("" when it is empty), None when it holds something else (a picture, files)."""
+    user32 = ctypes.windll.user32
+    if user32.CountClipboardFormats() == 0:
+        return ""
+    if not user32.IsClipboardFormatAvailable(CF_UNICODETEXT):
+        return None
+    return window.clipboard_get()
+
+
+def restore_clipboard(window: tk.Misc, text: str) -> None:
+    """Put back the clipboard `clipboard_text` read."""
+    if text:
+        ui_window.copy_text(window, text)
+        return
+    user32 = ctypes.windll.user32
+    if user32.OpenClipboard(None):
+        user32.EmptyClipboard()
+        user32.CloseClipboard()
 
 
 def post_drop(window: tk.Misc, paths: list[Path]) -> None:
@@ -771,6 +793,27 @@ def main() -> int:
               f"it plays the source and nothing is upscaled (frame {app.player.position})")
         check(app.status_var.get() == ui.NOTHING_UPSCALED, f"the status says how to upscale ({app.status_var.get()})")
         shot("12_opened_without_upscaling")
+        app.toggle_log()
+        yield 0.5
+        check(app.copy_log_button.winfo_ismapped(), "Copy log shows with the log")
+        report = app.report_text()
+        head = report.split("\n\n", 1)[0]
+        labels = ("Windows: ", "Processor: ", "Windows driver ", "ffmpeg: ffmpeg version", "File: ")
+        check(all(label in head for label in labels) and args.video.name not in head and "[ui]" in report.split("\n\n", 1)[1],
+              f"the report names the program, the machine and the file, then the log ({head!r})")
+        shot("12b_log_and_copy")
+        kept_text = clipboard_text(root)
+        if kept_text is None:
+            print("            the clipboard holds something other than text: Copy log itself is not run")
+        else:
+            app.copy_log_button.invoke()
+            copied = root.clipboard_get()
+            restore_clipboard(root, kept_text)
+            check(copied.startswith(head) and app.copy_log_button.cget("text") == "Copied",
+                  "Copy log puts the report on the clipboard and says so")
+        app.toggle_log()
+        yield 0.4
+        check(not app.copy_log_button.winfo_ismapped(), "Copy log goes with the log")
         switch, choose_button, content = app.upscale_on_open_switch, app.choose_button, app.sidebar_content
         middle_offset = (switch.winfo_rooty() + switch.winfo_height() // 2
                          - choose_button.winfo_rooty() - choose_button.winfo_height() // 2)

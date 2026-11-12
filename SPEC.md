@@ -246,7 +246,11 @@ has none of those; the tool substitutes, as the quality lab (§14) settled:
   a click on a label goes to its mark. Where labels would touch, the less useful one gives way, and so do all the
   labels less useful than it, so the scale stays even; the one under the knob always shows and stands out.
 - Footer: a thin progress bar, the status text, Show log / Hide log, Open and Show in folder (after a save), Stop
-  (during a whole-file upscale) and the accent Upscale button.
+  (during a whole-file upscale) and the accent Upscale button. With the log shown, Copy log puts on the clipboard
+  the version, Windows, the processor, the graphics card with its driver, Vulkan and FSR versions, ffmpeg's version
+  and what the open file is (not its name), then the whole log, for a bug report; the button says "Copied" for
+  1.5 s. Its tooltip warns that the log names files and folders. The text stays on the clipboard once the window
+  has closed.
 - Every setting has a tooltip (after 450 ms, 320 px wide, kept on the pointer's monitor) saying in plain words
   what it does and what it trades, with measured numbers where there are some.
 - Errors: one red banner at a time (the first line of the error, at most 220 characters; ✕ closes it; opening a

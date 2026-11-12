@@ -99,7 +99,8 @@ sub-pixel camera jitter every frame. A video file has none of those, so this too
   The button at the top left of the window (Ctrl+B) folds the settings away. **Processor** in the settings
   sets how many threads upscaling may use (1 to all) and its priority (Normal, Low, Background).
 - When it is saved, Open plays the file and Show in folder selects it. Show log (Ctrl+L) has the details;
-  errors appear in a red banner. The foot of the sidebar names the processor and the graphics card, with the
+  errors appear in a red banner. For a bug report, Copy log (beside Hide log) copies the log with the version,
+  the graphics card and its driver, Windows and ffmpeg: read it before posting, it names your files. The foot of the sidebar names the processor and the graphics card, with the
   memory this program uses on each (RAM, VRAM) against what is installed; an amber dot and "no FSR 4" there mean
   the card cannot run FSR 4, and its presets say "not on this card".
 

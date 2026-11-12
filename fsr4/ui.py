@@ -17,6 +17,7 @@ from __future__ import annotations
 import ctypes
 import math
 import os
+import platform
 import queue
 import re
 import subprocess
@@ -39,7 +40,7 @@ from .image_preview import ImagePreviewer
 from .realesrgan import STILL_ONLY
 from .job import JobOptions, JobPlan, JobResult, default_output, plan_from_info, run_job
 from .media import (COPY_ANY_AUDIO_SUFFIXES, IMAGE_SUFFIXES, MP4_AUDIO_COPY, VIDEO_SUFFIXES, KeyframeIndex, MediaInfo,
-                    is_image, probe, read_frame, read_thumbnail)
+                    ffmpeg_version, is_image, probe, read_frame, read_thumbnail)
 from .player import Player
 from .preferences import PreferenceStore
 from .presets import BEST, OFF_LABEL, SOURCE_LABELS, Preset, PresetStore
@@ -52,7 +53,8 @@ from .ui_tooltip import Tooltip
 from .ui_transport import VOLUME_KEY_DECIBELS, Transport, format_time
 from .ui_slider import Mark, MarkedSlider
 from .ui_video import OFF, REFERENCE_FILTERS, UNAVAILABLE, VideoView
-from .ui_window import Curtain, Fullscreen, keep_contents_on_resize, monitors, placement_on_screen, repaint
+from .ui_window import (Curtain, Fullscreen, copy_text, keep_contents_on_resize, monitors, placement_on_screen,
+                        repaint)
 
 APP_NAME = "Coccinelle Player"
 POLL_MS = 30
@@ -63,6 +65,8 @@ SETTINGS_DELAY_MS = 450
 HIDE_CONTROLS_MS = 2500
 REPAINT_SETTLE_MS = 150
 MACHINE_REFRESH_MS = 2000
+COPY_LOG_TEXT = "Copy log"
+COPIED_MS = 1500  # how long "Copy log" says "Copied"
 # Playing backwards, the renderer fills the frames just behind the playhead a chunk at a time, nearest first,
 # until this much is ready behind it: more than the player ever waits for (BUFFER_MAX_SECONDS).
 REVERSE_CHUNK_SECONDS = 1.0
@@ -245,6 +249,7 @@ class App:
         self.processor = system.processor_name()
         self.video_memory: system.VideoMemory | None = None
         self.gpu_text = ""
+        self.gpu_details = "not checked yet"  # card, driver, Vulkan and FSR versions, for "Copy log"
         self.screen = Fullscreen(root)
         self._normal_place: tuple[int, int, int, int] | None = None  # where the window is when not maximized
         self._repaint_job: str | None = None
@@ -710,9 +715,18 @@ class App:
         self.progress.grid(row=0, column=0, columnspan=6, sticky="ew", pady=(0, px(10)))
         self.status_var = tk.StringVar(value="Ready")
         ttk.Label(footer, textvariable=self.status_var, style="Status.TLabel").grid(row=1, column=0, sticky="w")
-        self.log_button = ttk.Button(footer, text="Show log", style="Ghost.TButton", command=self.toggle_log,
+        log_buttons = ttk.Frame(footer)
+        log_buttons.grid(row=1, column=1, padx=(px(8), 0))
+        self.copy_log_button = ttk.Button(log_buttons, text=COPY_LOG_TEXT, style="Ghost.TButton", command=self.copy_log,
+                                          takefocus=False, width=len(COPY_LOG_TEXT))
+        self.copy_log_button.grid(row=0, column=0, padx=(0, px(4)))
+        self.copy_log_button.grid_remove()
+        self._tip(self.copy_log_button, "Copy the log with this program's version, the graphics card and its driver, "
+                                        "Windows and ffmpeg, for a bug report. It names your files and folders: "
+                                        "read it before you post it.")
+        self.log_button = ttk.Button(log_buttons, text="Show log", style="Ghost.TButton", command=self.toggle_log,
                                      takefocus=False)
-        self.log_button.grid(row=1, column=1, padx=(px(8), 0))
+        self.log_button.grid(row=0, column=1)
         self.open_button = ttk.Button(footer, text="Open", style="Secondary.TButton", command=self.open_result)
         self.open_button.grid(row=1, column=2, padx=(px(8), 0))
         self._tip(self.open_button, "Open the saved file in your usual player.")
@@ -1770,6 +1784,34 @@ class App:
             else:
                 self.log_panel.grid_remove()
             self.log_button.configure(text="Hide log" if self.log_visible else "Show log")
+            if self.log_visible:
+                self.copy_log_button.grid()
+            else:
+                self.copy_log_button.grid_remove()
+
+    def report_text(self) -> str:
+        """What "Copy log" copies: this program, Windows, the machine, ffmpeg and the file open (what it is, not its
+        name), then the whole log."""
+        try:
+            ffmpeg = ffmpeg_version()
+        except (OSError, subprocess.CalledProcessError) as error:
+            ffmpeg = f"unavailable ({error})"
+        lines = [f"{APP_NAME} {build_info.describe()}", f"Windows: {platform.platform()}",
+                 f"Processor: {self.processor}", f"Graphics: {self.gpu_details}", f"ffmpeg: {ffmpeg}"]
+        if self.info is not None and self.input_path is not None:
+            lines.append("File: " + describe_source(self.input_path, self.info).replace("\n", " · "))
+        return "\n".join(lines) + "\n\n" + self.log_text.get("1.0", "end").rstrip() + "\n"
+
+    def copy_log(self) -> None:
+        """Put `report_text` on the clipboard; the button says so for a moment."""
+        try:
+            copy_text(self.root, self.report_text())
+        except OSError as error:
+            log.emit(f"[ui] error: cannot copy the log: {error}")
+            self._show_banner(f"The log could not be copied: {self._first_line(error)}")
+            return
+        self.copy_log_button.configure(text="Copied")
+        self.root.after(COPIED_MS, lambda: self.copy_log_button.configure(text=COPY_LOG_TEXT))
 
     def _close_requested(self) -> None:
         """The window's close button: a whole-file upscale in progress would be lost, so ask first."""
@@ -1827,11 +1869,14 @@ class App:
                     upscaler = Upscaler(gpu, (256, 144), (512, 288), FFX_UPSCALE_ENABLE_AUTO_EXPOSURE, sdk_dir,
                                         provider=error.versions[0])
                 name, version = gpu.device_name, upscaler.version_name
+                details = (f"{name} · {self._driver_text(name)} · Vulkan {gpu.api_version_text} "
+                           f"(driver {gpu.driver_version_text}) · "
+                           f"{'FSR ' + version if fsr4_missing is None else 'no FSR 4, FSR ' + version + ' runs'}")
                 upscaler.destroy()
             finally:
                 gpu.destroy()
         except Exception as error:  # noqa: BLE001 - shown in the header and the banner
-            self.queue.put(("gpu", False, str(error), None, None))
+            self.queue.put(("gpu", False, str(error), None, None, f"unavailable: {error}"))
             return
         try:
             video_memory = system.VideoMemory(name)
@@ -1839,7 +1884,17 @@ class App:
             log.emit(f"[ui] error: the graphics card's memory use is unavailable: {error}")
             video_memory = None
         fsr = f"FSR {version}" if fsr4_missing is None else "no FSR 4"
-        self.queue.put(("gpu", True, f"{name.replace('AMD ', '')}|{fsr}", video_memory, fsr4_missing))
+        log.emit(f"[ui] {details}")
+        self.queue.put(("gpu", True, f"{name.replace('AMD ', '')}|{fsr}", video_memory, fsr4_missing, details))
+
+    @staticmethod
+    def _driver_text(card: str) -> str:
+        """The card's driver version for the report, or why it is missing."""
+        try:
+            return system.display_driver(card) or "driver not found in the registry"
+        except OSError as error:
+            log.emit(f"[ui] error: cannot read the display driver's version: {error}")
+            return "driver unknown"
 
     def _clean_temp(self) -> None:
         try:
@@ -1889,8 +1944,9 @@ class App:
         self.log_text.configure(state="disabled")
 
     def _on_gpu(self, ready: bool, text: str, video_memory: system.VideoMemory | None,
-                fsr4_missing: str | None) -> None:
+                fsr4_missing: str | None, details: str) -> None:
         self.gpu_ready = ready
+        self.gpu_details = details
         palette = self.theme.palette
         self.gpu_dot.configure(foreground=palette.error if not ready else palette.warning if fsr4_missing
                                else palette.success)

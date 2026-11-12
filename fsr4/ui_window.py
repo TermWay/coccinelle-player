@@ -1,5 +1,5 @@
-"""Full screen on the monitor the window is on, a repaint of everything after it, and a picture of the window that
-hides a layout change (Windows).
+"""Full screen on the monitor the window is on, a repaint of everything after it, a picture of the window that
+hides a layout change, where the window can come back, and the clipboard (Windows).
 
 Tk's `-fullscreen` sizes the window to the primary screen at 0,0 whatever monitor it is on, and rebuilds the
 window frame on the way. Here the window keeps its frame: entering takes off the border styles and covers the
@@ -30,6 +30,8 @@ WS_POPUP = 0x80000000
 WS_EX_LAYERED, WS_EX_TRANSPARENT, WS_EX_TOOLWINDOW, WS_EX_NOACTIVATE = 0x80000, 0x20, 0x80, 0x08000000
 SW_SHOWNOACTIVATE = 4
 ULW_ALPHA = 2
+CF_UNICODETEXT = 13
+GMEM_MOVEABLE = 0x2
 CURTAIN_FADE_SECONDS = 0.12
 CURTAIN_STEP_MS = 8
 
@@ -54,6 +56,7 @@ _MonitorEnumProc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HMONITOR, wintypes
                                       wintypes.LPARAM)
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 dwmapi = ctypes.WinDLL("dwmapi")
 for _function, _restype, _argtypes in (
         (user32.MonitorFromWindow, wintypes.HMONITOR, [wintypes.HWND, wintypes.DWORD]),
@@ -88,7 +91,15 @@ for _function, _restype, _argtypes in (
         (gdi32.BitBlt, wintypes.BOOL, [wintypes.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
                                        wintypes.HDC, ctypes.c_int, ctypes.c_int, wintypes.DWORD]),
         (user32.IsZoomed, wintypes.BOOL, [wintypes.HWND]),
-        (user32.ShowWindow, wintypes.BOOL, [wintypes.HWND, ctypes.c_int])):
+        (user32.ShowWindow, wintypes.BOOL, [wintypes.HWND, ctypes.c_int]),
+        (user32.OpenClipboard, wintypes.BOOL, [wintypes.HWND]),
+        (user32.EmptyClipboard, wintypes.BOOL, []),
+        (user32.SetClipboardData, wintypes.HANDLE, [wintypes.UINT, wintypes.HANDLE]),
+        (user32.CloseClipboard, wintypes.BOOL, []),
+        (kernel32.GlobalAlloc, wintypes.HGLOBAL, [wintypes.UINT, ctypes.c_size_t]),
+        (kernel32.GlobalLock, wintypes.LPVOID, [wintypes.HGLOBAL]),
+        (kernel32.GlobalUnlock, wintypes.BOOL, [wintypes.HGLOBAL]),
+        (kernel32.GlobalFree, wintypes.HGLOBAL, [wintypes.HGLOBAL])):
     _function.restype = _restype
     _function.argtypes = _argtypes
 
@@ -96,6 +107,29 @@ for _function, _restype, _argtypes in (
 def _check(succeeded: int, what: str) -> None:
     if not succeeded:
         raise ctypes.WinError(ctypes.get_last_error(), f"cannot {what}")
+
+
+def copy_text(window: tk.Misc, text: str) -> None:
+    """Put `text` on the clipboard now. Tk's own clipboard hands the text over only when asked, and it is gone
+    once the program has closed; this stays for pasting later."""
+    data = ctypes.create_unicode_buffer(text)
+    memory = kernel32.GlobalAlloc(GMEM_MOVEABLE, ctypes.sizeof(data))
+    _check(memory, "reserve memory for the clipboard")
+    try:
+        pointer = kernel32.GlobalLock(memory)
+        _check(pointer, "fill the clipboard's memory")
+        ctypes.memmove(pointer, data, ctypes.sizeof(data))
+        kernel32.GlobalUnlock(memory)
+        _check(user32.OpenClipboard(frame_handle(window)), "open the clipboard")
+        try:
+            _check(user32.EmptyClipboard(), "empty the clipboard")
+            _check(user32.SetClipboardData(CF_UNICODETEXT, memory), "put the text on the clipboard")
+            memory = None  # the clipboard owns it now
+        finally:
+            user32.CloseClipboard()
+    finally:
+        if memory is not None:
+            kernel32.GlobalFree(memory)
 
 
 def _rect(rect: wintypes.RECT) -> tuple[int, int, int, int]:

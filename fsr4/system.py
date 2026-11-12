@@ -1,5 +1,5 @@
-"""What the window shows about the machine (Windows): the processor's name, and how much of the main memory and
-of the graphics card's memory this program uses.
+"""What the window shows about the machine (Windows): the processor's name, how much of the main memory and of
+the graphics card's memory this program uses, and the card's driver (for bug reports).
 
 The processor's name comes from the registry; memory in use from the process counters (working set) and the
 physical total; the graphics card's from DXGI, which counts every allocation of this process on that card,
@@ -57,6 +57,7 @@ IID_FACTORY1 = GUID.parse("770aae78-f26f-4dba-a829-253c83d1b387")
 IID_ADAPTER3 = GUID.parse("645967a4-1392-4310-a798-8053ce3e93fd")
 DXGI_ERROR_NOT_FOUND = 0x887A0002
 SEGMENT_LOCAL = 0
+DISPLAY_ADAPTERS_KEY = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
 # COM method slots (vtable indices) of the DXGI interfaces used.
 RELEASE, QUERY_INTERFACE = 2, 0
 ENUM_ADAPTERS1, GET_DESC1, QUERY_VIDEO_MEMORY_INFO = 12, 10, 14
@@ -68,6 +69,31 @@ def processor_name() -> str:
         name = winreg.QueryValueEx(key, "ProcessorNameString")[0]
     name = re.sub(r"\((R|TM)\)|\bCPU\b|\b\d+-Core\b|\bProcessor\b|@.*$|^(AMD|Intel)\b", " ", name)
     return " ".join(name.split())
+
+
+def display_driver(card: str) -> str | None:
+    """The driver of the graphics card named `card` as people know it: "Adrenalin 26.10.44, Windows driver
+    32.0.31044.16" (AMD writes its version beside Windows' entry), None when no display adapter has that name."""
+    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, DISPLAY_ADAPTERS_KEY) as adapters:
+        index = 0
+        while True:
+            try:
+                name = winreg.EnumKey(adapters, index)
+            except OSError:
+                return None  # no more adapters
+            index += 1
+            try:
+                with winreg.OpenKey(adapters, name) as adapter:
+                    if winreg.QueryValueEx(adapter, "DriverDesc")[0] != card:
+                        continue
+                    version = winreg.QueryValueEx(adapter, "DriverVersion")[0]
+                    try:
+                        radeon = winreg.QueryValueEx(adapter, "RadeonSoftwareVersion")[0]
+                    except FileNotFoundError:
+                        return f"Windows driver {version}"
+                    return f"Adrenalin {radeon}, Windows driver {version}"
+            except OSError:
+                continue  # "Properties" and other keys that are not adapters, or not readable
 
 
 def main_memory() -> tuple[int, int]:
