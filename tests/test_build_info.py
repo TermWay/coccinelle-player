@@ -13,9 +13,11 @@ from unittest import mock
 from fsr4 import __version__, build_info, cli
 
 HAS_GIT = subprocess.run(["git", "--version"], capture_output=True).returncode == 0
+# A source download (GitHub's "Source code" zip, git archive) has no history to name a commit from.
+IN_REPOSITORY = (build_info.SOURCE_ROOT / ".git").exists()
 
 
-@unittest.skipUnless(HAS_GIT, "git is not installed")
+@unittest.skipUnless(HAS_GIT and IN_REPOSITORY, "needs git and a checkout of the repository")
 class FromTheSourcesTest(unittest.TestCase):
     def test_names_the_commit_checked_out(self):
         head = subprocess.run(["git", "-C", str(build_info.SOURCE_ROOT), "rev-parse", "HEAD"], capture_output=True,
@@ -43,7 +45,8 @@ class CommandLineTest(unittest.TestCase):
         with contextlib.redirect_stdout(printed), self.assertRaises(SystemExit) as raised:
             cli.build_parser().parse_args(["--version"])
         self.assertEqual(raised.exception.code, 0)
-        self.assertEqual(printed.getvalue(), f"fsr4 {build_info.describe()}\n")
+        # Outside a repository a "[build] the commit is unknown" line comes first (logged, not an error).
+        self.assertEqual(printed.getvalue().splitlines()[-1], f"fsr4 {build_info.describe()}")
 
 
 class PackagedTest(unittest.TestCase):
