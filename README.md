@@ -175,7 +175,10 @@ EXR, GIF (first frame). `tests/test_formats.py` round-trips a sample of each fam
   MP4/MKV files carry a JPEG thumbnail as a video stream).
 - **Audio**: every track is kept. AAC, MP3, AC-3, E-AC-3 and ALAC are copied into the MP4; WMA, PCM, Vorbis,
   Opus, FLAC, MP2 and the rest are converted to AAC (96 kb/s per channel), because MP4 cannot hold them or
-  common players cannot play them there. Save as `.mkv` to copy every track as is. Subtitles are dropped.
+  common players cannot play them there. Save as `.mkv` to copy every track as is.
+- **Subtitles, title, date, chapters**: an `.mkv` copies every subtitle track; `.mp4` and `.mov` take the text
+  ones as MP4 text and leave picture ones (PGS, DVD) out. The file's title, creation date, comment and chapters
+  are copied; a saved start keeps the chapters it reaches.
 - **Colour**: YUV is decoded with the file's own matrix, or BT.709 for untagged HD as players assume, and the
   output is encoded with BT.709 and tagged. Earlier outputs were BT.601 and untagged, which players showed
   with saturated colours off by up to 35 levels; the round trip is now within 2 levels.

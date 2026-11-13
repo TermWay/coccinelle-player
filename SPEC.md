@@ -166,6 +166,9 @@ has none of those; the tool substitutes, as the quality lab (§14) settled:
   ASS, WebVTT...) are converted to it, losing their styling, and picture subtitles (PGS from Blu-ray, DVD, DVB)
   are left out, which the Output note and the command line's log say. Any other container gets none. They end
   with the video when only its start is saved. Data streams are dropped.
+- File metadata: the source's title, creation date, comment and other file tags are copied (MP4 and MOV keep the
+  ones they hold), and its chapters, up to the end of what is saved. The source container's own tags (MP4
+  brands) are not.
 - Images: the format follows the output's suffix; every input image format can be written. PNG, TIFF and WebP
   keep the source's transparency, scaled up; JPEG is written at quality 2 (ffmpeg's scale) and WebP at 95.
 

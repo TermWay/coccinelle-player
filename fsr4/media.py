@@ -73,6 +73,9 @@ COPY_ANY_AUDIO_SUFFIXES = frozenset({".mkv"})
 MP4_SUFFIXES = frozenset({".mp4", ".m4v", ".mov"})
 TEXT_SUBTITLES = frozenset({"subrip", "srt", "ass", "ssa", "webvtt", "mov_text", "text", "microdvd", "subviewer",
                             "subviewer1", "sami", "realtext", "jacosub", "mpl2", "pjs", "stl", "vplayer"})
+# Tags that describe the source's container, not the film: the MP4 muxer writes its own, Matroska would keep
+# an MP4's as meaningless tags. They are cleared when the source's metadata is copied.
+CONTAINER_TAGS = ("major_brand", "minor_version", "compatible_brands")
 AAC_KBPS_PER_CHANNEL = 96
 HD_HEIGHT = 720
 # Pixel shapes seen in real video run from 8:9 (4:3 NTSC DVD) to 2:1; outside this the tag is broken.
@@ -847,12 +850,13 @@ def describe_subtitles(subtitles: list[SubtitleStream], output: Path) -> list[st
 
 def source_arguments(source: Path | None, audio: list[AudioStream], subtitles: list[SubtitleStream],
                      output: Path) -> list[str]:
-    """The source as input 1 with its audio and subtitle tracks mapped for `output` (the video is input 0's);
-    nothing when there is no track to take from it."""
-    tracks = audio_arguments(audio, output) + subtitle_arguments(subtitles, output)
-    if source is None or not tracks:
+    """The source as input 1 with its audio and subtitle tracks mapped for `output` (the video is input 0's), and
+    its file metadata (title, creation date...) and chapters; nothing without a source."""
+    if source is None:
         return []
-    return ["-i", file_argument(source), "-map", "0:v:0"] + tracks
+    cleared = [argument for tag in CONTAINER_TAGS for argument in ("-metadata", f"{tag}=")]
+    return (["-i", file_argument(source), "-map", "0:v:0"] + audio_arguments(audio, output)
+            + subtitle_arguments(subtitles, output) + ["-map_metadata", "1", "-map_chapters", "1"] + cleared)
 
 
 def color_arguments(height: int, first_filter: str | None = None) -> list[str]:
@@ -977,7 +981,7 @@ def join_pieces(pieces: list[Path], output: Path, encoder: str, audio_source: Pa
                 audio: list[AudioStream], seconds: float | None = None,
                 subtitles: list[SubtitleStream] | None = None) -> None:
     """Join separately encoded pieces of one stream into `output` without re-encoding, adding the source's
-    audio and subtitles from its start (cut to `seconds` when the pieces cover only the beginning). Written
+    audio, subtitles, metadata and chapters from its start (cut to `seconds` when the pieces cover only the beginning). Written
     through `partial_path(output)`, so a failed join leaves an existing `output` untouched."""
     if not pieces:
         raise ValueError("nothing to join")

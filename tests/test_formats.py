@@ -214,6 +214,57 @@ class FormatTest(unittest.TestCase):
         durations = [float(stream["duration"]) for stream in probe_streams(output) if "duration" in stream]
         self.assertLessEqual(max(durations, default=0), 12 / RATE + 0.05, "every track ends with the video")
 
+    def titled_sample(self) -> Path:
+        """An MP4 as a phone or an editor writes it: a title, a creation date, a comment and three chapters."""
+        metadata = self.root / "metadata.txt"
+        metadata.write_text(";FFMETADATA1\ntitle=Holiday\ncreation_time=2024-07-14T18:30:00.000000Z\ncomment=Beach\n"
+                            + "".join(f"[CHAPTER]\nTIMEBASE=1/1000\nSTART={start}\nEND={start + 700}\ntitle=Part {n}\n"
+                                      for n, start in enumerate((0, 700, 1400), 1)), encoding="utf-8")
+        source = self.root / "titled.mp4"
+        ffmpeg(*video_source(), *audio_source(), "-i", str(metadata), "-t", str(FRAMES / RATE), "-map", "0:v",
+               "-map", "1:a", "-map_metadata", "2", "-map_chapters", "2", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+               "-c:a", "aac", str(source))
+        return source
+
+    def tags_and_chapters(self, path: Path) -> tuple[dict, list[tuple[str, float]]]:
+        completed = subprocess.run([media.tool_path("ffprobe"), "-v", "error", "-show_entries", "format_tags",
+                                    "-show_chapters", "-of", "json", str(path)], capture_output=True, text=True,
+                                   check=True)
+        data = json.loads(completed.stdout)
+        tags = {key.lower(): value for key, value in data.get("format", {}).get("tags", {}).items()}
+        return tags, [(chapter["tags"]["title"], round(float(chapter["start_time"]), 2))
+                      for chapter in data.get("chapters", [])]
+
+    def test_title_date_and_chapters_are_kept(self):
+        source = self.titled_sample()
+        info = media.probe(source)
+        frames = [frame.copy() for frame in media.FrameReader(source, info)]
+        chapters = [("Part 1", 0.0), ("Part 2", 0.7), ("Part 3", 1.4)]
+        for name in ("out.mp4", "out.mkv"):
+            output = self.root / name
+            writer = media.FrameWriter(output, info.width, info.height, info.frame_rate, "x264", audio_source=source,
+                                       audio=info.audio)
+            for frame in frames:
+                writer.write(frame)
+            writer.close()
+            tags, kept = self.tags_and_chapters(output)
+            self.assertEqual((tags.get("title"), tags.get("comment"), kept), ("Holiday", "Beach", chapters), name)
+            self.assertTrue(tags.get("creation_time", "").startswith("2024-07-14T18:30:00"), (name, tags))
+        self.assertNotIn("major_brand", self.tags_and_chapters(self.root / "out.mkv")[0], "the MP4's own tags stay out")
+
+    def test_joined_pieces_keep_the_chapters_they_reach(self):
+        source = self.titled_sample()
+        info = media.probe(source)
+        piece = self.root / "piece.mp4"
+        writer = media.FrameWriter(piece, info.width, info.height, info.frame_rate, "x264")
+        for frame in media.FrameReader(source, info, max_frames=10):
+            writer.write(frame)
+        writer.close()
+        output = self.root / "joined.mp4"
+        media.join_pieces([piece], output, "x264", source, info.audio, 10 / RATE)
+        tags, kept = self.tags_and_chapters(output)
+        self.assertEqual((tags.get("title"), kept), ("Holiday", [("Part 1", 0.0), ("Part 2", 0.7)]))
+
     def test_ogg_with_vorbis_audio(self):
         source = self.root / "sample.ogg"
         ffmpeg(*video_source(), *audio_source(), "-t", str(FRAMES / RATE), *OGG_VIDEO, "-c:a", "libvorbis",
@@ -475,8 +526,11 @@ class ArgumentTest(unittest.TestCase):
                          ["subtitle track 1: hdmv_pgs_subtitle cannot go in .mp4, left out (.mkv keeps it)",
                           "subtitle track 2: subrip (fre), converted to MP4 text (its styling is lost)",
                           "subtitle track 3: mov_text, copied"])
-        self.assertEqual(media.source_arguments(Path("in.mkv"), [], tracks[:1], Path("out.mp4")), [],
-                         "no input is added when nothing is taken from it")
+        self.assertEqual(media.source_arguments(Path("in.mkv"), [], tracks[:1], Path("out.mp4"))[2:],
+                         ["-map", "0:v:0", "-map_metadata", "1", "-map_chapters", "1", "-metadata", "major_brand=",
+                          "-metadata", "minor_version=", "-metadata", "compatible_brands="],
+                         "with no track to take, the source still gives its title, date and chapters")
+        self.assertEqual(media.source_arguments(None, [], tracks, Path("out.mkv")), [])
 
     def test_frame_rate_guess(self):
         from fractions import Fraction
