@@ -142,7 +142,7 @@ the folder that receives `fsr4\` and PyInstaller's work folder.
 
 Scale is 1x to 3x (FSR's limit); the modes are native 1x, quality 1.5x, balanced 1.7x, performance 2x,
 ultra 3x. `--sharpness 0..1` enables FSR's RCAS pass (with `--upscaler hq`, the HQ scaler's own). Video encoders: `amf` (HEVC on the GPU, default),
-`av1_amf`, `h264_amf`, `x264`, `x265`. `--upscaler 3.1` or `2.3` uses AMD's older upscalers instead of FSR 4,
+`av1_amf`, `h264_amf`, `x264`, `x265`; the GPU ones need an AMD card, and without one the default is `x264`. `--upscaler 3.1` or `2.3` uses AMD's older upscalers instead of FSR 4,
 `--upscaler hq` AMD's HQ scaler (ffmpeg 8.0 or later): faster, no motion vectors, each frame on its own.
 `--upscaler realesrgan` Real-ESRGAN (installed apart, see Requirements): it redraws each frame, about 10 times slower
 than FSR 4, with no motion vectors and no sharpening. `--upscaler realesrgan-x4plus` (general) and

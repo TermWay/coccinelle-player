@@ -155,6 +155,11 @@ has none of those; the tool substitutes, as the quality lab (§14) settled:
 
   The GPU encoders' limits are checked before any work starts ("<encoder> encodes from a × b to c × d; W × H
   needs another encoder or another size").
+- The GPU encoders need an AMD card and its driver (AMF). Each is tried once on one small frame before a video is
+  encoded (about half a second, all at once). On a machine where HEVC on the GPU cannot run (an NVIDIA or Intel
+  card), the default becomes `x264`, logged; a GPU encoder asked for by name is refused before any work ("HEVC on
+  the GPU cannot run on this machine (<ffmpeg's first error line>); choose x264 or x265"). The window leaves the
+  encoders that cannot run out of its list (§9).
 - Audio: every track is kept. AAC, MP3, AC-3, E-AC-3 and ALAC are copied into an MP4; the rest (WMA, PCM, Vorbis,
   Opus, FLAC, MP2...) become AAC at 96 kb/s per channel (at least two). An MKV copies every track as is.
 - Subtitles: an MKV copies every track as is. An MP4 or MOV holds only its own text format: text subtitles (SRT,
@@ -188,7 +193,7 @@ has none of those; the tool substitutes, as the quality lab (§14) settled:
 | `--flow-preset ultrafast\|fast\|medium` | `fast` | flow quality |
 | `--flow-scale N` | 1 | compute the flow at 1/N of the size |
 | `--sharpness S` | off | sharpening strength, 0 to 1 (§4) |
-| `--codec` | `amf` | §6 |
+| `--codec` | `amf`, or `x264` when the GPU cannot encode | §6 |
 | `--upscaler 4\|3.1\|2.3\|hq\|realesrgan\|realesrgan-x4plus\|realesrgan-x4plus-anime` | 4 | §4; `hq` and the `realesrgan` ones ignore the `--flow` options; the last two are for images |
 | `--frames N` | all | stop after N frames (audio cut to match) |
 | `--gpu I`, `--sdk FOLDER` | automatic, `bin\` | device index; folder holding both FSR DLLs |
@@ -293,7 +298,9 @@ has none of those; the tool substitutes, as the quality lab (§14) settled:
    the output path (§6; tooltip: .mp4 plays everywhere, .mkv keeps every audio and subtitle track), "…" for a
    Save-as dialog (MP4, Matroska, QuickTime; PNG, JPEG, WebP for images), the encoder ("HEVC · GPU (AMF)"
    default, "AV1 · GPU (AMF)", "H.264 · GPU (AMF)", "H.264 · CPU (x264)", "HEVC · CPU (x265)") with a note on
-   size, speed and the devices that play it, and what happens to the audio ("Audio: AAC copied as is; WMA
+   size, speed and the devices that play it (§6: the GPU encoders that cannot run here are left out; with none,
+   "H.264 · CPU (x264)" is chosen and the note starts "The graphics card cannot encode video here (AMF needs an AMD
+   card and its driver), so the processor does."; the upscale waits the half second for that answer), and what happens to the audio ("Audio: AAC copied as is; WMA
    converted to AAC (.mp4 cannot hold it)." or "No audio in this file.") and to the subtitles ("Subtitles: SRT
    converted to MP4 text; PGS left out (.mp4 cannot hold it; .mkv keeps every kind)."). Images disable the
    encoder.

@@ -50,6 +50,10 @@ ENCODERS = {
     "png": ["-c:v", "png"],
 }
 GPU_ENCODERS = frozenset({"amf", "h264_amf", "av1_amf"})
+DEFAULT_ENCODER = "amf"
+FALLBACK_ENCODER = "x264"  # when the GPU cannot encode: plays everywhere, and fast enough not to hold FSR back
+TRIAL_FRAME = (512, 288)  # inside every GPU encoder's limits
+TRIAL_TIMEOUT_SECONDS = 20
 # Smallest and largest frame (width, height) each GPU encoder accepts on a Radeon RX 9000 (measured; outside
 # them the encoder fails to start).
 ENCODER_LIMITS = {"amf": ((384, 128), (8192, 4352)), "av1_amf": ((320, 128), (8192, 4352)),
@@ -83,9 +87,12 @@ SEEK_ATTEMPTS = 3
 FIRST_FRAME_TIMEOUT = 20.0
 LAST_FRAME_SEARCH_SECONDS = 2.0
 _CREATE_NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+_CONTEXT_PREFIX = re.compile(r"^(?:\[[^\]]*@ [0-9a-fA-Fx]+\]\s*)+")  # "[hevc_amf @ 0x...] [Eval @ 0x...] "
 _SHOWINFO_TIME = re.compile(r"Parsed_showinfo.*\bn:\s*0\b.*\bpts_time:\s*(-?[\d.]+)")
 _decode_errors_reported: set[Path] = set()
 _conversions_reported: set[Path] = set()
+_encoder_results: dict[str, str | None] = {}  # GPU encoder -> why it cannot run here, None when it can
+_encoder_lock = threading.Lock()
 # ffmpeg logs a decoder's messages under the decoder's name: the codec's name except for these.
 DECODER_NAMES = {"av1": "libdav1d"}
 # HDR transfers by ffprobe's name, with the name people know them by. Such video is tone-mapped to SDR BT.709 as
@@ -127,6 +134,48 @@ def ffmpeg_filters() -> frozenset[str]:
         if len(parts) >= 3 and "->" in parts[2]:
             names.add(parts[1])
     return frozenset(names)
+
+
+def encoder_problems(codecs: list[str]) -> dict[str, str]:
+    """Why each GPU encoder of `codecs` cannot encode on this machine, keyed by codec; the ones that can are left
+    out. AMF needs an AMD card and its driver, so each is tried once on one small frame (all at once, about half a
+    second) and the answer kept; the CPU encoders are not tried. Threads asking at once wait for one trial."""
+    with _encoder_lock:
+        trials = {codec: subprocess.Popen(
+            [tool_path("ffmpeg"), "-hide_banner", "-nostdin", "-v", "error", "-f", "lavfi",
+             "-i", f"color=s={TRIAL_FRAME[0]}x{TRIAL_FRAME[1]}:r=30", "-frames:v", "1", *ENCODERS[codec],
+             "-f", "null", "-"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
+            creationflags=_CREATE_NO_WINDOW)
+            for codec in dict.fromkeys(codecs) if codec in GPU_ENCODERS and codec not in _encoder_results}
+        for codec, trial in trials.items():
+            try:
+                _, stderr = trial.communicate(timeout=TRIAL_TIMEOUT_SECONDS)
+                problem = None if trial.returncode == 0 else first_error_line(stderr)
+            except subprocess.TimeoutExpired:
+                trial.kill()
+                trial.communicate()
+                problem = f"no answer in {TRIAL_TIMEOUT_SECONDS} s"
+            _encoder_results[codec] = problem
+            if problem is not None:
+                log.emit(f"[media] {ENCODER_NAMES[codec]} cannot run on this machine: {problem}")
+        return {codec: _encoder_results[codec] for codec in codecs if _encoder_results.get(codec) is not None}
+
+
+def default_encoder() -> str:
+    """HEVC on the GPU, or x264 when the GPU cannot encode it here (an NVIDIA or Intel card: AMF is AMD's)."""
+    if not encoder_problems([DEFAULT_ENCODER]):
+        return DEFAULT_ENCODER
+    log.emit(f"[media] the video is encoded with {ENCODER_NAMES[FALLBACK_ENCODER]} on the processor instead")
+    return FALLBACK_ENCODER
+
+
+def first_error_line(stderr: str) -> str:
+    """ffmpeg's first error line without its '[encoder @ 0x...]' prefix: the cause, where the last is the outcome."""
+    lines = [line.strip() for line in stderr.splitlines() if line.strip()]
+    if not lines:
+        return "no error message"
+    return _CONTEXT_PREFIX.sub("", lines[0])
 
 
 @functools.cache
@@ -310,7 +359,7 @@ def ffmpeg_reason(stderr: str, path: Path | None = None) -> str:
     lines = [line.strip() for line in stderr.splitlines() if line.strip()]
     if not lines:
         return "no error message"
-    reason = re.sub(r"^\[[^\]]*@ [0-9a-fA-Fx]+\]\s*", "", lines[-1])
+    reason = _CONTEXT_PREFIX.sub("", lines[-1])
     if path is not None:
         reason = reason.replace(f"{file_argument(path)}: ", "").replace(f"{path}: ", "")
     return reason

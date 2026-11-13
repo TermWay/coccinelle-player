@@ -829,6 +829,21 @@ def main() -> int:
         choose("right", "preset:FSR 4")
         yield lambda: side_ready("right")
         check(True, "choosing a preset starts the upscaler")
+        # A card without AMF (NVIDIA, Intel): the GPU encoders leave the list and the processor encodes.
+        app._on_encoders({codec: "DLL amfrt64.dll failed to open" for codec in media.GPU_ENCODERS})
+        labels = list(root.tk.splitlist(app.encoder_choice.cget("values")))
+        check(labels == [choice[0] for choice in ui.ENCODER_CHOICES if choice[1] not in media.GPU_ENCODERS]
+              and app.encoder_choice.get() == "H.264 · CPU (x264)" and app._render_settings().encoder == "x264"
+              and app.encoder_note.cget("text").startswith(ui.NO_GPU_ENCODER_NOTE),
+              f"without AMF the GPU encoders leave the list and x264 encodes ({labels}, {app.encoder_choice.get()!r})")
+        yield ui.SETTINGS_DELAY_MS / 1000 + 0.2
+        yield lambda: side_ready("right")
+        check(True, "the upscale goes on with x264")
+        shot("11a_no_gpu_encoder")
+        app.encoder_problems, app.encoder_choices = {}, list(ui.ENCODER_CHOICES)
+        app.encoder_choice.configure(values=[choice[0] for choice in ui.ENCODER_CHOICES])
+        app.encoder_choice.current(0)
+        app._settings_changed()
         app.upscale_on_open_switch.invoke()
         minimum_width, minimum_height = root.minsize()
         root.geometry(f"{minimum_width}x{minimum_height}")

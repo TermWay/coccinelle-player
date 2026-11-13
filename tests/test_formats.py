@@ -511,5 +511,54 @@ class ArgumentTest(unittest.TestCase):
         self.assertTrue(np.all([suffix.startswith(".") for suffix in media.VIDEO_SUFFIXES]))
 
 
+@unittest.skipUnless(needs.HAS_FFMPEG, "ffmpeg is not installed")
+class EncoderTrialTest(unittest.TestCase):
+    """GPU encoders are tried once before use: on a card without AMF the default falls back to x264, and a GPU
+    encoder asked for by name is refused with ffmpeg's reason, not its raw failure halfway through."""
+
+    def setUp(self):
+        # Each test tries its own encoders; the module's answers for this machine are left as they were.
+        patcher = mock.patch.object(media, "_encoder_results", {})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.lines = []
+        log.set_sink(self.lines.append)
+        self.addCleanup(log.set_sink, None)
+
+    def broken_amf(self):
+        """AMF as on an NVIDIA card: an encoder ffmpeg cannot open."""
+        return mock.patch.dict(media.ENCODERS, {"amf": ["-c:v", "hevc_amf", "-usage", "no_such_usage"]})
+
+    def test_cpu_encoders_are_not_tried(self):
+        self.assertEqual(media.encoder_problems(["x264", "x265", "png"]), {})
+        self.assertEqual(media._encoder_results, {})
+
+    def test_broken_gpu_encoder_falls_back_to_x264(self):
+        with self.broken_amf():
+            problems = media.encoder_problems(["amf", "x264", "amf"])
+            self.assertEqual(list(problems), ["amf"])
+            self.assertIn("Undefined constant or missing '(' in 'no_such_usage'", problems["amf"])
+            self.assertFalse(problems["amf"].startswith("["), problems["amf"])
+            self.assertEqual(media.default_encoder(), "x264")
+        self.assertTrue(any("HEVC on the GPU cannot run on this machine" in line for line in self.lines), self.lines)
+        self.assertTrue(any("encoded with x264" in line for line in self.lines), self.lines)
+
+    def test_job_refuses_a_gpu_encoder_that_cannot_run(self):
+        from fsr4.job import JobOptions, plan
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder) / "clip.mp4"
+            ffmpeg("-f", "lavfi", "-i", "testsrc2=s=320x180:r=10:d=0.5", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                   str(source))
+            with self.broken_amf(), self.assertRaisesRegex(ValueError, "HEVC on the GPU cannot run on this machine"):
+                plan(JobOptions(input=source, output=Path(folder) / "out.mp4", codec="amf"))
+            self.assertEqual(plan(JobOptions(input=source, output=Path(folder) / "out.mp4", codec="x264"))
+                             .output_size, (640, 360))
+
+    def test_first_error_line(self):
+        self.assertEqual(media.first_error_line("[hevc_amf @ 000001] [AVHWDeviceContext @ 0x2a] DLL amfrt64.dll failed to open\nError\n"),
+                         "DLL amfrt64.dll failed to open")
+        self.assertEqual(media.first_error_line("\n"), "no error message")
+
+
 if __name__ == "__main__":
     unittest.main()

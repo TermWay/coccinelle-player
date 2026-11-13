@@ -16,8 +16,8 @@ from . import log, temporary
 from .ffx import QUALITY_MODE_SCALES, find_sdk_dir
 from .flow import create_flow
 from .hq_scaler import HQ_SCALER, MIN_SIZE as HQ_MIN_SIZE
-from .media import (ENCODER_LIMITS, ENCODER_NAMES, FrameReader, FrameWriter, MediaInfo, describe_audio,
-                    describe_subtitles, is_image, partial_path, probe, read_image, write_image)
+from .media import (ENCODER_LIMITS, ENCODER_NAMES, FALLBACK_ENCODER, FrameReader, FrameWriter, MediaInfo, describe_audio,
+                    describe_subtitles, encoder_problems, is_image, partial_path, probe, read_image, write_image)
 from .pipeline import upscale_stream
 from .realesrgan import MODELS, STILL_ONLY, STILL_ONLY_NOTE, Stopped, find_program, not_installed
 from .upscalers import EXTERNAL_UPSCALERS, create_pipeline
@@ -195,7 +195,12 @@ def plan(options: JobOptions) -> JobPlan:
     """Probe the input and resolve the output path and sizes; raises ValueError for bad inputs."""
     if not options.input.is_file():
         raise ValueError(f"input not found: {options.input}")
-    return plan_from_info(options, probe(options.input))
+    job = plan_from_info(options, probe(options.input))
+    problem = None if job.image_mode else encoder_problems([options.codec]).get(options.codec)
+    if problem is not None:
+        raise ValueError(f"{ENCODER_NAMES[options.codec]} cannot run on this machine ({problem}); choose "
+                         f"{FALLBACK_ENCODER} or x265")
+    return job
 
 
 def run_job(options: JobOptions, progress: ProgressCallback | None = None,

@@ -39,8 +39,8 @@ from .ffx import find_sdk_dir
 from .image_preview import ImagePreviewer
 from .realesrgan import STILL_ONLY
 from .job import JobOptions, JobPlan, JobResult, default_output, plan_from_info, run_job
-from .media import (COPY_ANY_AUDIO_SUFFIXES, IMAGE_SUFFIXES, MP4_AUDIO_COPY, VIDEO_SUFFIXES, KeyframeIndex, MediaInfo,
-                    ffmpeg_version, is_image, probe, read_frame, read_thumbnail, subtitle_codec)
+from .media import (COPY_ANY_AUDIO_SUFFIXES, FALLBACK_ENCODER, GPU_ENCODERS, IMAGE_SUFFIXES, MP4_AUDIO_COPY, VIDEO_SUFFIXES, KeyframeIndex, MediaInfo,
+                    encoder_problems, ffmpeg_version, is_image, probe, read_frame, read_thumbnail, subtitle_codec)
 from .player import Player
 from .preferences import PreferenceStore
 from .presets import BEST, OFF_LABEL, SOURCE_LABELS, Preset, PresetStore
@@ -107,6 +107,8 @@ ENCODER_CHOICES = [
     ("HEVC · CPU (x265)", "x265",
      "Small files from the processor, but the slowest choice: at 4K it can hold the upscale back."),
 ]
+NO_GPU_ENCODER_NOTE = ("The graphics card cannot encode video here (AMF needs an AMD card and its driver), so the "
+                       "processor does.")
 FILTER_HELP = {"nearest": "every source pixel as a block, exactly what the file holds",
                "linear": "smooth, what most players do", "cubic": "a little sharper, the usual photo editor filter",
                "lanczos": "the sharpest classic filter (mpv, madVR)"}
@@ -266,6 +268,9 @@ class App:
         self.render_position: int | None = None
         self.render_speed = 0.0
         self.gpu_ready: bool | None = None
+        # The GPU encoders that cannot run here, None until tried: the renderer waits for the answer.
+        self.encoder_problems: dict[str, str] | None = None
+        self.encoder_choices = list(ENCODER_CHOICES)  # without the encoders that cannot run here
         self.fsr4_missing: str | None = None  # why the card cannot run FSR 4, when the probe found so
         self.log_visible = False
         self.sidebar_visible = True
@@ -313,6 +318,7 @@ class App:
         root.after(POLL_MS, self._poll)
         self._show_machine()
         threading.Thread(target=self._probe_gpu, daemon=True).start()
+        threading.Thread(target=self._probe_encoders, daemon=True).start()
         threading.Thread(target=self._clean_temp, daemon=True).start()
         self._refresh()
         if self.presets.load_error is not None:
@@ -887,7 +893,7 @@ class App:
         return JobOptions(
             input=self.input_path, output=Path(output) if output else None, scale=self._scale_for(self.size_var.get()),
             flow=how.flow, flow_preset=how.flow_preset, sharpness=how.sharpness,
-            codec=ENCODER_CHOICES[self.encoder_choice.current()][1],
+            codec=self.encoder_choices[self.encoder_choice.current()][1],
             upscaler=how.upscaler)
 
     def _side_how(self, side: str) -> Preset | None:
@@ -1024,7 +1030,7 @@ class App:
             self.custom_row.grid_remove()
         self.custom_label.configure(text=f"{self.custom_scale.get():.2f}×")
         self._set_state(self.encoder_choice, idle and not image)
-        self.encoder_note.configure(text="" if image else ENCODER_CHOICES[self.encoder_choice.current()][2])
+        self.encoder_note.configure(text="" if image else self._encoder_note())
         saved = self._saved_side()
         for side, block in self.side_blocks.items():
             match = self.presets.matching(self._how_settings(side))
@@ -1417,8 +1423,8 @@ class App:
 
     def _start_renderer(self, settings: RenderSettings) -> None:
         """Start upscaling the open video with `settings` (valid ones), unless FSR 4 cannot start here."""
-        if self.gpu_ready is False:
-            return
+        if self.gpu_ready is False or (self.encoder_problems is None and settings.encoder in GPU_ENCODERS):
+            return  # _on_encoders starts it once the GPU encoders are known
         sdk_dir = self._sdk_dir()
         if sdk_dir is not None:
             self._use_output_folder()
@@ -1916,6 +1922,34 @@ class App:
         fsr = f"FSR {version}" if fsr4_missing is None else "no FSR 4"
         log.emit(f"[ui] {details}")
         self.queue.put(("gpu", True, f"{name.replace('AMD ', '')}|{fsr}", video_memory, fsr4_missing, details))
+
+    def _probe_encoders(self) -> None:
+        """Try the GPU encoders once (AMF needs an AMD card and its driver), off the Tk thread."""
+        try:
+            problems = encoder_problems([choice[1] for choice in ENCODER_CHOICES])
+        except Exception as error:  # noqa: BLE001 - logged; saving then reports the encoder's own error
+            log.emit(f"[ui] error: the GPU encoders could not be tried: {error}")
+            problems = {}
+        self.queue.put(("encoders", problems))
+
+    def _on_encoders(self, problems: dict[str, str]) -> None:
+        """Take the encoders that cannot run here out of the list (falling back to x264), then start the upscale
+        that waited for them."""
+        self.encoder_problems = problems
+        if problems:
+            chosen = self.encoder_choices[self.encoder_choice.current()][1]
+            self.encoder_choices = [choice for choice in ENCODER_CHOICES if choice[1] not in problems]
+            codecs = [choice[1] for choice in self.encoder_choices]
+            self.encoder_choice.configure(values=[choice[0] for choice in self.encoder_choices])
+            self.encoder_choice.current(codecs.index(chosen if chosen in codecs else FALLBACK_ENCODER))
+        self._settings_changed()
+
+    def _encoder_note(self) -> str:
+        """The chosen encoder's note, after why the GPU ones are missing when they are."""
+        note = self.encoder_choices[self.encoder_choice.current()][2]
+        if self.encoder_problems and not any(choice[1] in GPU_ENCODERS for choice in self.encoder_choices):
+            return f"{NO_GPU_ENCODER_NOTE} {note}"
+        return note
 
     @staticmethod
     def _driver_text(card: str) -> str:

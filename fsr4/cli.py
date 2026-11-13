@@ -11,7 +11,7 @@ from .flow import FLOW_METHODS
 from .hq_scaler import FIRST_FFMPEG, HQ_SCALER
 from .realesrgan import REAL_ESRGAN, REAL_ESRGAN_ANIME, REAL_ESRGAN_X4PLUS
 from .job import JobOptions, run_job
-from .media import ENCODERS
+from .media import DEFAULT_ENCODER, ENCODERS, default_encoder, is_image
 
 
 UPSCALERS = {"4": None, "3.1": "3.1.6", "2.3": "2.3.4", "hq": HQ_SCALER, "realesrgan": REAL_ESRGAN,
@@ -49,8 +49,9 @@ def build_parser() -> argparse.ArgumentParser:
     upscale.add_argument("--flow-scale", type=int, default=1,
                          help="compute optical flow at 1/N resolution (default: 1)")
     upscale.add_argument("--sharpness", type=float, help="RCAS sharpening 0..1 (default: off)")
-    upscale.add_argument("--codec", choices=sorted(ENCODERS), default="amf",
-                         help="video encoder: amf (HEVC on the GPU), av1_amf, h264_amf, x264, x265 (default: amf)")
+    upscale.add_argument("--codec", choices=sorted(ENCODERS),
+                         help="video encoder: amf (HEVC on the GPU), av1_amf, h264_amf, x264, x265 (default: amf, "
+                              "or x264 when the graphics card cannot encode with AMF)")
     upscale.add_argument("--upscaler", choices=sorted(UPSCALERS), default="4",
                          help="4 (FSR 4, default), 3.1 or 2.3 (from the same DLL, to compare), hq (AMD's HQ "
                               f"scaler, through ffmpeg {FIRST_FFMPEG} or later; it takes no motion vectors), or "
@@ -95,10 +96,11 @@ def run_info(args) -> int:
 
 
 def run_upscale(args) -> int:
+    codec = args.codec or (DEFAULT_ENCODER if is_image(args.input) else default_encoder())
     options = JobOptions(
         input=args.input, output=args.output, mode=args.mode, scale=args.scale, width=args.width,
         height=args.height, flow=args.flow, flow_preset=args.flow_preset, flow_scale=args.flow_scale,
-        sharpness=args.sharpness, codec=args.codec, upscaler=UPSCALERS[args.upscaler], frames=args.frames,
+        sharpness=args.sharpness, codec=codec, upscaler=UPSCALERS[args.upscaler], frames=args.frames,
         debug_view=args.debug_view,
         debug_checking=args.debug_checking, validate=args.validate, gpu=args.gpu, sdk=args.sdk,
         verbose=not args.quiet)
