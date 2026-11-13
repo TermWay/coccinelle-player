@@ -1,3 +1,5 @@
 * text=auto
 # cmd.exe misreads labels and goto in batch files with bare LF line ends, whatever the clone's settings.
 *.bat text eol=crlf
+# AMD's license is checked against a pinned SHA-256 (tools/fetch_sdk.py): it must keep its LF line ends.
+bin/license.md -text
