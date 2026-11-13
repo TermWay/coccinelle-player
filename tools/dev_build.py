@@ -29,7 +29,7 @@ STAGING = STAGING_ROOT / "fsr4"
 WORK = ROOT / "out" / "dev-build-work"  # PyInstaller's own, apart from build_exe.bat's default `build`
 EXECUTABLE = "Coccinelle Player.exe"
 # What the build is made from or holds: a newer one makes the build out of date.
-INPUT_FOLDERS = ["fsr4", "third_party"]
+INPUT_FOLDERS = ["fsr4", "third_party", "docs"]
 INPUT_FILES = ["run_fsr4.py", "fsr4.spec", "build_exe.bat", "requirements.txt", "README.md", "LICENSE",
                "tools/collect_licenses.py", "bin/amd_fidelityfx_loader_vk.dll", "bin/amd_fidelityfx_upscaler_vk.dll",
                "bin/license.md"]

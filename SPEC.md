@@ -2,8 +2,8 @@
 
 What the tool must do, written as requirements. The tool was built from a series of requests; this file states
 where all of them led, so that a developer or a coding agent given it builds the same tool. Figures marked
-*measured* come from the reference machine (§2) and are targets to meet. README.md is the user's guide and
-CLAUDE.md the design notes for working on the code.
+*measured* come from the reference machine (§2) and are targets to meet. README.md and the pages in `docs/` are
+the user's guide and CLAUDE.md the design notes for working on the code.
 
 ## 1. Goal
 - Upscale a video or an image with AMD FSR Upscaling 4, the machine-learning upscaler AMD makes for games on
@@ -546,8 +546,8 @@ is its own version (§10).
 ## 12. Packaging
 - `build_exe.bat [output folder] [work folder]` (default `dist` and `build`) checks the FSR DLLs against their
   pinned hashes (downloading them if that fails), builds with PyInstaller from `fsr4.spec`, writes the
-  third-party notices, and copies the FSR DLLs with AMD's license into `bin\`, the README, and the license as
-  `LICENSE.txt`. Any failure prints one line, pauses and exits 1. It ends by reminding that ffmpeg and ffprobe
+  third-party notices, and copies the FSR DLLs with AMD's license into `bin\`, the README with the `docs\` folder
+  its links point to, and the license as `LICENSE.txt`. Any failure prints one line, pauses and exits 1. It ends by reminding that ffmpeg and ffprobe
   must be on PATH or next to the executables.
 - `dist\fsr4\` holds `Coccinelle Player.exe` (the window, no console) and `fsr4.exe` (the command line), built from
   one entry script: no arguments, or one existing file, opens the window (`fsr4.exe` then hides its console when
@@ -565,13 +565,13 @@ is its own version (§10).
 - `start.bat` opens the window, with a file dropped on it: the built executable when there is one, else Python
   after checking the DLLs (downloading them if needed). With Python there, it first runs `tools/dev_build.py`
   so it never opens a build older than the sources: when a build input (the package, the spec, the build
-  script, the DLLs, the README, the licenses, the requirements) is newer than `dist\fsr4\`, it builds into
+  script, the DLLs, the README and `docs\`, the licenses, the requirements) is newer than `dist\fsr4\`, it builds into
   `out\dev-build\` with `build_exe.bat` and puts that in place of `dist\fsr4\` when no program runs from there.
   A build that must wait for such a program stays in `out\dev-build\` for the next run, and meanwhile, or when
   the build fails, the window opens from the sources. `upscale.bat` upscales every file dropped on it with the
   defaults (2x, HEVC on the GPU, optical flow fast), with no questions, says when one failed, and pauses. Windows
   hands it a dropped name without quotes when it has no space, so names holding `&`, `^`, `,`, `;` or `=` are
-  cut: the README says so.
+  cut: `docs/command-line.md` says so.
 - The executables are not code-signed: every release publishes the SHA-256 of what it ships.
 
 ## 13. License and credits
@@ -581,7 +581,13 @@ is its own version (§10).
   OpenCV with the libraries they bundle. ffmpeg is not included.
 - The tool is not affiliated with AMD: the README says so with the trademarks, as do the window title's tooltip
   and the version resource.
-- The README credits Claude (Anthropic's AI model) as the author, directed and tested by TermWay.
+- The README credits Claude (Anthropic's AI model) as the author, directed and tested by TermWay, and says so
+  near its top in a warning box: written by an AI, tested by a human, on one machine.
+- The README is the first-run guide: what the tool is, an animation of the window sweeping its divider between
+  the bicubic source and FSR 4 (`docs/demo.webp`, recorded with `tools/ui_record.py` from clips that may be
+  published, credited in the README), how to get started, the requirements, the window's essentials, a few
+  commands, a summary of the measurements and the limits. The rest is in `docs/`, one page each: the window,
+  the command line, files, how it works, measurements, development.
 
 ## 14. Acceptance checks
 - `python -m unittest discover -s tests` passes. The tests pin the Vulkan and FSR structure layouts, the flow's

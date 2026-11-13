@@ -43,7 +43,7 @@ VIDEO_SUFFIXES = (".mp4", ".m4v", ".mov", ".mkv", ".webm", ".avi", ".wmv", ".asf
 ENCODERS = {
     "amf": ["-c:v", "hevc_amf", "-quality", "quality", "-rc", "cqp", "-qp_i", "18", "-qp_p", "20", "-tag:v", "hvc1"],
     "h264_amf": ["-c:v", "h264_amf", "-quality", "quality", "-rc", "cqp", "-qp_i", "18", "-qp_p", "20"],
-    # AV1 quantizers run 0-255: 40/48 gives the same PSNR as the HEVC settings with smaller files (README).
+    # AV1 quantizers run 0-255: 40/48 gives the same PSNR as the HEVC settings with smaller files (docs/measurements.md).
     "av1_amf": ["-c:v", "av1_amf", "-quality", "quality", "-rc", "cqp", "-qp_i", "40", "-qp_p", "48"],
     "x264": ["-c:v", "libx264", "-crf", "17", "-preset", "medium"],
     "x265": ["-c:v", "libx265", "-crf", "18", "-preset", "medium", "-tag:v", "hvc1"],
@@ -99,10 +99,10 @@ _encoder_lock = threading.Lock()
 # ffmpeg logs a decoder's messages under the decoder's name: the codec's name except for these.
 DECODER_NAMES = {"av1": "libdav1d"}
 # HDR transfers by ffprobe's name, with the name people know them by. Such video is tone-mapped to SDR BT.709 as
-# it is decoded: shown as it is, it looks washed out (README).
+# it is decoded: shown as it is, it looks washed out (docs/measurements.md).
 HDR_TRANSFERS = {"smpte2084": "PQ", "arib-std-b67": "HLG"}
 # Linear light with 1.0 at this many nits, then Möbius's curve, which leaves everything up to the highlights as
-# it is: of the curves measured, the closest to the SDR picture an HDR video was made from (README).
+# it is: of the curves measured, the closest to the SDR picture an HDR video was made from (docs/measurements.md).
 SDR_WHITE_NITS = 100
 TONE_MAP_CURVE = "mobius"
 # Colour matrices zscale knows by ffprobe's name; an HDR video tagged otherwise is taken as BT.2020.

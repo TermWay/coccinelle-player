@@ -1,7 +1,7 @@
 @echo off
 title Upscale a file
 rem Drag and drop images or videos onto this file: each is upscaled 2x right away, no questions asked.
-rem For other settings run `fsr4 upscale` (see README).
+rem For other settings run `fsr4 upscale` (see docs\command-line.md).
 setlocal
 set "HERE=%~dp0"
 if "%~1"=="" (

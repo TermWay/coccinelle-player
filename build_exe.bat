@@ -2,7 +2,7 @@
 title Build exe
 setlocal
 rem Builds dist\fsr4: "Coccinelle Player.exe" and fsr4.exe, the FSR DLLs and their license in bin\, the
-rem third-party notices in licenses\, README.md and LICENSE.txt. Optional arguments, to build elsewhere: the
+rem third-party notices in licenses\, README.md with docs\ and LICENSE.txt. Optional arguments, to build elsewhere: the
 rem folder that receives fsr4\ (default dist) and PyInstaller's work folder (default build).
 set "DIST_ROOT=dist"
 set "WORK_ROOT=build"
@@ -57,6 +57,13 @@ for %%F in (amd_fidelityfx_loader_vk.dll amd_fidelityfx_upscaler_vk.dll license.
 copy /y "README.md" "%DIST%\README.md" >nul
 if errorlevel 1 (
     echo Could not copy README.md into "%DIST%".
+    pause
+    exit /b 1
+)
+rem README.md links to the pages and the animation in docs\.
+xcopy /y /e /i /q "docs" "%DIST%\docs" >nul
+if errorlevel 1 (
+    echo Could not copy docs into "%DIST%".
     pause
     exit /b 1
 )

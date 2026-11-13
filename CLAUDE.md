@@ -40,7 +40,8 @@ Python package stay `fsr4`.
   OpenCV or FSR 4 itself skip without it, saying why (`tests/needs.py`).
 - Quality is measured, not eyeballed: `tools/lab_quality.py` downscales a reference, upscales it back and
   reports PSNR against the reference for each flow/jitter setting. Run it before changing a default.
-- Performance figures go in the README table with the command that produced them.
+- Performance figures go in the tables of `docs/measurements.md` with the command that produced them. The README is
+  the first-run guide: it carries a summary and links to the pages in `docs/`, which the build copies into the zip.
 - The window is checked with `python tools/ui_smoke.py --video <clip> --image <png> --out out/ui`: it drives
   every state through the real widgets (a real WM_DROPFILES drop, tooltip, dropdown, file dialog, playback,
   buffering, presets side by side, zoom slider, full screen, save) and saves PrintWindow screenshots to look at.
@@ -62,7 +63,7 @@ Python package stay `fsr4`.
 - FSR wants jittered, motion-vectored, depth-tested renders. For video the tool substitutes: depth is a
   constant plane, motion vectors come from DIS optical flow (current to previous, in pixels, which is FSR's
   convention, verified by the lab's negated run), jitter is zero. Faking jitter by resampling the input and
-  feeding a still image several times were both measured and rejected (README). Keep the substitutions in
+  feeding a still image several times were both measured and rejected (`docs/measurements.md`). Keep the substitutions in
   `fsr4/pipeline.py` and `fsr4/flow.py`.
 - Motion vectors are uploaded as 32-bit floats: converting to half floats on the CPU cost more than the flow.
 - `fsr4/pipeline.py`'s `upscale_stream` is the one frame loop (flow on a worker thread while the current frame
@@ -178,7 +179,7 @@ Python package stay `fsr4`.
   it with `-v level+...` and log the video decoder's first error once per file, for reads from the start
   (after a seek, the pictures before the keyframe fail by design).
 - HDR (PQ, HLG: `MediaInfo.hdr`) is tone-mapped to SDR in `FrameReader` and thumbnails (`tone_map_filters`:
-  zscale to linear, Möbius, measured in the README), after the trim so skipped pictures cost nothing; interlaced
+  zscale to linear, Möbius, measured in `docs/measurements.md`), after the trim so skipped pictures cost nothing; interlaced
   sources (`MediaInfo.interlaced`, from the field order) get bwdif first in the chain, one picture per frame, so
   frame numbers and seeks are unchanged (`SeekTest` has an interlaced case). Pieces are SDR and progressive: the
   player builds their `MediaInfo` itself. `media.ffmpeg_filters()` says which filters this ffmpeg has.
