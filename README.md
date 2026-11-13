@@ -93,6 +93,8 @@ sub-pixel camera jitter every frame. A video file has none of those, so this too
   Upscale saves the picture.
 - **Auto upscale**, the switch beside Choose file, kept between runs: off, files open as in a plain player (the
   source, bicubic) and FSR starts only when you choose a preset in the Left or Right list.
+- **The window reopens as you left it**: its place and size, the volume, the folded sidebar, the output size,
+  the encoder, the threads and the priority.
 - **Full screen** (F11, F or the button) covers the monitor the window is on and keeps the video; leaving it
   puts the window back exactly where and as it was. Its controls come up when the mouse moves near the bottom
   of the screen, and hide, with the pointer, once the mouse rests, wherever it is.

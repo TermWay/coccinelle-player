@@ -8,7 +8,7 @@ import needs
 if not needs.HAS_OPENCV:
     raise unittest.SkipTest("opencv-python is not installed (the window needs it)")
 
-from fsr4 import ui
+from fsr4 import media, ui
 from fsr4.media import AudioStream, MediaInfo, SubtitleStream
 
 
@@ -48,6 +48,11 @@ class TextTest(unittest.TestCase):
         self.assertEqual(ui.parse_geometry("1280x860+-1600+40"), (-1600, 40, 1280, 860))
         with self.assertRaises(ValueError):
             ui.parse_geometry("1280x860-8+40")
+
+    def test_saved_sizes_are_the_size_chips(self):
+        from fsr4 import preferences
+        self.assertEqual([value for _, value in ui.SIZE_CHOICES], list(preferences.SIZES))
+        self.assertEqual({codec for _, codec, _ in ui.ENCODER_CHOICES}, set(media.ENCODERS) - {"png"})
 
     def test_describe_image(self):
         info = MediaInfo(width=1600, height=900, frame_rate=Fraction(0), frame_count=1, duration=None, codec="png")

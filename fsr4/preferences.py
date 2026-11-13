@@ -1,7 +1,7 @@
 """The window's preferences, kept between runs, and the folder where the window keeps its files.
 
 Preferences: whether a file is upscaled as soon as it opens, and how the window was left (its place and size, the
-volume, the sidebar folded or not). They are saved as JSON in the user's application data folder, next to the
+volume, the sidebar folded or not, the output size, the encoder, the processor's threads and priority). They are saved as JSON in the user's application data folder, next to the
 presets.
 """
 from __future__ import annotations
@@ -11,9 +11,12 @@ import os
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
-from . import log
+from . import log, usage
+from .media import ENCODERS
 
 FILE_VERSION = 1
+SIZES = ("1.5", "2", "3", "1440", "2160", "custom")  # the window's size chips (tested against them)
+CUSTOM_SCALES = (1.0, 3.0)
 
 
 def app_data_folder() -> Path:
@@ -37,12 +40,18 @@ def write_json(path: Path, data: object) -> None:
 @dataclass(frozen=True)
 class Preferences:
     """`window` is the window's place and size when not maximized (left, top, width, height: Tk's geometry, the
-    frame's corner and the inside's size), None until the window was first closed."""
+    frame's corner and the inside's size), None until the window was first closed. `threads` None is half of this
+    machine's (`usage.DEFAULT`); more than it has are taken as all."""
     upscale_on_open: bool = True
     window: tuple[int, int, int, int] | None = None
     maximized: bool = False
     volume: float = 0.8
     sidebar_folded: bool = False
+    size: str = "2"
+    custom_scale: float = 2.0
+    encoder: str = "amf"
+    threads: int | None = None
+    priority: str = usage.DEFAULT.priority
 
 
 def preferences_from_json(data: object) -> Preferences:
@@ -64,9 +73,27 @@ def preferences_from_json(data: object) -> Preferences:
                 or window[2] <= 0 or window[3] <= 0):
             raise ValueError(f"window should be [left, top, width, height] in pixels, not {window!r}")
         window = tuple(window)
+    size = data.get("size", defaults.size)
+    if size not in SIZES:
+        raise ValueError(f"size should be one of {', '.join(SIZES)}, not {size!r}")
+    custom_scale = data.get("custom_scale", defaults.custom_scale)
+    if (isinstance(custom_scale, bool) or not isinstance(custom_scale, (int, float))
+            or not CUSTOM_SCALES[0] <= custom_scale <= CUSTOM_SCALES[1]):
+        raise ValueError(f"custom_scale should be a number from 1 to 3, not {custom_scale!r}")
+    encoder = data.get("encoder", defaults.encoder)
+    if encoder not in ENCODERS or encoder == "png":
+        raise ValueError(f"encoder should be a video encoder ({', '.join(sorted(set(ENCODERS) - {'png'}))}), "
+                         f"not {encoder!r}")
+    threads = data.get("threads")
+    if threads is not None and (isinstance(threads, bool) or not isinstance(threads, int) or threads < 1):
+        raise ValueError(f"threads should be a whole number from 1, not {threads!r}")
+    priority = data.get("priority", defaults.priority)
+    if priority not in usage.PRIORITIES:
+        raise ValueError(f"priority should be one of {', '.join(usage.PRIORITIES)}, not {priority!r}")
     return Preferences(upscale_on_open=data.get("upscale_on_open", defaults.upscale_on_open), window=window,
                        maximized=data.get("maximized", defaults.maximized), volume=float(volume),
-                       sidebar_folded=data.get("sidebar_folded", defaults.sidebar_folded))
+                       sidebar_folded=data.get("sidebar_folded", defaults.sidebar_folded), size=size,
+                       custom_scale=float(custom_scale), encoder=encoder, threads=threads, priority=priority)
 
 
 class PreferenceStore:

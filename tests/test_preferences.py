@@ -42,13 +42,20 @@ class PreferencesTest(unittest.TestCase):
         self.assertEqual(PreferenceStore(self.path).preferences,
                          Preferences(window=(-1600, 40, 1280, 860), maximized=True, volume=0.35, sidebar_folded=True))
 
+    def test_the_settings_are_kept(self):
+        PreferenceStore(self.path).change(size="custom", custom_scale=2.5, encoder="x265", threads=3, priority="idle")
+        self.assertEqual(PreferenceStore(self.path).preferences,
+                         Preferences(size="custom", custom_scale=2.5, encoder="x265", threads=3, priority="idle"))
+
     def test_a_file_from_before_the_window_was_kept_reads(self):
         self.path.write_text('{"version": 1, "upscale_on_open": false}', encoding="utf-8")
         self.assertEqual(PreferenceStore(self.path).preferences, Preferences(upscale_on_open=False))
 
     def test_an_unreadable_file_gives_the_defaults_and_is_kept_aside(self):
         for content in ("{not json", '{"upscale_on_open": "yes"}', "[]", '{"volume": 2}', '{"volume": true}',
-                        '{"window": [0, 0, 800]}', '{"window": [0, 0, 0, 600]}', '{"sidebar_folded": 1}'):
+                        '{"window": [0, 0, 800]}', '{"window": [0, 0, 0, 600]}', '{"sidebar_folded": 1}',
+                        '{"size": "5"}', '{"custom_scale": 3.5}', '{"custom_scale": "2"}', '{"encoder": "png"}',
+                        '{"encoder": "nvenc"}', '{"threads": 0}', '{"threads": 2.5}', '{"priority": "high"}'):
             with self.subTest(content=content):
                 self.path.write_text(content, encoding="utf-8")
                 store = PreferenceStore(self.path)

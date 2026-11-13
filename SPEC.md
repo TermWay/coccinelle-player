@@ -314,7 +314,9 @@ has none of those; the tool substitutes, as the quality lab (§14) settled:
    `%APPDATA%\Coccinelle Player\preferences.json` (written through a temporary file; one that cannot be read is
    reported in the banner, the defaults are used, and the next change keeps it as `preferences.unreadable`; fields
    of other versions are ignored). It applies from the next file opened. The window's place, size, maximized
-   state, volume and folded sidebar are written there when it closes (a failure is logged).
+   state, volume and folded sidebar, the output size (with the custom factor), the encoder, the threads and the
+   priority are written there when it closes (a failure is logged) and come back at the next launch. The threads
+   are capped at what the machine has; a GPU encoder that cannot run there gives way to x264 (§6).
 
 A change applies 450 ms after the last one. Each combination of size, upscaler, motion, sharpening and encoder
 is its own version (§10).

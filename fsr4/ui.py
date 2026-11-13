@@ -800,22 +800,35 @@ class App:
             self.root.state("zoomed")
 
     def _restore_layout(self) -> None:
-        """The volume and the sidebar as the window was left."""
+        """The volume, the sidebar, the size, the encoder and the processor as the window was left."""
         preferences = self.preferences.preferences
         self.transport.set_volume(preferences.volume)
         if preferences.sidebar_folded:
             self.sidebar_visible = False
             self._lay_out_sidebar()
+        self.size_var.set(preferences.size)
+        self.custom_scale.set(preferences.custom_scale)
+        self.encoder_choice.current([choice[1] for choice in self.encoder_choices].index(preferences.encoder))
+        threads = min(usage.CPU_THREADS, preferences.threads or usage.DEFAULT.threads)
+        self.threads_var.set(threads)
+        self.threads_label.configure(text=f"{threads} of {usage.CPU_THREADS}")
+        self.priority_var.set(preferences.priority)
+        if (threads, preferences.priority) != (usage.DEFAULT.threads, usage.DEFAULT.priority):
+            self._apply_processor()
 
     def _save_layout(self) -> None:
-        """Keep where the window is, the volume and the sidebar for the next run; a failure is logged (the window
-        is closing, there is no banner to show it in)."""
+        """Keep where the window is, the volume, the sidebar, the size, the encoder and the processor for the next
+        run; a failure is logged (the window is closing, there is no banner to show it in)."""
         maximized = self.screen.was_maximized if self.fullscreen else self.root.state() == "zoomed"
         try:
             self.preferences.change(window=self._normal_place, maximized=maximized, volume=self.transport.volume,
-                                    sidebar_folded=not self.sidebar_visible)
+                                    sidebar_folded=not self.sidebar_visible, size=self.size_var.get(),
+                                    custom_scale=round(float(self.custom_scale.get()), 2),
+                                    encoder=self.encoder_choices[self.encoder_choice.current()][1],
+                                    threads=int(round(float(self.threads_var.get()))),
+                                    priority=self.priority_var.get())
         except OSError as error:
-            log.emit(f"[ui] error: cannot save the window's place and volume: {error}")
+            log.emit(f"[ui] error: cannot save the window's place and settings: {error}")
 
     def _enable_drop(self):
         if os.name != "nt":
