@@ -1,7 +1,7 @@
 # Builds the release zip on GitHub's servers from the commit checked out, so anyone can check where a zip comes
 # from: gh attestation verify <zip> --repo <this repository>.
-# Pushing a tag v<version> builds it and attaches it, with SHA256SUMS.txt, to a draft release of that tag, which
-# a maintainer publishes. "Run workflow" builds it as an artifact of the run only.
+# Pushing a tag v<version> builds it and attaches it, with SHA256SUMS.txt and HOW-TO-VERIFY.txt, to a draft
+# release of that tag, which a maintainer publishes. "Run workflow" builds it as an artifact of the run only.
 # Actions are pinned to commits; the comment names the version.
 name: Release build
 

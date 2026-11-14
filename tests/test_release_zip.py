@@ -32,6 +32,13 @@ class ReleaseZipTest(unittest.TestCase):
         checksums = (self.root / "out" / release_zip.CHECKSUMS_FILE).read_bytes()
         self.assertEqual(checksums, f"{digest}  {target.name}\n".encode("ascii"))
 
+    def test_writes_how_to_check_the_hash_for_notepad(self):
+        target, _ = release_zip.make_release_zip(self.build, self.root / "out", "1.2.3")
+        instructions = (self.root / "out" / release_zip.INSTRUCTIONS_FILE).read_bytes()
+        self.assertIn(f"Get-FileHash -Path {target.name} -Algorithm SHA256".encode("ascii"), instructions)
+        self.assertIn(release_zip.CHECKSUMS_FILE.encode("ascii"), instructions)
+        self.assertEqual(instructions.count(b"\n"), instructions.count(b"\r\n"), "Windows line ends throughout")
+
     def test_refuses_an_existing_zip(self):
         release_zip.make_release_zip(self.build, self.root, "1.2.3")
         with self.assertRaises(SystemExit):

@@ -584,8 +584,9 @@ is its own version (§10).
   `v<version>` that matches `fsr4.__version__` builds with `build_exe.bat` on a Windows runner, checks that
   `fsr4.exe --version` runs, zips with `tools/release_zip.py` (`Coccinelle-Player-<version>-win-x64.zip` holding
   the build folder's contents at its root, with no `fsr4\` folder: Windows' Extract All already makes a folder
-  named after the zip; and `SHA256SUMS.txt`), attests the zip's build provenance (public repository only; a
-  private one gets a warning instead), and attaches both files to a draft release of the tag, which a maintainer
+  named after the zip; `SHA256SUMS.txt`; and `HOW-TO-VERIFY.txt`, CRLF plain text giving the `Get-FileHash`
+  command for that zip, a one-line comparison that prints True, and `gh attestation verify`), attests the zip's build provenance (public repository only; a
+  private one gets a warning instead), and attaches the three files to a draft release of the tag, which a maintainer
   publishes. A manual run builds the same files as an artifact of the run.
 
 ## 13. License and credits

@@ -30,8 +30,9 @@ Release zips are built by GitHub Actions, never on a personal computer: [release
 1. Set the version in `fsr4/__init__.py` and commit.
 2. Push a tag of that version: `git tag -a v0.1.0 -m "Coccinelle Player 0.1.0"`, then `git push origin v0.1.0`.
 3. The workflow refuses a tag that does not match the version, builds the executables on a Windows runner,
-   checks that `fsr4.exe --version` runs, zips them with `tools/release_zip.py`, writes `SHA256SUMS.txt`, attests
-   the zip's provenance and attaches both files to a draft release of the tag.
+   checks that `fsr4.exe --version` runs, zips them with `tools/release_zip.py`, writes `SHA256SUMS.txt` and
+   `HOW-TO-VERIFY.txt` (the PowerShell commands that check the hash), attests the zip's provenance and attaches
+   the three files to a draft release of the tag.
 4. Read the draft, add the release notes and publish it.
 
 "Run workflow" on the Actions tab builds the same files from any branch as an artifact of the run, with no
@@ -76,7 +77,7 @@ release. Attestations work only while the repository is public; a private one ge
   ctypes, no extra package. `run_fsr4.py`: the entry point of both executables.
 - `tools/gen_vk_types.py`: regenerates the Vulkan structs from `third_party/vulkan_core.h`.
 - `tools/fetch_sdk.py`: downloads the FSR DLLs and checks their pinned hashes. `tools/release_zip.py`: the
-  release zip and its `SHA256SUMS.txt` (run by the release workflow).
+  release zip, its `SHA256SUMS.txt` and `HOW-TO-VERIFY.txt` (run by the release workflow).
   `tools/collect_licenses.py`: the packaged app's third-party notices (run by `build_exe.bat`).
   `tools/dev_build.py`: keeps `dist\fsr4\` built from the current sources without touching a running copy
   (`--force` builds anyway; run by `start.bat`).

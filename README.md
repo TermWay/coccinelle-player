@@ -45,7 +45,8 @@ HDR video is tone-mapped to SDR and interlaced video is deinterlaced. Details: [
 3. Double-click `Coccinelle Player.exe` and drop a video on the window.
 
 The executables are not code-signed, so Windows SmartScreen may warn about them (More info, then Run anyway).
-Each release publishes the SHA-256 of its zip: compare it with `Get-FileHash <zip> -Algorithm SHA256` first.
+Each release publishes the SHA-256 of its zip in `SHA256SUMS.txt`, with `HOW-TO-VERIFY.txt` beside it: compare
+it with `Get-FileHash <zip> -Algorithm SHA256` first.
 
 ### Or build it yourself
 With [Python 3.12](https://www.python.org/downloads/) and git, in a terminal:
