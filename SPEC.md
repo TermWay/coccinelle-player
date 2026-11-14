@@ -20,7 +20,7 @@ the user's guide and CLAUDE.md the design notes for working on the code.
   also lists the RX 7000 series (FSR 4's INT8 model), not tested. The FSR DLL says which upscalers it offers each
   card; on one it offers no FSR 4 for (an integrated Radeon here: FSR 3.1.6 and 2.3.4 only), FSR 4 is refused with
   that reason, never replaced by the DLL's newest, and FSR 3.1, 2.3, the HQ scaler and Real-ESRGAN still run.
-- Linux: not supported yet (AMD ships FSR 4 only as signed Windows DLLs, and the window draws, plays sound, takes
+- Linux: not supported at the moment (AMD ships FSR 4 only as signed Windows DLLs, and the window draws, plays sound, takes
   dropped files and goes full screen through Win32). macOS: not supported. The README says both.
 - Reference machine: Radeon RX 9070 XT, a 16-core (32-thread) processor, Windows 11.
 
@@ -40,12 +40,12 @@ the user's guide and CLAUDE.md the design notes for working on the code.
   packaged executable, else in the repository's `bin\`.
 - ffmpeg and ffprobe, 5.1 or later (6.0 for the AV1 GPU encoder, 8.0 for AMD's HQ scaler), do all decoding and encoding as separate
   processes, found next to the executable or on PATH. They are never bundled (GPL). A missing one is named with
-  how to install it (`winget install Gyan.FFmpeg.Essentials`); when ffmpeg rejects an option as unknown, the error
+  how to install it (`install-ffmpeg.bat`, or `winget install Gyan.FFmpeg.Essentials`); when ffmpeg rejects an option as unknown, the error
   says this ffmpeg is too old and which version is needed.
 - Real-ESRGAN is optional and never bundled: `realesrgan-ncnn-vulkan.exe` with its `models` folder, tested with
   the release of 2022-04-24 (v0.2.5.0), looked for in `bin\realesrgan\` next to the packaged executable or in a
   folder above it (a build in the repository's `dist` finds the repository's), then in the repository's, then on
-  PATH. Without it the error says where to get it and names the folder to unzip it into.
+  PATH. Without it the error names `install-realesrgan.bat`, where to get it and the folder to unzip it into.
 - The window is plain tkinter (DPI aware) with ctypes calls into Win32; no GUI package.
 - Every message goes through one logging module, which the window shows. No log file is ever written.
 - No silent failure: an error is logged and stops the work with a plain reason on one line.
@@ -565,13 +565,20 @@ is its own version (§10).
 - `start.bat` opens the window, with a file dropped on it: the built executable when there is one, else Python
   after checking the DLLs (downloading them if needed). With Python there, it first runs `tools/dev_build.py`
   so it never opens a build older than the sources: when a build input (the package, the spec, the build
-  script, the DLLs, the README and `docs\`, the licenses, the requirements) is newer than `dist\fsr4\`, it builds into
+  script, the DLLs, the README and `docs\`, the install scripts, the licenses, the requirements) is newer than `dist\fsr4\`, it builds into
   `out\dev-build\` with `build_exe.bat` and puts that in place of `dist\fsr4\` when no program runs from there.
   A build that must wait for such a program stays in `out\dev-build\` for the next run, and meanwhile, or when
   the build fails, the window opens from the sources. `upscale.bat` upscales every file dropped on it with the
   defaults (2x, HEVC on the GPU, optical flow fast), with no questions, says when one failed, and pauses. Windows
   hands it a dropped name without quotes when it has no space, so names holding `&`, `^`, `,`, `;` or `=` are
   cut: `docs/command-line.md` says so.
+- Three install scripts, at the repository's root and copied next to the executables by `build_exe.bat`, install
+  what the app uses but does not include, each skipping what is already there and short enough to read:
+  `install-ffmpeg.bat` (winget's `Gyan.FFmpeg.Essentials`; without winget it says where to download ffmpeg),
+  `install-realesrgan.bat` (Real-ESRGAN's v0.2.5.0 Windows zip with curl, refused unless it matches its pinned
+  SHA-256, unzipped with tar into `bin\realesrgan\` beside the script: the program, its DLL, models and readme)
+  and `install-all.bat` (both, then one line saying what is ready). Each pauses at the end unless given
+  `nopause`, as `install-all.bat` does.
 - The executables are not code-signed: every release publishes the SHA-256 of what it ships.
 - Release zips are built on GitHub Actions (`.github/workflows/release.yml`, actions pinned to commits): a tag
   `v<version>` that matches `fsr4.__version__` builds with `build_exe.bat` on a Windows runner, checks that

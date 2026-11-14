@@ -89,6 +89,18 @@ class ChoicesTest(unittest.TestCase):
                 self.assertIn(str(build / realesrgan.FOLDER), realesrgan.not_installed(),
                               "the message names the folder next to the executable")
 
+    def test_the_installer_fetches_the_tested_release_into_the_folder_searched_and_ships_with_the_build(self):
+        root = Path(__file__).resolve().parent.parent
+        installer = (root / realesrgan.INSTALLER).read_text(encoding="ascii")
+        release = realesrgan.DOWNLOAD.replace("/releases/tag/", "/releases/download/")
+        self.assertIn(f'set "URL={release}/realesrgan-ncnn-vulkan-20220424-windows.zip"', installer)
+        self.assertIn(f'set "TARGET={realesrgan.FOLDER}"', installer)
+        self.assertIn(realesrgan.INSTALLER, realesrgan.not_installed())
+        build_script = (root / "build_exe.bat").read_text(encoding="ascii")
+        for script in ("install-all.bat", "install-ffmpeg.bat", realesrgan.INSTALLER):
+            self.assertTrue((root / script).is_file(), script)
+            self.assertIn(script, build_script, f"build_exe.bat copies {script} next to the executables")
+
 
 class PlanTest(unittest.TestCase):
     def options(self, **values) -> JobOptions:

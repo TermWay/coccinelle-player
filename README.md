@@ -15,20 +15,30 @@ compare it with the source, and save the result.
 ## Features
 - **Watch while it upscales.** The upscaler follows the playhead and keeps everything it made. When it is
   slower than the video, playback waits with a spinner, like a streaming site.
-- **Compare anything.** A divider splits the picture. Each side shows an upscaler preset or the source through
-  a classic filter (Bilinear, Bicubic, Lanczos, original pixels), paused or playing, zoomed up to 1600%.
-- **Five upscalers.** FSR 4.1.2 (default), FSR 3.1.6, FSR 2.3.4, AMD's HQ scaler and Real-ESRGAN, with presets
-  of your own.
+- **Five upscalers to save with.** FSR 4.1.2 (default), FSR 3.1.6, FSR 2.3.4, AMD's HQ scaler and Real-ESRGAN,
+  with presets of your own.
+- **Compare anything.** A divider splits the picture. Each side shows an upscaler preset or the source enlarged
+  by a classic filter (Bilinear, Bicubic, Lanczos, original pixels) as a reference, paused or playing, zoomed up
+  to 1600%. The filters are only for comparing: they are what any player already does.
 - **Save the result.** Upscale finishes the file and writes it with HEVC, AV1 or H.264 on the GPU, or x264 and
   x265. Every audio track, the subtitles, the chapters and the title are kept.
-- **A real player.** Frame steps, 0.05x to 5x forwards or backwards, full screen, most video and image formats.
+- **A real player.** Frame steps, 0.05x to 5x forwards or backwards, full screen.
 - **A command line** (`fsr4`) for scripts and batches.
+
+### Supported files
+Anything ffmpeg decodes, including:
+- **Video:** MP4, MKV, MOV, AVI, WMV, WebM, MPG, VOB, TS, M2TS, FLV, 3GP, OGV, MXF, DV, RealMedia.
+- **Images:** PNG, JPEG, BMP, TIFF, WebP, EXR, GIF (first frame).
+- **Saved as:** MP4 (default), MKV or MOV for videos; PNG (default), JPEG or WebP for images.
+
+HDR video is tone-mapped to SDR and interlaced video is deinterlaced. Details: [Files](docs/files.md).
 
 ## Installation
 1. Download the zip from the [latest release](https://github.com/TermWay/coccinelle-player/releases/latest)
    and unzip it anywhere.
-2. Install ffmpeg, which is not included: run `winget install Gyan.FFmpeg.Essentials`, then open a new
-   terminal window. Copying `ffmpeg.exe` and `ffprobe.exe` next to `fsr4.exe` also works.
+2. Double-click `install-all.bat` in that folder. It installs ffmpeg, which the player needs and does not
+   include, then Real-ESRGAN, an optional upscaler. Each one also has its own script: `install-ffmpeg.bat`,
+   `install-realesrgan.bat`.
 3. Double-click `Coccinelle Player.exe` and drop a video on the window.
 
 The executables are not code-signed, so Windows SmartScreen may warn about them (More info, then Run anyway).
@@ -53,7 +63,9 @@ match their pinned SHA-256. To run from the source without building, see [Develo
   binaries it ships are AMD's FSR DLLs, signed by AMD and checked against pinned hashes, and what PyInstaller
   packs around the code: Python with Tcl/Tk, numpy and OpenCV (their versions are pinned in `requirements.txt`).
 - **It has no network code.** The only web address in it is Real-ESRGAN's download page, shown in a message.
-  It runs other programs only to do its work: ffmpeg and ffprobe, and Real-ESRGAN when you install it.
+  It runs other programs only to do its work: ffmpeg and ffprobe, and Real-ESRGAN when you install it. Only the
+  install scripts download, from where they say (winget's ffmpeg package, Real-ESRGAN's release, checked
+  against its SHA-256); they are short batch files, readable in Notepad.
 - **Release zips are built by GitHub**, not on a personal computer: [a workflow](.github/workflows/release.yml)
   builds each one from the tagged commit and signs a record of where it comes from. With the
   [GitHub CLI](https://cli.github.com/), `gh attestation verify <zip> --repo TermWay/coccinelle-player` checks a
@@ -68,13 +80,17 @@ match their pinned SHA-256. To run from the source without building, see [Develo
   for FSR 3.1 behind its name), and FSR 3.1, FSR 2.3, AMD's HQ scaler and Real-ESRGAN still run. `fsr4 info`
   lists what the DLL offers your card.
 - **ffmpeg 5.1 or later**, with ffprobe, on PATH or next to `fsr4.exe` (6.0 or later for the AV1 GPU encoder,
-  8.0 or later for AMD's HQ scaler). All decoding and encoding goes through it.
-- **Optional, for the Real-ESRGAN upscaler:** `realesrgan-ncnn-vulkan-20220424-windows.zip` from
-  [Real-ESRGAN's release v0.2.5.0](https://github.com/xinntao/Real-ESRGAN/releases/tag/v0.2.5.0), unzipped into
-  `bin\realesrgan\` in the folder of `fsr4.exe` (or the repository), or on PATH with its `models` folder beside
-  it. It is a separate program under its own license (BSD 3-Clause) and is not included.
+  8.0 or later for AMD's HQ scaler). All decoding and encoding goes through it. `install-ffmpeg.bat` installs
+  it with winget (`winget install Gyan.FFmpeg.Essentials`); copying `ffmpeg.exe` and `ffprobe.exe` next to
+  `fsr4.exe` also works.
+- **Optional, for the Real-ESRGAN upscaler:** `install-realesrgan.bat` downloads
+  `realesrgan-ncnn-vulkan-20220424-windows.zip` from
+  [Real-ESRGAN's release v0.2.5.0](https://github.com/xinntao/Real-ESRGAN/releases/tag/v0.2.5.0), checks its
+  SHA-256 and unzips it into `bin\realesrgan\` next to it. Unzipping it there by hand, or putting it on PATH with
+  its `models` folder beside it, also works. It is a separate program under its own license (BSD 3-Clause) and
+  is not included.
 
-**Linux** is not supported yet: AMD ships FSR 4 only as signed Windows DLLs, and the window draws, plays sound,
+**Linux** is not supported at the moment: AMD ships FSR 4 only as signed Windows DLLs, and the window draws, plays sound,
 takes dropped files and goes full screen through Win32. The Windows build may run under Wine or Proton;
 untested. **macOS** is not supported: AMD ships FSR 4 for Windows only, and Apple silicon Macs have no Radeon.
 

@@ -40,6 +40,8 @@ PROGRAM = "realesrgan-ncnn-vulkan.exe"
 # Where the program goes (see `search_folders`); PATH works too. Its `models` folder sits beside it.
 FOLDER = Path("bin") / "realesrgan"
 DOWNLOAD = "https://github.com/xinntao/Real-ESRGAN/releases/tag/v0.2.5.0"
+# Downloads, checks and unzips it; next to the packaged executable and at the repository's root.
+INSTALLER = "install-realesrgan.bat"
 # 9.5 s and 4.2 s a 1080p picture (measured): in a video, a seek would wait minutes for its chunk.
 STILL_ONLY = frozenset({REAL_ESRGAN_X4PLUS, REAL_ESRGAN_ANIME})
 STILL_ONLY_NOTE = "This Real-ESRGAN model takes seconds a picture: it is for still images. Use Real-ESRGAN for a video."
@@ -90,9 +92,10 @@ def search_folders() -> list[Path]:
 
 
 def not_installed() -> str:
-    """Why Real-ESRGAN cannot run, with where to get it and the folder to unzip it into."""
-    return (f"Real-ESRGAN is not installed: unzip realesrgan-ncnn-vulkan-20220424-windows.zip from {DOWNLOAD} "
-            f"into {search_folders()[0] / FOLDER}")
+    """Why Real-ESRGAN cannot run: the installer to run, or where to get it and the folder to unzip it into."""
+    folder = search_folders()[0]
+    return (f"Real-ESRGAN is not installed: run {INSTALLER} in {folder}, or unzip "
+            f"realesrgan-ncnn-vulkan-20220424-windows.zip from {DOWNLOAD} into {folder / FOLDER}")
 
 
 def find_program(upscaler: str = REAL_ESRGAN) -> Path | None:

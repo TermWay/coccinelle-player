@@ -32,7 +32,7 @@ EXECUTABLE = "Coccinelle Player.exe"
 INPUT_FOLDERS = ["fsr4", "third_party", "docs"]
 INPUT_FILES = ["run_fsr4.py", "fsr4.spec", "build_exe.bat", "requirements.txt", "README.md", "LICENSE",
                "tools/collect_licenses.py", "bin/amd_fidelityfx_loader_vk.dll", "bin/amd_fidelityfx_upscaler_vk.dll",
-               "bin/license.md"]
+               "bin/license.md", "install-all.bat", "install-ffmpeg.bat", "install-realesrgan.bat"]
 # What the README says to put into the build's folder by hand: never built, so a new build carries it over.
 KEPT = ["bin/realesrgan", "ffmpeg.exe", "ffprobe.exe"]
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000

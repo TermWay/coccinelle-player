@@ -67,6 +67,15 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
+rem The installers of ffmpeg and Real-ESRGAN, which the app uses but does not include.
+for %%F in (install-all.bat install-ffmpeg.bat install-realesrgan.bat) do (
+    copy /y "%%F" "%DIST%\%%F" >nul
+    if errorlevel 1 (
+        echo Could not copy %%F into "%DIST%".
+        pause
+        exit /b 1
+    )
+)
 copy /y "LICENSE" "%DIST%\LICENSE.txt" >nul
 if errorlevel 1 (
     echo Could not copy LICENSE into "%DIST%".

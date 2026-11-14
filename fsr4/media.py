@@ -121,8 +121,9 @@ def tool_path(name: str) -> str:
             return str(bundled)
     found = shutil.which(name)
     if found is None:
-        raise FileNotFoundError(f"{name} not found on PATH; install ffmpeg (winget install Gyan.FFmpeg.Essentials, "
-                                f"then open a new window) or put {name}.exe next to the exe")
+        raise FileNotFoundError(f"{name} not found on PATH; install ffmpeg (install-ffmpeg.bat next to the exe, or "
+                                f"winget install Gyan.FFmpeg.Essentials, then open a new window) or put {name}.exe "
+                                f"next to the exe")
     return found
 
 

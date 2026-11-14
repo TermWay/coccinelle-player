@@ -16,8 +16,8 @@
 `build_exe.bat` (after `python -m pip install -r requirements-build.txt`) checks the FSR DLLs against their
 pinned hashes and builds the executables with PyInstaller from `fsr4.spec`: `Coccinelle Player.exe` (window, no
 console) and `fsr4.exe` (command line) share one folder of about 170 MB (85 MB zipped), mostly OpenCV and
-numpy, with the FSR DLLs and AMD's license in `bin\`, the third-party notices in `licenses\` and these pages in
-`docs\`. Its two optional arguments build elsewhere: the folder that receives `fsr4\` and PyInstaller's work
+numpy, with the FSR DLLs and AMD's license in `bin\`, the third-party notices in `licenses\`, these pages in
+`docs\` and the install scripts for ffmpeg and Real-ESRGAN (`install-*.bat`). Its two optional arguments build elsewhere: the folder that receives `fsr4\` and PyInstaller's work
 folder.
 
 Before opening the window, `start.bat` runs `tools/dev_build.py`, which rebuilds the executables when a source
