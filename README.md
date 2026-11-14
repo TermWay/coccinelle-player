@@ -10,10 +10,9 @@ compare it with the source, and save the result.
 
 > [!WARNING]
 > **Written by an AI, tested by a human.** Claude (Anthropic's AI model) wrote the code, the tests and this
-> documentation, in Claude Code. TermWay directed the work and tested it, on one machine: Windows 11 with a
-> Radeon RX 9070 XT. Expect rough edges on other setups.
+> documentation, in Claude Code. Still, the player was manually tested, on Windows 11 with a Radeon RX 9070 XT.
 
-## What it does
+## Features
 - **Watch while it upscales.** The upscaler follows the playhead and keeps everything it made. When it is
   slower than the video, playback waits with a spinner, like a streaming site.
 - **Compare anything.** A divider splits the picture. Each side shows an upscaler preset or the source through
@@ -25,7 +24,7 @@ compare it with the source, and save the result.
 - **A real player.** Frame steps, 0.05x to 5x forwards or backwards, full screen, most video and image formats.
 - **A command line** (`fsr4`) for scripts and batches.
 
-## Get started
+## Installation
 1. Download the zip from the [latest release](https://github.com/TermWay/coccinelle-player/releases/latest)
    and unzip it anywhere.
 2. Install ffmpeg, which is not included: run `winget install Gyan.FFmpeg.Essentials`, then open a new
@@ -34,6 +33,28 @@ compare it with the source, and save the result.
 
 The executables are not code-signed, so Windows SmartScreen may warn about them (More info, then Run anyway).
 Each release publishes the SHA-256 of its zip: compare it with `Get-FileHash <zip> -Algorithm SHA256` first.
+
+### Or build it yourself
+With [Python 3.12](https://www.python.org/downloads/) and git, in a terminal:
+
+```
+git clone https://github.com/TermWay/coccinelle-player.git
+cd coccinelle-player
+python -m pip install -r requirements-build.txt
+.\build_exe.bat
+```
+
+The same two executables land in `dist\fsr4\`. The script downloads AMD's FSR DLLs from
+[AMD's FidelityFX SDK](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK) and refuses them unless they
+match their pinned SHA-256. To run from the source without building, see [Development](docs/development.md).
+
+### What you are running
+- **All of this project's code is Python you can read**, here; there is no compiled code of its own. The only
+  binaries it ships are AMD's FSR DLLs, signed by AMD and checked against pinned hashes, and what PyInstaller
+  packs around the code: Python with Tcl/Tk, numpy and OpenCV (their versions are pinned in `requirements.txt`).
+- **It has no network code.** The only web address in it is Real-ESRGAN's download page, shown in a message.
+  It runs other programs only to do its work: ffmpeg and ffprobe, and Real-ESRGAN when you install it.
+- **To run only what you have read**, build it yourself as above, from the same commit as the release's tag.
 
 ## Requirements
 - **Windows** and a **Radeon RX 9000** card (FSR 4's FP8 model) with a current Adrenalin driver. AMD's
@@ -102,8 +123,8 @@ The tables, the commands behind them and the cases where FSR 4 loses: [Measureme
   SDR; interlaced video is deinterlaced at its own frame rate (one picture per frame, not one per field).
 - The player plays the first audio track and shows no subtitles; the saved file keeps every audio track, and
   the subtitles its container holds (all in .mkv; text ones, converted, in .mp4 and .mov).
-- Tested on one machine. Problems on other cards and drivers are likely: please open an issue, with the text
-  from Copy log (read it before posting, it names your files).
+- Tested on Windows 11 with an RX 9070 XT. If something fails on your machine, please open an issue with the
+  text from Copy log (read it before posting, it names your files).
 
 ## More
 - [Using the window](docs/window.md): every control and key.
@@ -130,7 +151,7 @@ Devices, Inc.; Vulkan is a registered trademark of the Khronos Group Inc.
 
 ## Credits
 Written by Claude (Anthropic's AI model) in Claude Code: the code, the tests and the documentation, to the
-requirements in `SPEC.md`. Directed and tested by TermWay.
+requirements in `SPEC.md`. Directed and manually tested by a human, this repository's maintainer.
 
 The animation shows two clips, downscaled before upscaling: *Sintel* (© Blender Foundation,
 [durian.blender.org](https://durian.blender.org), CC BY 3.0) and NASA's television broadcast of Apollo 11

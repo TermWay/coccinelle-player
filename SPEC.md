@@ -581,11 +581,15 @@ is its own version (§10).
   OpenCV with the libraries they bundle. ffmpeg is not included.
 - The tool is not affiliated with AMD: the README says so with the trademarks, as do the window title's tooltip
   and the version resource.
-- The README credits Claude (Anthropic's AI model) as the author, directed and tested by TermWay, and says so
-  near its top in a warning box: written by an AI, tested by a human, on one machine.
+- The README credits Claude (Anthropic's AI model) as the author, directed and manually tested by the
+  repository's maintainer, and says so near its top in a warning box: written by an AI, still manually tested
+  on Windows 11 with an RX 9070 XT. Its prose names no person; the copyright lines (`LICENSE`, the version
+  resource) keep the copyright holder's name.
 - The README is the first-run guide: what the tool is, an animation of the window sweeping its divider between
   the bicubic source and FSR 4 (`docs/demo.webp`, recorded with `tools/ui_record.py` from clips that may be
-  published, credited in the README), how to get started, the requirements, the window's essentials, a few
+  published, credited in the README), its features, installation (the release zip, or a build from the source
+  with `build_exe.bat`), what the user runs (the code is readable Python, the only binaries are AMD's signed DLLs
+  and the pinned runtimes, the app has no network code), the requirements, the window's essentials, a few
   commands, a summary of the measurements and the limits. The rest is in `docs/`, one page each: the window,
   the command line, files, how it works, measurements, development.
 
