@@ -10,8 +10,8 @@ compare it with the source, and save the result.
 
 > [!WARNING]
 > **Written by an AI, tested by a human.** Claude (Anthropic's AI model) wrote the code, the tests and this
-> documentation, in Claude Code: mostly Claude Opus 5.5, after a first version by Claude Fable 5.1, with a few
-> changes by Claude Fable 5.2, at the extra-high ("xhigh") effort level.
+> documentation, in Claude Code, with Claude Opus 5.5, Claude Fable 5.1 and Claude Fable 5.2, by share of the
+> work.
 >
 > A human then tested the player by hand, on Windows 11 with a Radeon RX 9070 XT.
 
