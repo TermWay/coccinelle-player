@@ -573,6 +573,12 @@ is its own version (§10).
   hands it a dropped name without quotes when it has no space, so names holding `&`, `^`, `,`, `;` or `=` are
   cut: `docs/command-line.md` says so.
 - The executables are not code-signed: every release publishes the SHA-256 of what it ships.
+- Release zips are built on GitHub Actions (`.github/workflows/release.yml`, actions pinned to commits): a tag
+  `v<version>` that matches `fsr4.__version__` builds with `build_exe.bat` on a Windows runner, checks that
+  `fsr4.exe --version` runs, zips with `tools/release_zip.py` (`Coccinelle-Player-<version>-win-x64.zip` holding
+  the `fsr4\` folder, and `SHA256SUMS.txt`), attests the zip's build provenance (public repository only; a
+  private one gets a warning instead), and attaches both files to a draft release of the tag, which a maintainer
+  publishes. A manual run builds the same files as an artifact of the run.
 
 ## 13. License and credits
 - The project's code is MIT, in the name of TermWay. Third-party parts keep their licenses: AMD's FSR API

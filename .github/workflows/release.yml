@@ -1,0 +1,101 @@
+# Builds the release zip on GitHub's servers from the commit checked out, so anyone can check where a zip comes
+# from: gh attestation verify <zip> --repo <this repository>.
+# Pushing a tag v<version> builds it and attaches it, with SHA256SUMS.txt, to a draft release of that tag, which
+# a maintainer publishes. "Run workflow" builds it as an artifact of the run only.
+# Actions are pinned to commits; the comment names the version.
+name: Release build
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 30
+    permissions:
+      contents: write           # the draft release
+      id-token: write           # the attestation's signing certificate
+      attestations: write
+      artifact-metadata: write
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Check the tag names the package's version
+        id: version
+        run: |
+          $version = python -c "from fsr4 import __version__; print(__version__)"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          if ($env:GITHUB_REF_TYPE -eq "tag" -and $env:GITHUB_REF_NAME -ne "v$version") {
+            Write-Output "::error::The tag $env:GITHUB_REF_NAME does not match the version in fsr4/__init__.py ($version)."
+            exit 1
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Install the pinned packages
+        run: python -m pip install -r requirements-build.txt
+
+      - name: Build
+        run: |
+          cmd /c ".\build_exe.bat < NUL"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path -LiteralPath "dist\fsr4\Coccinelle Player.exe")) {
+            Write-Output "::error::build_exe.bat wrote no Coccinelle Player.exe."
+            exit 1
+          }
+
+      - name: Check the command line starts
+        run: dist\fsr4\fsr4.exe --version
+
+      - name: Zip and hash
+        run: |
+          python tools/release_zip.py dist\fsr4 release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $fence = '```'
+          @("### SHA-256", $fence, (Get-Content release\SHA256SUMS.txt), $fence) >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Attest where the zip comes from
+        if: github.event.repository.visibility == 'public'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6  # v4.2.2
+        with:
+          subject-path: release/*.zip
+
+      - name: Say why there is no attestation
+        if: github.event.repository.visibility != 'public'
+        run: |
+          Write-Output "::warning::No attestation: GitHub attests builds of a private repository only on GitHub Enterprise Cloud."
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: release
+          path: release/
+          if-no-files-found: error
+
+      - name: Attach to a draft release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $files = @(Get-ChildItem release -File | ForEach-Object FullName)
+          gh release view $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $env:GITHUB_REF_NAME @files --repo $env:GITHUB_REPOSITORY --draft --verify-tag `
+              --title "Coccinelle Player $env:VERSION" --notes "Release notes to come."
+          } else {
+            gh release upload $env:GITHUB_REF_NAME @files --repo $env:GITHUB_REPOSITORY --clobber
+          }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

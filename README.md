@@ -54,6 +54,10 @@ match their pinned SHA-256. To run from the source without building, see [Develo
   packs around the code: Python with Tcl/Tk, numpy and OpenCV (their versions are pinned in `requirements.txt`).
 - **It has no network code.** The only web address in it is Real-ESRGAN's download page, shown in a message.
   It runs other programs only to do its work: ffmpeg and ffprobe, and Real-ESRGAN when you install it.
+- **Release zips are built by GitHub**, not on a personal computer: [a workflow](.github/workflows/release.yml)
+  builds each one from the tagged commit and signs a record of where it comes from. With the
+  [GitHub CLI](https://cli.github.com/), `gh attestation verify <zip> --repo TermWay/coccinelle-player` checks a
+  download against that record.
 - **To run only what you have read**, build it yourself as above, from the same commit as the release's tag.
 
 ## Requirements
