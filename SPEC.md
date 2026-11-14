@@ -595,8 +595,9 @@ is its own version (§10).
 - The tool is not affiliated with AMD: the README says so with the trademarks, as do the window title's tooltip
   and the version resource.
 - The README credits Claude (Anthropic's AI model) as the author, directed and manually tested by the
-  repository's maintainer, and says so near its top in a warning box: written by an AI, still manually tested
-  on Windows 11 with an RX 9070 XT. Its prose names no person; the copyright lines (`LICENSE`, the version
+  repository's maintainer, and says so near its top in a warning box: written by an AI (the models and the
+  effort level named, as the commits' Co-Authored-By lines record the models), still manually tested on
+  Windows 11 with an RX 9070 XT. Its prose names no person; the copyright lines (`LICENSE`, the version
   resource) keep the copyright holder's name.
 - The README is the first-run guide: what the tool is, an animation of the window sweeping its divider between
   the bicubic source and FSR 4 (`docs/demo.webp`, recorded with `tools/ui_record.py` from clips that may be
