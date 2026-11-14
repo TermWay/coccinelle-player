@@ -38,7 +38,7 @@ HDR video is tone-mapped to SDR and interlaced video is deinterlaced. Details: [
 
 ## Installation
 1. Download the zip from the [latest release](https://github.com/TermWay/coccinelle-player/releases/latest)
-   and unzip it anywhere.
+   and unzip it into a folder of its own, anywhere (right-click, Extract All).
 2. Double-click `install-all.bat` in that folder. It installs ffmpeg, which the player needs and does not
    include, then Real-ESRGAN, an optional upscaler. Each one also has its own script: `install-ffmpeg.bat`,
    `install-realesrgan.bat`.

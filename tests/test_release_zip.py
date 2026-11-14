@@ -1,4 +1,4 @@
-"""The release zip: the build folder inside it under its own name, and a checksums file that matches it."""
+"""The release zip: the build folder's contents at its root, and a checksums file that matches it."""
 import hashlib
 import sys
 import tempfile
@@ -22,12 +22,12 @@ class ReleaseZipTest(unittest.TestCase):
     def tearDown(self):
         self.folder.cleanup()
 
-    def test_zips_the_folder_under_its_name_and_writes_its_hash(self):
+    def test_zips_the_folder_contents_at_the_root_and_writes_its_hash(self):
         target, digest = release_zip.make_release_zip(self.build, self.root / "out", "1.2.3")
         self.assertEqual(target.name, "Coccinelle-Player-1.2.3-win-x64.zip")
         with zipfile.ZipFile(target) as archive:
-            self.assertEqual(sorted(archive.namelist()), ["fsr4/bin/license.md", "fsr4/fsr4.exe"])
-            self.assertEqual(archive.read("fsr4/bin/license.md"), b"license\n")
+            self.assertEqual(sorted(archive.namelist()), ["bin/license.md", "fsr4.exe"])
+            self.assertEqual(archive.read("bin/license.md"), b"license\n")
         self.assertEqual(digest, hashlib.sha256(target.read_bytes()).hexdigest())
         checksums = (self.root / "out" / release_zip.CHECKSUMS_FILE).read_bytes()
         self.assertEqual(checksums, f"{digest}  {target.name}\n".encode("ascii"))

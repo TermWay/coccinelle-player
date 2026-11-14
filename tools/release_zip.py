@@ -3,7 +3,8 @@
     python tools/release_zip.py [build folder] [output folder]
 
 The build folder defaults to dist\\fsr4 and the output folder to the build folder's parent. Writes
-Coccinelle-Player-<version>-win-x64.zip (the build folder inside it, under its own name) and SHA256SUMS.txt
+Coccinelle-Player-<version>-win-x64.zip (the build folder's contents at its root: Windows' Extract All already puts
+them in a folder named after the zip, so a folder inside would nest twice) and SHA256SUMS.txt
 ("<hash>  <zip name>", as sha256sum writes it), then prints the zip's path and its hash. An existing zip of that
 name is refused: a release asset is made once, from one build.
 """
@@ -47,7 +48,7 @@ def make_release_zip(build: Path, output: Path, version: str = __version__) -> t
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
         for path in sorted(build.rglob("*")):
             if path.is_file():
-                archive.write(path, (Path(build.name) / path.relative_to(build)).as_posix())
+                archive.write(path, path.relative_to(build).as_posix())
     digest = sha256(target)
     (output / CHECKSUMS_FILE).write_text(f"{digest}  {target.name}\n", encoding="ascii", newline="\n")
     return target, digest

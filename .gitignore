@@ -8,3 +8,6 @@ out/
 *.fsr4.*
 bin/*.part
 requests/
+# Release zips: what the workflow writes, and its artifacts downloaded to check them.
+release/
+releases/

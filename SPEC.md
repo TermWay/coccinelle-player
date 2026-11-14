@@ -583,7 +583,8 @@ is its own version (§10).
 - Release zips are built on GitHub Actions (`.github/workflows/release.yml`, actions pinned to commits): a tag
   `v<version>` that matches `fsr4.__version__` builds with `build_exe.bat` on a Windows runner, checks that
   `fsr4.exe --version` runs, zips with `tools/release_zip.py` (`Coccinelle-Player-<version>-win-x64.zip` holding
-  the `fsr4\` folder, and `SHA256SUMS.txt`), attests the zip's build provenance (public repository only; a
+  the build folder's contents at its root, with no `fsr4\` folder: Windows' Extract All already makes a folder
+  named after the zip; and `SHA256SUMS.txt`), attests the zip's build provenance (public repository only; a
   private one gets a warning instead), and attaches both files to a draft release of the tag, which a maintainer
   publishes. A manual run builds the same files as an artifact of the run.
 
